@@ -10,6 +10,10 @@ Reproducible code for the Biohub Cell Tracking During Development competition.
 - `visualization/` — prediction/GT visualization utilities (validation branch).
 - `docs/` — workflow and experiment notes.
 
+Start with [`docs/EXPERIMENTS.md`](docs/EXPERIMENTS.md) for the complete score
+chronology, current weaknesses, active work, rejected paths, and do-not-repeat
+registry.
+
 ## Current stable pipeline
 
 The `main` branch contains the A+B true ensemble with registration-aware
