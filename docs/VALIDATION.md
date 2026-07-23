@@ -32,16 +32,20 @@ python validation/compare_runs.py \
 
 ## Visual inspection
 
-Render detections and a short trajectory window:
+`visualization/app.py` is a small FastAPI service that steps through a
+submission frame by frame, overlaying detections and short trailing tracks on
+the Z-max-intensity projection of the matching `.zarr` volume.
 
 ```bash
-python visualization/visualize_submission.py \
-  --submission results/candidate/submission.csv \
-  --dataset 6bba_05db0fb1 \
-  --frame 50 --window 6 \
-  --zarr /path/to/6bba_05db0fb1.zarr \
-  --output results/candidate/trajectory_t50.png
+export BIOHUB_SUBMISSION_CSV=submission.csv   # default
+export BIOHUB_RESULTS_DIR=results             # dir containing {dataset}.zarr
+uvicorn visualization.app:app --reload --port 8000
 ```
+
+Open `http://localhost:8000`, pick a dataset, and use the ◀ / ▶ buttons,
+slider, or arrow keys / space to play through frames. Each color is a stable
+lineage id (union-find over the edge graph), so a track's color should not
+change frame to frame — a sudden switch is an identity swap.
 
 Inspect at least one sparse and one dense sample. Look for identity swaps,
 long jumps, boundary flicker, broken divisions, and short isolated fragments.

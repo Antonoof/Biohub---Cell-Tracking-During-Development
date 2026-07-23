@@ -1,0 +1,243 @@
+<title>Biohub Tracking Viewer</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; display: flex; flex-direction: column; align-items: center;
+    gap: 12px; padding: 16px; background: #0b0d12; color: #e6e8ee;
+    font: 14px/1.4 -apple-system, "Segoe UI", system-ui, sans-serif;
+  }
+  h1 { font-size: 16px; font-weight: 600; margin: 0; color: #9fb4ff; }
+  .bar { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; justify-content: center; }
+  select, button {
+    background: #1a1e29; color: #e6e8ee; border: 1px solid #2c3140; border-radius: 6px;
+    padding: 6px 10px; font-size: 13px; cursor: pointer;
+  }
+  button:hover, select:hover { border-color: #4a5578; }
+  button:active { transform: translateY(1px); }
+  button.primary { background: #3355ee; border-color: #3355ee; color: white; }
+  button:disabled { opacity: .4; cursor: default; }
+  .stage {
+    position: relative; background: #000; border: 1px solid #232838; border-radius: 8px;
+    overflow: hidden; line-height: 0;
+  }
+  canvas { display: block; image-rendering: -webkit-optimize-contrast; }
+  .frame-row { display: flex; align-items: center; gap: 10px; width: 100%; max-width: 720px; }
+  input[type=range] { flex: 1; accent-color: #3355ee; }
+  .frame-label { font-variant-numeric: tabular-nums; min-width: 68px; text-align: center; }
+  .stats { font-size: 12px; color: #8b93a7; display: flex; gap: 16px; flex-wrap: wrap; justify-content: center; }
+  .stats b { color: #cfd6e6; }
+  .legend { font-size: 12px; color: #8b93a7; text-align: center; max-width: 640px; }
+  .tail-row { display: flex; align-items: center; gap: 8px; }
+</style>
+
+<h1>Biohub Tracking Viewer</h1>
+
+<div class="bar">
+  <label>Dataset:
+    <select id="dataset"></select>
+  </label>
+  <div class="tail-row">
+    <label for="tail">Tail (frames):</label>
+    <input type="range" id="tail" min="0" max="40" value="10" style="width:100px">
+    <span id="tailValue">10</span>
+  </div>
+</div>
+
+<div class="stage">
+  <canvas id="canvas" width="256" height="256"></canvas>
+</div>
+
+<div class="frame-row">
+  <button id="prev" title="Previous frame (←)">◀</button>
+  <button id="play" class="primary" title="Play / pause (space)">▶ Play</button>
+  <button id="next" title="Next frame (→)">▶</button>
+  <input type="range" id="slider" min="0" max="99" value="0">
+  <span class="frame-label"><span id="tLabel">0</span> / <span id="tMax">99</span></span>
+</div>
+
+<div class="stats">
+  <span><b id="statNodes">0</b> nodes at t</span>
+  <span><b id="statTracks">0</b> tracks total</span>
+  <span><b id="statShape">-</b> volume shape</span>
+</div>
+
+<div class="legend">
+  Each color is a stable lineage id shared by a cell and its descendants —
+  a sudden color change on a trailing line usually means an identity swap.
+  Trails fade with age. Use ←/→ to step, space to play.
+</div>
+
+<script>
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+const datasetSel = document.getElementById("dataset");
+const slider = document.getElementById("slider");
+const tLabel = document.getElementById("tLabel");
+const tMaxEl = document.getElementById("tMax");
+const tailInput = document.getElementById("tail");
+const tailValue = document.getElementById("tailValue");
+const statNodes = document.getElementById("statNodes");
+const statTracks = document.getElementById("statTracks");
+const statShape = document.getElementById("statShape");
+const playBtn = document.getElementById("play");
+
+const MAX_DISPLAY_PX = 680; // upper bound for the rendered canvas edge, in CSS px
+
+let datasets = [];
+let current = null;   // dataset info for the active selection
+let t = 0;
+let tail = 10;
+let scale = 1;        // native-voxel -> canvas-pixel factor, recomputed per dataset
+let playing = false;
+let playTimer = null;
+let requestToken = 0;
+const imgCache = new Map();
+
+function applyCanvasSize(shape) {
+  const nativeH = shape ? shape[2] : canvas.height;
+  const nativeW = shape ? shape[3] : canvas.width;
+  scale = MAX_DISPLAY_PX / Math.max(nativeW, nativeH);
+  canvas.width = Math.round(nativeW * scale);
+  canvas.height = Math.round(nativeH * scale);
+}
+
+function trackColor(id) {
+  const hue = (id * 137.508) % 360;
+  return `hsl(${hue.toFixed(1)} 80% 60%)`;
+}
+
+function frameUrl(name, frame) {
+  return `/api/frame/${name}/${frame}.png`;
+}
+
+function preload(name, frame) {
+  if (current === null || frame < 0 || frame > current.t_max) return;
+  const key = `${name}:${frame}`;
+  if (imgCache.has(key)) return;
+  const img = new Image();
+  img.src = frameUrl(name, frame);
+  imgCache.set(key, img);
+}
+
+async function loadFrame(frame) {
+  const token = ++requestToken;
+  const name = current.name;
+  const key = `${name}:${frame}`;
+
+  let img = imgCache.get(key);
+  if (!img) {
+    img = new Image();
+    img.src = frameUrl(name, frame);
+    imgCache.set(key, img);
+  }
+
+  const overlayPromise = fetch(`/api/nodes/${name}/${frame}?tail=${tail}`).then(r => r.json());
+  const imgReady = img.complete ? Promise.resolve() : new Promise(res => { img.onload = res; img.onerror = res; });
+
+  const [overlay] = await Promise.all([overlayPromise, imgReady]);
+  if (token !== requestToken) return; // a newer frame request superseded this one
+
+  draw(img, overlay);
+  statNodes.textContent = overlay.nodes.length;
+
+  preload(name, frame + 1);
+  preload(name, frame - 1);
+}
+
+function draw(img, overlay) {
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  if (img.width) ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+  const span = Math.max(t - overlay.tail_from, 1);
+  for (const e of overlay.edges) {
+    const age = (t - e.t2) / span; // 0 = just happened, 1 = oldest in tail
+    ctx.strokeStyle = trackColor(e.track);
+    ctx.globalAlpha = 0.85 - 0.65 * age;
+    ctx.lineWidth = 1.3 * scale;
+    ctx.beginPath();
+    ctx.moveTo(e.x1 * scale, e.y1 * scale);
+    ctx.lineTo(e.x2 * scale, e.y2 * scale);
+    ctx.stroke();
+  }
+
+  ctx.globalAlpha = 1;
+  for (const n of overlay.nodes) {
+    ctx.beginPath();
+    ctx.arc(n.x * scale, n.y * scale, 2.8 * scale, 0, Math.PI * 2);
+    ctx.fillStyle = trackColor(n.track);
+    ctx.fill();
+    ctx.lineWidth = 0.8 * scale;
+    ctx.strokeStyle = "rgba(255,255,255,0.85)";
+    ctx.stroke();
+  }
+}
+
+function setFrame(frame) {
+  frame = Math.max(0, Math.min(current.t_max, frame));
+  t = frame;
+  slider.value = t;
+  tLabel.textContent = t;
+  loadFrame(t);
+}
+
+function stopPlaying() {
+  playing = false;
+  playBtn.textContent = "▶ Play";
+  if (playTimer) { clearInterval(playTimer); playTimer = null; }
+}
+
+function togglePlay() {
+  if (playing) { stopPlaying(); return; }
+  playing = true;
+  playBtn.textContent = "⏸ Pause";
+  playTimer = setInterval(() => {
+    if (t >= current.t_max) { stopPlaying(); return; }
+    setFrame(t + 1);
+  }, 220);
+}
+
+async function selectDataset(name) {
+  stopPlaying();
+  current = datasets.find(d => d.name === name);
+  imgCache.clear();
+  applyCanvasSize(current.shape);
+  slider.max = current.t_max;
+  tMaxEl.textContent = current.t_max;
+  statTracks.textContent = current.n_tracks;
+  statShape.textContent = current.shape ? current.shape.join(" × ") : "n/a (no .zarr found)";
+  setFrame(0);
+}
+
+document.getElementById("prev").onclick = () => { stopPlaying(); setFrame(t - 1); };
+document.getElementById("next").onclick = () => { stopPlaying(); setFrame(t + 1); };
+playBtn.onclick = togglePlay;
+slider.oninput = () => { stopPlaying(); setFrame(parseInt(slider.value, 10)); };
+tailInput.oninput = () => { tail = parseInt(tailInput.value, 10); tailValue.textContent = tail; loadFrame(t); };
+datasetSel.onchange = () => selectDataset(datasetSel.value);
+
+window.addEventListener("keydown", (e) => {
+  if (e.target.tagName === "SELECT" || e.target.tagName === "INPUT") return;
+  if (e.code === "ArrowRight") { stopPlaying(); setFrame(t + 1); }
+  else if (e.code === "ArrowLeft") { stopPlaying(); setFrame(t - 1); }
+  else if (e.code === "Space") { e.preventDefault(); togglePlay(); }
+});
+
+(async function init() {
+  datasets = await fetch("/api/datasets").then(r => r.json());
+  for (const d of datasets) {
+    const opt = document.createElement("option");
+    opt.value = d.name;
+    opt.textContent = `${d.name} (${d.n_nodes} nodes, ${d.n_tracks} tracks)`;
+    datasetSel.appendChild(opt);
+  }
+  if (datasets.length) {
+    await selectDataset(datasets[0].name);
+  }
+})();
+</script>
