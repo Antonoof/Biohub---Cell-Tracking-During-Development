@@ -1,24 +1,38 @@
 # Biohub experiment registry and team decision log
 
-Last updated: 2026-07-18
+Last updated: 2026-07-24
 
 This is the team-facing source of truth for what has been tried, what actually
 improved the submission, what failed, and what remains weak. Its purpose is to
 prevent repeated experiments and to keep local proxy gains separate from real
 Kaggle evidence.
 
-The current rollback-safe production notebook is:
+The current hidden-validated production notebook is
+[division-gbm-model-c-combined-primary-hidden.ipynb](../notebooks/division-gbm-model-c-combined-primary-hidden.ipynb).
 
-`C:\Kaggle\division-gbm-w-updated-model.ipynb`
+The current best hidden Kaggle score is **0.931**.
 
-The current best hidden Kaggle score is **0.921**.
+> **Metric-patch notice (updated 2026-07-24):** the hosts replaced the
+> exploitable division criterion and rescored existing submissions. The
+> honest V2 notebook retained its `0.921` hidden score after the rescore, so
+> the production lineage was not exploiting the removed behavior. Exact local
+> patched evaluation remains the required gate for new division work. Under
+> that evaluator, V2's four-practice result is `1/2/2, J=0.2000`; on the
+> 24-video division-rich panel it is `46/21/17, J=0.5476`. See
+> [PATCHED_DIVISION_METRIC_AUDIT.md](PATCHED_DIVISION_METRIC_AUDIT.md).
+
+The next candidate is
+[division-gbm-model-c-v2-arbiter.ipynb](../notebooks/division-gbm-model-c-v2-arbiter.ipynb).
+
+It is **ACTIVE, not yet hidden-scored**. Its paired exact held-20 graph score
+improved from the `.931` decoder's `0.88958` to `0.91328`.
 
 ## Evidence and decision labels
 
 | Label | Meaning | Trust level |
 |---|---|---|
 | **LB** | Hidden Kaggle score from a completed submission | Final promotion evidence |
-| **GRAPH-4** | Exact official graph evaluator on all four practice clips | Strong local gate, but only three annotated practice divisions |
+| **GRAPH-4** | Exact **patched** official graph evaluator on all four practice clips | Strong local gate, but only three annotated practice divisions |
 | **OOF-GRAPH** | Whole-video grouped out-of-fold graph replay | Strong generalization evidence |
 | **OOF-ROW** | Grouped held-video candidate or row metric | Screening only |
 | **PROXY** | Adjusted-edge or division proxy | Directional; never sufficient alone |
@@ -41,8 +55,9 @@ Decisions are **KEEP**, **ACTIVE**, **REJECT**, or **INCONCLUSIVE**.
 | Short-track filter | adaptive; standard `7`, low-density `9` | **KEEP** |
 | Safe division geometry | `4.7 / 6.85 / 7.45 um`, frame cap `0.0072`, global cap `0.00375` | **KEEP** |
 | Registration | registration-aware geometry validation and line-fit stabilization | **KEEP** |
-| Division helper | Official-Event Parent Gate V2, four streaming CPU workers | **KEEP** |
+| Division helper | Combined V2 + native Model-C primary decoder, four streaming CPU workers | **KEEP**; hidden score `0.931` |
 | Anytime safety | atomic A+B shard first; helper replaces only a completed video | **KEEP** |
+| Next division candidate | Per-lineage V2 / combined / NULL arbiter, threshold `0.93` | **ACTIVE**; exact held-20 promoted, awaiting hidden test |
 
 The four-worker streaming implementation preserved the division result while
 cutting the hidden run to about six hours. Runtime coverage is no longer the
@@ -64,7 +79,21 @@ primary bottleneck.
 | Learned motion-cost notebook | 0.907 | 0.000 rounded | Kept because local graphs improved without hidden regression |
 | Learned Division GBM V1 | 0.920 | +0.013 | **KEEP**: largest honest gain |
 | Optimized four-worker V1 | 0.920 | 0.000 | **KEEP**: same accuracy, much better runtime |
-| Official-Event Parent Gate V2 | **0.921** | **+0.001** | **KEEP**: current best production system |
+| Official-Event Parent Gate V2 | 0.921 | +0.001 | **KEEP**: retained `0.921` after the host's patched rescore |
+| Combined V2 + native Model-C primary decoder | **0.931** | **+0.010** | **KEEP**: current hidden-validated production system |
+
+The first post-patch V3 keep/drop screen was **REJECTED**. Across the saved
+24-video V2 panel, grouped held-video models using graph geometry, all V2
+runtime scores/features, and downstream branch evidence could not improve the
+patched `46 TP / 21 FP / 17 FN, J=0.5476` control. See the patch-aware selector
+section in [PATCHED_DIVISION_METRIC_AUDIT.md](PATCHED_DIVISION_METRIC_AUDIT.md).
+
+Later Model-C work succeeded by changing the deployment question. Instead of
+allowing Model C to influence the A+B continuation graph, the `.931` notebook
+uses Model C only as division evidence inside a complete parent-and-two-child
+transaction. The new arbiter preserves both the frozen V2 proposal and the
+combined proposal, then chooses V2, combined, or `NULL` once per lineage. It is
+locally promoted but not included in the hidden chronology until submitted.
 
 ## Parameter and post-processing ledger
 
@@ -135,10 +164,12 @@ primary bottleneck.
 | Experiment | Best evidence | Decision and lesson |
 |---|---|---|
 | Model B solo | LB 0.867; threshold `0.997` raised it to 0.873 | Weak alone but useful for diversity; solo calibration does not transfer to fused A+B |
-| A+B equal weights | LB 0.899, later 0.921 with helpers | **KEEP** |
+| A+B equal weights | LB 0.899, later 0.931 with division-only Model-C evidence and helpers | **KEEP** as the continuation graph |
 | A+B weight variants | 1:1 and 1:0.33 both initially 0.899 | No clear weight gain; keep 1:1 |
 | Three-model A+B+C, partially trained C | LB 0.895 vs 0.899 | **REJECT**. Diversity did not overcome weaker probabilities |
-| Fully trained C | training composite 0.9497 | **INCONCLUSIVE** as a clean graph comparison |
+| Division-balanced Model C, epoch 67 | Held-20 direct division recovery `9/17`; direct A+C graph use regressed adjusted-edge proxy `0.92935 -> 0.91123` | **KEEP only as division evidence**; never mix C into A+B continuation probabilities |
+| Combined V2 + native Model-C primary decoder | LB `0.921 -> 0.931`; exact held-20 baseline division `4/4/13, J=0.19048` | **KEEP**; current production decoder |
+| V2 / combined / NULL arbiter | grouped OOF `0.381 -> 0.609`; held-20 proxy `0.190 -> 0.500`; exact held-20 score `0.88958 -> 0.91328` | **ACTIVE**; locally promoted, awaiting hidden test |
 | Larger A2 `[48,96,192]`, output 48 | A2+A1 LB 0.897 vs A+B 0.901 | **REJECT** |
 | A2 pretrain + Biohub fine-tune | best fine-tune composite 0.0174 at epoch 5 | Plateaued; **REJECT unchanged** |
 | Proposal-aware B2 edge-head fine-tune | fused proposal J `0.8897 -> 0.8904` | Negligible; **REJECT** |
@@ -148,7 +179,7 @@ primary bottleneck.
 | nnUNet segmentation tracker | LB about 0.693 with DoG, 0.668 without | Architecture/inference mismatch; **REJECT** |
 | Cellpose SAM V2 detector | one clip looked good, another produced 0-21 centers where hundreds were expected | Severe domain failure; **REJECT** |
 | Fine-tuned Trackastra | local no-division graph proxy about 0.8785 vs A+B about 0.9254; slow after A+B | **REJECT as production path** |
-| HOCT with local-ellipsoid adapter | pair AP `0.01178 -> 0.00416`; top-1 `0.4083 -> 0.3550` | Adapter rejected; watershed/mask adapter remains **INCONCLUSIVE** |
+| HOCT with local-ellipsoid adapter | Pair AP `0.01178 -> 0.00416`; top-1 `0.4083 -> 0.3550`. Patched 3-video full solver: frozen V2 `1.0470` vs HOCT `0.9591`; adjusted edge `0.9692 -> 0.9369`; division `0.7778 -> 0.2222` | **REJECT current adapter and full solver**. Revisit only with a materially better mask adapter that first wins the same exact panel |
 
 ## Association/linking helper experiments
 
@@ -157,7 +188,7 @@ primary bottleneck.
 | Multi-frame contextual linker | OOF row `0.8580 -> 0.8591`; independent graph panel `-0.00043` | **REJECT**. Small row gain did not survive ILP |
 | Structured Association V1, strength 1.0 | OOF-GRAPH +0.0251 on 12 videos, 10/12 up | Strong screening result |
 | Structured Association V1, full integrated strength 1.0 | GRAPH-4 adjusted edge +0.00420, but division `0.6667 -> 0.3333`; combined proxy -0.0291 | **REJECT full strength** |
-| Structured Association V1, strength 0.50 | OOF-GRAPH +0.0162, 9/12 up | **ACTIVE** full integrated run. Promote only if division and combined score do not regress |
+| Structured Association V1, strength 0.50 | OOF-GRAPH +0.0162, but full GRAPH-4 adjusted edge `-0.00417`; division preserved at `0.6667`; combined `-0.00417` | **REJECT global 0.50** |
 
 Structured Association is the best current attempt at correcting the A+B core,
 but it proves that better edge totals can still damage the official component
@@ -180,7 +211,19 @@ The reusable data inventory is in [DIVISION_DATA_CATALOG.md](DIVISION_DATA_CATAL
   basic node availability.
 - Division V1 raised the hidden score `0.907 -> 0.920`.
 - Official-Event V2 reached held-four `2 TP / 0 FP / 1 unreachable FN`, division
-  Jaccard `0.6667`, and raised hidden score to `0.921`.
+  Jaccard `0.6667` under the historical evaluator, raised hidden score to
+  `0.921`, and retained `0.921` after the host's metric rescore.
+- Division-balanced Model C recovered both annotated daughter edges for
+  `9/17` events on its untouched held-20 split, but using Model C inside the
+  continuation ensemble damaged adjusted-edge quality. It is useful only as a
+  separate division-evidence branch.
+- The combined V2 + native Model-C primary decoder raised the hidden score
+  `0.921 -> 0.931`, the largest gain since Division V1.
+- The V2/combined/NULL arbiter improved the submitted `.931` decoder on exact
+  patched held-20 graphs: division `4/4/13 -> 9/4/8`, division Jaccard
+  `0.19048 -> 0.42857`, and complete score `0.88958 -> 0.91328`, with
+  adjusted-edge Jaccard effectively flat (`0.87054 -> 0.87042`). This candidate
+  is locally promoted and awaiting a hidden run.
 
 ### Division paths tried and not promoted
 
@@ -198,6 +241,9 @@ The reusable data inventory is in [DIVISION_DATA_CATALOG.md](DIVISION_DATA_CATAL
 | Reduced-feature temporal Stage A | Worse than V2.1 localization; **REJECT** |
 | Outcome-aligned synthetic `t+1` bridge V3 | Only about 20 annotated sources eligible; no broad promotion path established |
 | Trackastra division integration | Too slow and weaker graph behavior |
+| Model C mixed into A+B continuation edges | Regressed adjusted-edge proxy `0.92935 -> 0.91123`; **REJECT** |
+| Late Model-C daughter rerank inside a frozen V2 graph | Correct native pairs were frequently lost at the source/pair mapping seam; no promoted threshold |
+| Model-C high-confidence one-child rescue | Four-video exact panel regressed complete graph outcome; **REJECT** |
 
 ### Division rules that must remain true
 
@@ -210,18 +256,60 @@ The reusable data inventory is in [DIVISION_DATA_CATALOG.md](DIVISION_DATA_CATAL
   Jaccard cannot promote a division model by itself.
 - Preserve one parent per child, one fork per parent/tube, and atomic fallback.
 
+### Model C and `.931` decoder program (2026-07-23 to 2026-07-24)
+
+This sequence must be kept intact because several superficially similar
+experiments had opposite outcomes.
+
+| Experiment | Evidence | Result | Decision |
+|---|---|---|---|
+| Division-balanced A/B-compatible Model C | held-20 training evaluation | Best checkpoint at epoch 67; recovered both daughter edges for `9/17` held events | **KEEP checkpoint** as complementary division evidence |
+| Replace B with C (`A+C`) | GRAPH-4/proxy | Model C's weaker continuation probabilities reduced adjusted-edge proxy | **REJECT** |
+| Add C as a weighted third continuation model (`A+B+C`) | GRAPH-4/proxy | Division evidence increased, but duplicate/wrong continuation structure reduced total graph quality | **REJECT** |
+| Run C at full strength but division-only | architecture/safety audit | A+B detections, continuation edges, and ILP remain frozen; C emits only native division evidence | **KEEP architecture** |
+| Combined V2 + native-C primary decoder | LB | Hidden score `0.921 -> 0.931` | **KEEP production** |
+| Lower combined threshold | held-20 sweep | More apparent recovery but unacceptable continuation/fork burden | **REJECT**; keep production threshold `0.96` |
+| Model-C pair rerank inside V2 | grouped held-video + practice diagnostics | No threshold produced reliable correct daughter substitutions | **REJECT** |
+| High-confidence Model-C rescue/rewire | exact one-video and four-video graph replay | Could recover an isolated event, but aggregate component and adjusted-edge behavior regressed | **REJECT** |
+| V2 / combined / `NULL` arbiter | grouped OOF + held-20 proxy | Grouped OOF `0.381 -> 0.609`; held-20 `0.190 -> 0.500` versus the submitted decoder | **PASS screening** |
+| Arbiter exact four-video panel | exact patched graph | Score `0.71559 -> 0.72724`; division Jaccard `0.20000 -> 0.33333` | **PASS** |
+| Arbiter exact held-20 replay | exact patched graph | Score `0.88958 -> 0.91328`; division `4/4/13 -> 9/4/8`; adjusted edge `0.87054 -> 0.87042` | **ACTIVE / PROMOTED LOCALLY** |
+
+The arbiter result does **not** mean it beats frozen V2 as an isolated
+candidate-row model. That is not the deployment comparison. The production
+baseline is the decoder that actually scored `.931`; the arbiter beats that
+decoder under both leakage-safe held diagnostics and complete exact graph
+evaluation.
+
+Current files:
+
+- Production `.931` notebook:
+  [division-gbm-model-c-combined-primary-hidden.ipynb](../notebooks/division-gbm-model-c-combined-primary-hidden.ipynb)
+- Promoted arbiter notebook:
+  [division-gbm-model-c-v2-arbiter.ipynb](../notebooks/division-gbm-model-c-v2-arbiter.ipynb)
+- Arbiter Kaggle artifact:
+  `C:\Kaggle\biohub-model-c-v2-arbiter-v1.zip`
+- Training output:
+  `/home/tweak/bio/model_c_v2_arbiter_v1`
+- Exact arbiter held-20 summary:
+  `/home/tweak/bio/model_c_v2_arbiter_exact_smoke_c502/exact_metric_held20/summary.json`
+- Exact `.931` held-20 baseline:
+  `/home/tweak/bio/model_c_combined_primary_held20_exact/exact_metric_held20/summary.json`
+
 ## Current weakest parts, ranked
 
 ### 1. Division selection and component-safe insertion
 
-This remains the highest-value specialized weakness. V2 is a real improvement,
-but it added only `+0.001` beyond V1 on hidden data. The broad generator has a
-high oracle ceiling, yet selectors repeatedly fail through sparse supervision,
-cross-embryo calibration, or graph-component side effects.
+This remains the highest-value specialized weakness, but the ceiling moved.
+The combined V2/Model-C decoder added `+0.010` over V2 and reached `.931`.
+The broad generator still has a high oracle ceiling, and the promoted arbiter
+now demonstrates that outcome-level selection can convert more of that ceiling
+without materially changing adjusted-edge quality.
 
-Needed improvement: an event-outcome selector trained and validated on the
-actual final graph transaction, with sparse-safe supervision and whole-video
-held folds. Do not return to exact-next-frame daughter classification alone.
+Immediate next step: hidden-test the frozen arbiter package. Do not retune its
+`0.93` threshold on the practice clips. If it transfers, it replaces only the
+`.931` division decision layer; A+B, motion, registration, and post-processing
+remain frozen.
 
 ### 2. Core A+B association and topology selection
 
@@ -250,6 +338,67 @@ public rule-based study found multi-scale DoG was its largest lever
 The credible use here is **selective rescue**, not replacing A+B: propose a DoG
 node only near an A+B endpoint/gap, require temporal support, and cap additions.
 This idea is **INCONCLUSIVE** and has not earned integration.
+
+### Multi-scale DoG rescue audit (rejected selector, useful oracle result)
+
+**Date:** 2026-07-18
+**Decision:** **REJECT** as a production node-rescue selector. Preserve the
+oracle audit as evidence that a small complementary detection signal exists.
+
+The exact public multi-scale DoG detector was reproduced on the 195 training
+videos excluding the four practice clips. It uses physical scales
+`[1.5, 4.0]` and `[2.2, 5.5]` micrometres, maximum response across scales,
+relative threshold `0.045`, `3.2 um` minimum distance, and original-resolution
+center-of-mass refinement.
+
+Sparse-GT union matching found:
+
+| Quantity | Result |
+|---|---:|
+| Annotated GT nodes | 131,125 |
+| A+B node recall | 0.992709 |
+| Oracle A+B + DoG recall | 0.994448 |
+| A+B misses recovered by DoG | 228 / 956 (23.85%) |
+| Raw DoG candidates | 4,366,750 |
+| Novel DoG candidates after 3.2 um deduplication | 527,568 |
+| Novel candidates per proven rescue | 2,314 |
+
+The complementary signal is strongest in the lowest-recall video tertile, but
+raw union is unsafe. A 60-feature selector (DoG response, two-scale agreement,
+temporal geometry, density, boundary position, and image statistics) and a
+78-feature extension adding nearest A+B confidence plus A/B disagreement were
+validated with nested whole-video grouped folds. Unknown sparse labels had zero
+training loss.
+
+| Selector | OOF AP | OOF AUC | Nested threshold TP/FP/FN | Jaccard | Unknown selected |
+|---|---:|---:|---:|---:|---:|
+| Image/geometry (60 features) | 0.0921 | 0.8372 | 74 / 713 / 154 | 0.0786 | 88,115 |
+| + A+B confidence/disagreement (78 features) | 0.1021 | 0.8411 | 74 / 669 / 154 | 0.0825 | 92,029 |
+| + all-frame DoG track context (107 features) | 0.1202 | 0.8441 | 86 / 736 / 142 | 0.0892 | 99,698 |
+
+The confidence extension marginally improved ranking but increased unknown
+burden. Even top-1 per frame retained 14,999 unknown candidates while recovering
+only 22 of 228 rescues. This path did not earn a four-clip graph replay and must
+not be merged into the `.921` production notebook. Reopen only if a materially
+new sparse-safe signal or an outcome-aligned graph selector becomes available.
+
+The follow-up track-context test linked all DoG peaks over adjacent frames at
+`8 um` and added multi-frame persistence, response stability, and trajectory
+features. It improved AP but did not solve selection burden. A metric-aware OOF
+frontier included the official adjusted-node penalty. Its best optimistic net
+gain was approximately `+0.00012`, assuming two perfect restored edges per
+recovered node and zero added edge errors. With the more realistic one-edge
+assumption, the useful frontier was approximately zero. Therefore the 228-node
+oracle recovery is real, but the current signals cannot extract it at a useful
+risk/reward ratio.
+
+Artifacts:
+
+- `/home/tweak/bio/multiscale_dog_rescue_audit_v1`
+- `/home/tweak/bio/multiscale_dog_selector_cache_v1`
+- `/home/tweak/bio/multiscale_dog_selector_v1`
+- `/home/tweak/bio/multiscale_dog_selector_v2`
+- `/home/tweak/bio/multiscale_dog_selector_v3_track_context`
 
 ### 4. Cross-embryo generalization
 
@@ -284,6 +433,9 @@ must report edge, adjusted edge, division, and combined official outcomes.
    tracking systems. They are excluded from this registry's score ladder.
 10. Change one causal axis per test unless the combination is explicitly a
     confirmation run after individual ablations.
+11. Do not rerun the current multi-scale DoG rescue selectors unchanged. The
+    60-feature and A+B-confidence 78-feature variants both failed sparse-safe
+    burden control despite leakage-safe whole-video validation.
 
 ## Reusable assets: do not regenerate
 
@@ -299,23 +451,34 @@ must report edge, adjusted edge, division, and combined official outcomes.
 | `/home/tweak/bio/division_gbm_deploy_v1_crossfit` | Corrected V1 teacher |
 | `/home/tweak/bio/edge_corrector_cache` | Residual edge-corrector train/validation cache |
 | `/home/tweak/bio/hoct_division_features_panel_v1` | Tested HOCT ellipsoid-adapter panel |
+| `/home/tweak/bio/multiscale_dog_rescue_audit_v1` | Exact 195-video DoG oracle/rescue audit |
+| `/home/tweak/bio/multiscale_dog_selector_cache_v1` | 527,568 novel DoG candidates with exact sparse-safe labels |
+| `/home/tweak/bio/model_c_native_division_evidence_held20_bestpair` | Native Model-C held-20 parent/daughter evidence |
+| `/home/tweak/bio/model_c_v2_arbiter_v1` | Frozen 158-feature V2/combined/NULL arbiter and diagnostics |
+| `/home/tweak/bio/model_c_v2_arbiter_exact_smoke_c502/v2_final_shards` | Exact arbiter final graphs for all held-20 videos |
+| `/home/tweak/bio/model_c_combined_primary_held20_exact/final_graphs` | Paired `.931` decoder held-20 baseline graphs |
 
 Before starting a large extraction, check [DIVISION_DATA_CATALOG.md](DIVISION_DATA_CATALOG.md)
 and this table.
 
 ## Active and next experiments
 
-1. **Finish Structured Association strength 0.50 integration test.** Promote
-   only if adjusted edge improves and the V2 division result remains intact.
-2. **If strength 0.50 harms division, use selective activation.** Apply the
-   correction only to low-margin or high-ambiguity groups.
-3. **Test selective multi-scale DoG node rescue.** Use cached weak-video
-   endpoints/gaps, temporal support, and strict addition caps; do not replace
-   A+B globally.
+1. **Submit the frozen V2/Model-C/NULL arbiter candidate.** It passed grouped
+   held screening and paired exact held-20 graph evaluation. Do not modify its
+   `0.93` threshold or graph transaction before the hidden test.
+2. **Replace global Structured Association with selective activation.** Both
+   tested global strengths failed the combined official gate. Apply correction
+   only to low-margin or high-ambiguity groups and preserve the frozen V2 graph
+   elsewhere.
+3. **DoG rescue is parked.** The exact 195-video audit proved a small oracle
+   gain, but both leakage-safe selectors flooded unknown detections. Reopen
+   only with a materially new outcome-aligned or track-context signal; do not
+   replace or union A+B globally.
 4. **Pursue a stronger base association model only with whole-graph training.**
    Pointwise proposal-aware edge fine-tuning has already plateaued.
-5. **Division V3 only with official-event outcome labels.** Keep V2 frozen; do
-   not reopen exact-daughter/localizer variants without new supervision.
+5. **Future division work must preserve both candidate systems.** Compare
+   complete V2, combined, and `NULL` outcomes; do not overwrite V2 before the
+   selector has made its decision.
 
 ## Detailed records
 
@@ -324,6 +487,7 @@ and this table.
 - [Structured Association V1](STRUCTURED_ASSOCIATION_V1.md)
 - [Multi-frame contextual linker](MULTIFRAME_CONTEXT_LINKER_EXPERIMENT.md)
 - [HOCT higher-order experiment](HOCT_EXPERIMENT.md)
+- [Model C to V2 integration and arbiter audit](MODEL_C_V2_INTEGRATION_LOSS_AUDIT.md)
 
 ## Required template for every new experiment
 
