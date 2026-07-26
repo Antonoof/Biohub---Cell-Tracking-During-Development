@@ -45,9 +45,9 @@ class Dataset:
         self.track_id = _assign_track_ids(nodes.index, edges)
 
         merged = edges.merge(
-            nodes[["t", "x", "y"]], left_on="source_id", right_index=True
+            nodes[["t", "x", "y", "z"]], left_on="source_id", right_index=True
         ).merge(
-            nodes[["t", "x", "y"]], left_on="target_id", right_index=True, suffixes=("_s", "_t")
+            nodes[["t", "x", "y", "z"]], left_on="target_id", right_index=True, suffixes=("_s", "_t")
         )
         merged["track"] = self.track_id.reindex(merged.source_id).to_numpy()
         self.edges = merged
@@ -126,14 +126,39 @@ def volume_shape(name: str) -> tuple[int, ...] | None:
         return None
 
 
+def voxel_scale(name: str) -> tuple[float, float, float] | None:
+    """(z, y, x) physical size of one voxel, from the OME-Zarr multiscale
+    transform, so the frontend can render an anisotropic volume (z spacing
+    is usually much coarser than x/y) without looking squashed in 3D."""
+    try:
+        group = _zarr_group(name)
+    except DatasetNotFound:
+        return None
+    try:
+        scale = group.attrs["multiscales"][0]["datasets"][0]["coordinateTransformations"][0]["scale"]
+        return tuple(float(s) for s in scale[-3:])
+    except (KeyError, IndexError, TypeError):
+        return None
+
+
+# Max-intensity projections along each axis, keyed by the axes that remain
+# after projecting: "xy" (project out z, the default top-down view), "xz"
+# (project out y) and "yz" (project out x). Combined, these give three
+# orthogonal viewing angles on the same frame.
+_PROJECTION_AXES = {"xy": 0, "xz": 1, "yz": 2}
+
+
 @lru_cache(maxsize=512)
-def frame_png(name: str, t: int) -> bytes:
+def frame_png(name: str, t: int, view: str = "xy") -> bytes:
+    if view not in _PROJECTION_AXES:
+        raise ValueError(f"unknown view {view!r}, expected one of {sorted(_PROJECTION_AXES)}")
+
     group = _zarr_group(name)
     arr = group["0"]
     if not (0 <= t < arr.shape[0]):
         raise FrameOutOfRange(f"t={t} out of range for {name} (0..{arr.shape[0] - 1})")
 
-    mip = np.asarray(arr[t]).max(axis=0)
+    mip = np.asarray(arr[t]).max(axis=_PROJECTION_AXES[view])
 
     quantiles = group.attrs.get("image_statistics", {}).get("quantiles", {})
     lo = float(quantiles.get("0.01", mip.min()))
