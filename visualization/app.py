@@ -55,6 +55,20 @@ def list_datasets():
     return out
 
 
+@app.get("/api/metrics")
+def metrics_all():
+    """Every sample plus the leaderboard-style aggregate over all of them."""
+    return data.evaluate_all()
+
+
+@app.get("/api/metrics/{dataset}")
+def metrics_for(dataset: str):
+    try:
+        return data.evaluate(dataset)
+    except (data.DatasetNotFound, data.GroundTruthNotFound) as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
 @app.get("/api/frame/{dataset}/{t}.png")
 def frame_png(dataset: str, t: int, view: str = Query(default="xy", pattern="^(xy|xz|yz)$")):
     try:

@@ -41,7 +41,43 @@
   #clearSelection { display: none; padding: 4px 10px; font-size: 12px; }
   canvas { cursor: grab; touch-action: none; }
   canvas:active { cursor: grabbing; }
+  /* Score card for the dataset on screen. Fixed to the top-right corner, and
+     collapsed to a small chip by default so it never covers the panels. */
+  .metrics {
+    position: fixed; top: 12px; right: 12px; z-index: 10;
+    display: flex; flex-direction: column; align-items: flex-end; gap: 6px;
+    font-size: 12px; color: #8b93a7; line-height: 1.45;
+  }
+  .metrics-toggle {
+    padding: 4px 9px; font-size: 12px; font-variant-numeric: tabular-nums;
+    background: #121623; border-color: #2c3140;
+  }
+  .metrics-body {
+    width: 258px; background: #121623; border: 1px solid #232838;
+    border-radius: 8px; padding: 10px 12px;
+  }
+  .metrics.collapsed .metrics-body { display: none; }
+  .metrics .row { display: flex; justify-content: space-between; gap: 10px; }
+  .metrics .row span:last-child { color: #cfd6e6; font-variant-numeric: tabular-nums; }
+  .metrics .score span:last-child { color: #9fb4ff; font-size: 15px; font-weight: 600; }
+  .metrics .head { color: #cfd6e6; margin-top: 6px; }
+  .metrics .sub { padding-left: 8px; font-size: 11px; color: #6f7789; }
+  .metrics hr { border: 0; border-top: 1px solid #232838; margin: 8px 0; }
+  .metrics .note { font-size: 11px; color: #6f7789; }
+  /* Shortcuts to the frames the score is actually being lost in. */
+  .metrics .frames { display: flex; flex-wrap: wrap; gap: 4px; padding-left: 8px; margin-top: 4px; }
+  .metrics .frames button {
+    padding: 1px 6px; font-size: 11px; border-radius: 4px; color: #9fb4ff;
+    background: #171c2c; font-variant-numeric: tabular-nums;
+  }
 </style>
+
+<div class="metrics collapsed" id="metrics">
+  <button id="metricsToggle" class="metrics-toggle" title="Score vs ground truth (m)">
+    📊 <span id="metricsChip">…</span>
+  </button>
+  <div id="metricsBody" class="metrics-body"></div>
+</div>
 
 <h1>Biohub Tracking Viewer</h1>
 
@@ -106,7 +142,7 @@
   Trails fade with age. Click a point to highlight just its track and dim the
   rest — handy when there are too many points to read at once. Scroll to zoom
   in on a panel, drag to pan, double-click to reset the view. Use ←/→ to step,
-  space to play.
+  space to play, m to open the score card.
 </div>
 
 <script>
@@ -123,6 +159,10 @@ const playBtn = document.getElementById("play");
 const pointSizeInput = document.getElementById("pointSize");
 const pointOpacityInput = document.getElementById("pointOpacity");
 const clearSelectionBtn = document.getElementById("clearSelection");
+const metricsCard = document.getElementById("metrics");
+const metricsBody = document.getElementById("metricsBody");
+const metricsChip = document.getElementById("metricsChip");
+const metricsToggle = document.getElementById("metricsToggle");
 
 const MAX_MAIN_PX = 550;
 const MAX_SIDE_PX = 550;
@@ -371,6 +411,84 @@ function togglePlay() {
   }, 220);
 }
 
+// --- score card -----------------------------------------------------------
+// Scored server-side against labels_geff/{dataset}.geff and cached there, so
+// re-selecting a dataset is instant.
+let overall = null;
+let lastMetrics = null;
+let metricsToken = 0;
+
+const num = (v) => (v === null || v === undefined ? "—" : v.toFixed(4));
+const pct = (v) => (v === null || v === undefined ? "—" : (100 * v).toFixed(1) + "%");
+
+function overallHtml() {
+  if (!overall) return "";
+  const o = overall.overall, e = o.edge_totals;
+  return `<hr>
+    <div class="row head"><span>All ${o.n_samples} samples</span><span>${num(o.score)}</span></div>
+    <div class="row sub"><span>TP / FP / FN</span><span>${e.tp} / ${e.fp} / ${e.fn}</span></div>`;
+}
+
+function renderMetrics() {
+  const m = lastMetrics;
+  if (m && !m.error) {
+    metricsChip.textContent = num(m.score);
+  } else {
+    metricsChip.textContent = m ? "n/a" : "…";
+  }
+  if (!m) { metricsBody.innerHTML = `<div class="note">computing…</div>` + overallHtml(); return; }
+  if (m.error) { metricsBody.innerHTML = `<div class="note">${m.error}</div>` + overallHtml(); return; }
+  const e = m.edge, miss = e.missed;
+  metricsBody.innerHTML = `
+    <div class="row score"><span>Score</span><span>${num(m.score)}</span></div>
+    <div class="row head"><span>Adjusted edge J</span><span>${num(m.adjusted_edge_jaccard)}</span></div>
+    <div class="row sub"><span>TP / FP / FN</span><span>${e.tp} / ${e.fp} / ${e.fn}</span></div>
+    <div class="row sub"><span>precision / recall</span>
+      <span>${pct(e.precision)} / ${pct(e.recall)}</span></div>
+    <div class="row head"><span>Detected GT cells</span><span>${pct(m.detection_recall)}</span></div>
+    <div class="row sub"><span>matched / GT nodes</span>
+      <span>${m.n_matched_nodes} / ${m.n_gt_nodes}</span></div>
+    <div class="row sub"><span>node penalty</span><span>${num(m.node_penalty)}</span></div>
+    <div class="row head"><span>Missed GT links</span><span>${e.fn}</span></div>
+    <div class="row sub"><span>never detected</span><span>${miss.no_detection}</span></div>
+    <div class="row sub"><span>linked to another cell</span><span>${miss.wrong_link}</span></div>
+    <div class="row sub"><span>track just stops</span><span>${miss.broken_link}</span></div>
+    ${worstFramesHtml(m.worst_frames)}
+    ${overallHtml()}`;
+  for (const b of metricsBody.querySelectorAll(".frames button")) {
+    b.onclick = () => { stopPlaying(); setFrame(parseInt(b.dataset.t, 10)); };
+  }
+}
+
+function worstFramesHtml(frames) {
+  if (!frames || !frames.length) return "";
+  const chips = frames.map(f =>
+    `<button data-t="${f.t}" title="${f.fp} FP / ${f.fn} FN">t=${f.t}</button>`).join("");
+  return `<div class="row head"><span>Worst frames</span><span></span></div>
+    <div class="frames">${chips}</div>`;
+}
+
+function setMetricsOpen(open) {
+  metricsCard.classList.toggle("collapsed", !open);
+  localStorage.setItem("metricsOpen", open ? "1" : "0");
+}
+
+async function loadMetrics(name) {
+  const token = ++metricsToken;
+  lastMetrics = null;
+  renderMetrics();
+  let m;
+  try {
+    const r = await fetch(`/api/metrics/${name}`);
+    m = r.ok ? await r.json() : { error: "no ground truth for this dataset" };
+  } catch (err) {
+    m = { error: "scoring failed" };
+  }
+  if (token !== metricsToken) return;
+  lastMetrics = m;
+  renderMetrics();
+}
+
 async function selectDataset(name) {
   stopPlaying();
   current = datasets.find(d => d.name === name);
@@ -380,6 +498,7 @@ async function selectDataset(name) {
   tMaxEl.textContent = current.t_max;
   statTracks.textContent = current.n_tracks;
   statShape.textContent = current.shape ? current.shape.join(" × ") : "n/a (no .zarr found)";
+  loadMetrics(name);
   setFrame(0);
 }
 
@@ -392,6 +511,8 @@ datasetSel.onchange = () => selectDataset(datasetSel.value);
 pointSizeInput.oninput = () => { pointSize = parseFloat(pointSizeInput.value); redrawAll(); };
 pointOpacityInput.oninput = () => { pointOpacity = parseInt(pointOpacityInput.value, 10) / 100; redrawAll(); };
 clearSelectionBtn.onclick = () => setSelectedTrack(null);
+metricsToggle.onclick = () => setMetricsOpen(metricsCard.classList.contains("collapsed"));
+setMetricsOpen(localStorage.getItem("metricsOpen") === "1");
 
 window.addEventListener("keydown", (e) => {
   if (e.target.tagName === "SELECT" || e.target.tagName === "INPUT") return;
@@ -399,6 +520,7 @@ window.addEventListener("keydown", (e) => {
   else if (e.code === "ArrowLeft") { stopPlaying(); setFrame(t - 1); }
   else if (e.code === "Space") { e.preventDefault(); togglePlay(); }
   else if (e.code === "Escape") { setSelectedTrack(null); }
+  else if (e.code === "KeyM") { setMetricsOpen(metricsCard.classList.contains("collapsed")); }
 });
 
 (async function init() {
@@ -412,5 +534,11 @@ window.addEventListener("keydown", (e) => {
   if (datasets.length) {
     await selectDataset(datasets[0].name);
   }
+  // Whole-split aggregate: scored in the background so the first frame is not
+  // held up by the datasets that are not on screen yet.
+  fetch("/api/metrics")
+    .then(r => r.ok ? r.json() : null)
+    .then(o => { if (o) { overall = o; renderMetrics(); } })
+    .catch(() => {});
 })();
 </script>

@@ -16,8 +16,11 @@ import pandas as pd
 import zarr
 from PIL import Image
 
+from . import metrics
+
 SUBMISSION_CSV = Path(os.environ.get("BIOHUB_SUBMISSION_CSV", "submission.csv"))
 RESULTS_DIR = Path(os.environ.get("BIOHUB_RESULTS_DIR", "results"))
+LABELS_DIR = Path(os.environ.get("BIOHUB_LABELS_DIR", "labels_geff"))
 
 
 class DatasetNotFound(KeyError):
@@ -25,6 +28,10 @@ class DatasetNotFound(KeyError):
 
 
 class FrameOutOfRange(IndexError):
+    pass
+
+
+class GroundTruthNotFound(KeyError):
     pass
 
 
@@ -109,6 +116,64 @@ def get_dataset(name: str) -> Dataset:
     if df.empty:
         raise DatasetNotFound(name)
     return Dataset(name, df)
+
+
+@lru_cache(maxsize=8)
+def _pred_graph(name: str) -> metrics.TrackGraph:
+    ds = get_dataset(name)
+    nodes = ds.nodes
+    edges = ds.edges[["source_id", "target_id"]].to_numpy()
+    return metrics.build_graph(
+        nodes.index.to_numpy(), nodes.t.to_numpy(),
+        nodes.z.to_numpy(), nodes.y.to_numpy(), nodes.x.to_numpy(),
+        edges,
+    )
+
+
+@lru_cache(maxsize=8)
+def _gt_graph(name: str) -> tuple[metrics.TrackGraph, int | None]:
+    """Ground-truth lineages for one dataset, read straight from its .geff.
+
+    Returns the graph plus the organisers' coarse estimate of the *total*
+    number of true nodes (the annotations themselves are sparse), which the
+    edge metric needs for its over-prediction penalty.
+    """
+    path = LABELS_DIR / f"{name}.geff"
+    if not path.exists():
+        raise GroundTruthNotFound(f"no ground truth for {name!r} at {path}")
+
+    group = zarr.open_group(str(path), mode="r")
+    nodes, edges = group["nodes"], group["edges"]
+    props = nodes["props"]
+    graph = metrics.build_graph(
+        np.asarray(nodes["ids"][:]).astype(np.int64),
+        np.asarray(props["t"]["values"][:]),
+        np.asarray(props["z"]["values"][:]),
+        np.asarray(props["y"]["values"][:]),
+        np.asarray(props["x"]["values"][:]),
+        np.asarray(edges["ids"][:]).astype(np.int64),
+    )
+    extra = group.attrs.get("geff", {}).get("extra") or {}
+    estimated = extra.get("estimated_number_of_nodes")
+    return graph, int(estimated) if estimated else None
+
+
+@lru_cache(maxsize=8)
+def evaluate(name: str) -> dict:
+    """Score the prediction for one dataset against its ground truth."""
+    gt, estimated = _gt_graph(name)
+    return metrics.evaluate(_pred_graph(name), gt, estimated)
+
+
+def evaluate_all() -> dict:
+    """Per-sample scores plus the leaderboard-style aggregate over all of them."""
+    per_sample = {}
+    for name in dataset_names():
+        try:
+            per_sample[name] = evaluate(name)
+        except (GroundTruthNotFound, DatasetNotFound):
+            continue
+    return {"samples": per_sample, "overall": metrics.aggregate(per_sample)}
 
 
 @lru_cache(maxsize=8)
