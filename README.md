@@ -1,23 +1,4 @@
-# Biohub Cell Tracking Team
-
-Reproducible code for the Biohub Cell Tracking During Development competition.
-
-## Repository layout
-
-- `notebooks/` — Kaggle inference notebooks.
-- `scripts/` — proposal export and learned motion-cost training.
-- `validation/` — local metrics and run-comparison utilities (validation branch).
-- `visualization/` — prediction/GT visualization utilities (validation branch).
-- `docs/` — workflow and experiment notes.
-
-## Current stable pipeline
-
-The `main` branch contains the A+B true ensemble with registration-aware
-post-processing and a learned residual cost inside the sequential Hungarian
-motion relinker.
-
-Model checkpoints and competition data are intentionally excluded. See
-`models/README.md` for the expected external artifacts.
+# Biohub Cell Tracking Vizualization
 
 ## Visualizing predictions
 
@@ -41,6 +22,7 @@ tracks on the Z-max-intensity projection of the matching `.zarr` volume.
 4. Open `http://localhost:8000` and pick a dataset. Each color is a stable
    lineage id, so a sudden color change on a trailing line usually means an
    identity swap. See `docs/VALIDATION.md` for more on what to look for.
+<<<<<<< HEAD
 
 ### Score card
 
@@ -101,3 +83,5 @@ variables documented in the notebook.
 Use `main` for submission-ready code. Visualization and local-validation work
 lives on the `validation-visualization` branch and should be merged only after
 it is reproducible and does not change inference behavior.
+=======
+>>>>>>> 4094e2dac3aaf57d048d574142e9d164ae791d27
