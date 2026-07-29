@@ -1,0 +1,63 @@
+{
+  "attributes": {
+    "multiscales": [
+      {
+        "version": "0.5",
+        "axes": [
+          {
+            "name": "T",
+            "type": "time",
+            "unit": "second"
+          },
+          {
+            "name": "Z",
+            "type": "space",
+            "unit": "micrometer"
+          },
+          {
+            "name": "Y",
+            "type": "space",
+            "unit": "micrometer"
+          },
+          {
+            "name": "X",
+            "type": "space",
+            "unit": "micrometer"
+          }
+        ],
+        "datasets": [
+          {
+            "path": "0",
+            "coordinateTransformations": [
+              {
+                "type": "scale",
+                "scale": [
+                  1.0,
+                  1.625,
+                  0.40625,
+                  0.40625
+                ]
+              }
+            ]
+          }
+        ],
+        "name": "0"
+      }
+    ],
+    "image_statistics": {
+      "quantiles": {
+        "0.0": 83.0,
+        "0.001": 110.0,
+        "0.01": 158.0,
+        "0.1": 349.0,
+        "0.9": 1597.0,
+        "0.99": 2307.0,
+        "0.999": 3511.0,
+        "1.0": 5665.0
+      }
+    }
+  },
+  "zarr_format": 3,
+  "consolidated_metadata": null,
+  "node_type": "group"
+}
