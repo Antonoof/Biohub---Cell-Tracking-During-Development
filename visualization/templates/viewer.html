@@ -6,15 +6,16 @@
   * { box-sizing: border-box; }
   body {
     margin: 0; min-height: 100vh; display: flex; flex-direction: column; align-items: center;
-    gap: 12px; padding: 16px; background: #0b0d12; color: #e6e8ee;
+    gap: 10px; padding: 10px; background: #0b0d12; color: #e6e8ee;
     font: 14px/1.4 -apple-system, "Segoe UI", system-ui, sans-serif;
   }
   h1 { font-size: 16px; font-weight: 600; margin: 0; color: #9fb4ff; }
   .bar { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; justify-content: center; }
-  select, button {
+  select, button, input[type=text] {
     background: #1a1e29; color: #e6e8ee; border: 1px solid #2c3140; border-radius: 6px;
     padding: 6px 10px; font-size: 13px; cursor: pointer;
   }
+  input[type=text] { cursor: text; }
   button:hover, select:hover { border-color: #4a5578; }
   button:active { transform: translateY(1px); }
   button.primary { background: #3355ee; border-color: #3355ee; color: white; }
@@ -24,7 +25,6 @@
     overflow: hidden; line-height: 0;
   }
   canvas { display: block; image-rendering: -webkit-optimize-contrast; }
-  .stages { display: flex; gap: 14px; align-items: flex-start; justify-content: center; flex-wrap: wrap; }
   .panel { display: flex; flex-direction: column; align-items: center; gap: 6px; }
   .panel-label { font-size: 11px; color: #8b93a7; letter-spacing: .02em; }
   .frame-row { display: flex; align-items: center; gap: 10px; width: 100%; max-width: 720px; }
@@ -32,7 +32,13 @@
   .frame-label { font-variant-numeric: tabular-nums; min-width: 68px; text-align: center; }
   .stats { font-size: 12px; color: #8b93a7; display: flex; gap: 16px; flex-wrap: wrap; justify-content: center; }
   .stats b { color: #cfd6e6; }
-  .legend { font-size: 12px; color: #8b93a7; text-align: center; max-width: 640px; }
+  .legend { font-size: 12px; color: #8b93a7; text-align: center; max-width: min(1100px, 100%); }
+  /* Comparing needs every pixel of height for the second row of panels: the
+     title, the legend and the stats row all say nothing the per-submission
+     headers do not, so they step aside and the six panels get their height. */
+  body.compare h1, body.compare .legend, body.compare .stats { display: none; }
+  body.compare .bar, body.compare .point-row { gap: 12px; }
+  body.compare .point-row { padding: 0; }
   .tail-row { display: flex; align-items: center; gap: 8px; }
   .point-row { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; justify-content: center; font-size: 12px; color: #8b93a7; }
   .point-row .field { display: flex; align-items: center; gap: 6px; }
@@ -41,8 +47,32 @@
   #clearSelection { display: none; padding: 4px 10px; font-size: 12px; }
   canvas { cursor: grab; touch-action: none; }
   canvas:active { cursor: grabbing; }
-  /* Score card for the dataset on screen. Fixed to the top-right corner, and
-     collapsed to a small chip by default so it never covers the panels. */
+
+  /* One row of three projections per submission, stacked: comparing puts the
+     six panels in a 3x2 grid, the same projection above one another. */
+  #stages { display: flex; flex-direction: column; gap: 10px; align-items: center; width: 100%; }
+  .instance { display: flex; flex-direction: column; align-items: center; gap: 4px; width: 100%; }
+  /* The bottom row sits directly under its counterpart, column for column, so
+     repeating the projection labels only costs the panels height. */
+  body.compare #stages { gap: 6px; }
+  body.compare .instance:not(:first-child) .panel-label { display: none; }
+  .stages-row { display: flex; gap: 8px; align-items: flex-start; justify-content: center; flex-wrap: wrap; }
+  .instance-head {
+    display: flex; align-items: center; gap: 8px; font-size: 12px; color: #8b93a7;
+    max-width: 100%; padding: 2px 0;
+  }
+  .instance-head .tag {
+    background: #1d2436; color: #9fb4ff; border-radius: 4px; padding: 1px 7px;
+    font-weight: 600; font-size: 11px;
+  }
+  .instance-head .name { color: #cfd6e6; }
+  .instance-head .inst-stat { font-variant-numeric: tabular-nums; }
+  .instance-head .missing { color: #e2915f; }
+
+  /* Fixed corners: actions top-left, score card top-right. */
+  .toolbar { position: fixed; top: 12px; left: 12px; z-index: 10; display: flex; gap: 8px; }
+  .toolbar button { padding: 5px 11px; background: #121623; }
+  .toolbar button.active { border-color: #3355ee; color: #9fb4ff; }
   .metrics {
     position: fixed; top: 12px; right: 12px; z-index: 10;
     display: flex; flex-direction: column; align-items: flex-end; gap: 6px;
@@ -53,24 +83,77 @@
     background: #121623; border-color: #2c3140;
   }
   .metrics-body {
-    width: 258px; background: #121623; border: 1px solid #232838;
+    width: 268px; background: #121623; border: 1px solid #232838;
     border-radius: 8px; padding: 10px 12px;
+    max-height: calc(100vh - 60px); overflow-y: auto;
   }
+  /* Compare shows A, B and the delta on one line, so the card needs the room. */
+  body.compare .metrics-body { width: 340px; }
   .metrics.collapsed .metrics-body { display: none; }
-  .metrics .row { display: flex; justify-content: space-between; gap: 10px; }
-  .metrics .row span:last-child { color: #cfd6e6; font-variant-numeric: tabular-nums; }
-  .metrics .score span:last-child { color: #9fb4ff; font-size: 15px; font-weight: 600; }
+
+  /* One grid per row keeps the A/B/delta columns aligned down the whole card. */
+  .metrics .row {
+    display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: baseline;
+  }
+  body.compare .metrics .row { grid-template-columns: 1fr 52px 52px 50px; gap: 6px; }
+  .metrics .row > span { color: #cfd6e6; font-variant-numeric: tabular-nums; text-align: right; }
+  .metrics .row > span:first-child { color: inherit; text-align: left; }
+  .metrics .score > span:not(:first-child) { color: #9fb4ff; font-size: 15px; font-weight: 600; }
+  body.compare .metrics .score > span:not(:first-child) { font-size: 13px; }
   .metrics .head { color: #cfd6e6; margin-top: 6px; }
   .metrics .sub { padding-left: 8px; font-size: 11px; color: #6f7789; }
+  .metrics .cols { color: #6f7789; font-size: 11px; margin-top: 2px; }
+  .metrics .cols > span:not(:first-child) { color: #9fb4ff; font-weight: 600; }
+  .metrics .up { color: #6fd08c; }
+  .metrics .down { color: #e2915f; }
+  .metrics .flat { color: #6f7789; }
   .metrics hr { border: 0; border-top: 1px solid #232838; margin: 8px 0; }
   .metrics .note { font-size: 11px; color: #6f7789; }
-  /* Shortcuts to the frames the score is actually being lost in. */
-  .metrics .frames { display: flex; flex-wrap: wrap; gap: 4px; padding-left: 8px; margin-top: 4px; }
-  .metrics .frames button {
+  .metrics .chips { display: flex; flex-wrap: wrap; gap: 4px; padding-left: 8px; margin-top: 4px; }
+  .metrics .chips .tagged { font-size: 11px; color: #9fb4ff; font-weight: 600; align-self: center; }
+  .metrics .chips button {
     padding: 1px 6px; font-size: 11px; border-radius: 4px; color: #9fb4ff;
     background: #171c2c; font-variant-numeric: tabular-nums;
   }
+  .metrics .chips button.miss { color: #e2915f; border-color: #4a3423; }
+  .metrics .chips button.hit { color: #6fd08c; border-color: #24452f; }
+
+  /* Save / compare dialogs. */
+  .modal-backdrop {
+    position: fixed; inset: 0; z-index: 20; background: rgba(5, 7, 12, .72);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .modal-backdrop[hidden] { display: none; }
+  .modal {
+    width: min(440px, calc(100vw - 32px)); background: #121623; border: 1px solid #2c3140;
+    border-radius: 10px; padding: 16px 18px; display: flex; flex-direction: column; gap: 10px;
+  }
+  .modal h2 { margin: 0; font-size: 15px; font-weight: 600; color: #9fb4ff; }
+  .modal .hint { margin: 0; font-size: 12px; color: #8b93a7; }
+  .modal input[type=text] { width: 100%; padding: 8px 10px; font-size: 13px; }
+  .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+  .modal-actions .left { margin-right: auto; }
+  .modal-msg { font-size: 12px; min-height: 16px; color: #e2915f; }
+  .modal-msg.ok { color: #6fd08c; }
+  .file-list {
+    display: flex; flex-direction: column; gap: 4px; max-height: 260px; overflow-y: auto;
+    border: 1px solid #232838; border-radius: 8px; padding: 6px;
+  }
+  .file-list .file {
+    display: flex; justify-content: space-between; gap: 10px; align-items: center;
+    padding: 6px 9px; border-radius: 6px; cursor: pointer; font-size: 13px;
+    border: 1px solid transparent;
+  }
+  .file-list .file:hover { background: #171c2c; }
+  .file-list .file.selected { background: #1b2440; border-color: #3355ee; color: #cfd6e6; }
+  .file-list .meta { font-size: 11px; color: #6f7789; font-variant-numeric: tabular-nums; }
+  .file-list .empty { padding: 10px; font-size: 12px; color: #6f7789; text-align: center; }
 </style>
+
+<div class="toolbar">
+  <button id="saveBtn" title="Save this submission into save_files/ (s)">💾 Save</button>
+  <button id="compareBtn" title="Compare with a saved submission (c)">⇄ Compare</button>
+</div>
 
 <div class="metrics collapsed" id="metrics">
   <button id="metricsToggle" class="metrics-toggle" title="Score vs ground truth (m)">
@@ -92,20 +175,7 @@
   </div>
 </div>
 
-<div class="stages">
-  <div class="panel">
-    <div class="panel-label">XY &mdash; top-down</div>
-    <div class="stage"><canvas id="canvasXY"></canvas></div>
-  </div>
-  <div class="panel">
-    <div class="panel-label">XZ &mdash; front</div>
-    <div class="stage"><canvas id="canvasXZ"></canvas></div>
-  </div>
-  <div class="panel">
-    <div class="panel-label">YZ &mdash; side</div>
-    <div class="stage"><canvas id="canvasYZ"></canvas></div>
-  </div>
-</div>
+<div id="stages"></div>
 
 <div class="point-row">
   <div class="field">
@@ -138,15 +208,50 @@
   a sudden color change on a trailing line usually means an identity swap.
   The three panels are synchronized max-intensity projections of the same
   frame along each axis, scaled to physical size, so a track that looks fine
-  from the top can still be checked from the front and the side.
+  from the top can still be checked from the front and the side. Comparing
+  adds a second row of three: the same projections of the other submission,
+  directly below their counterparts.
   Trails fade with age. Click a point to highlight just its track and dim the
-  rest — handy when there are too many points to read at once. Scroll to zoom
-  in on a panel, drag to pan, double-click to reset the view. Use ←/→ to step,
-  space to play, m to open the score card.
+  rest. Scroll to zoom in on a panel, drag to pan, double-click to reset the
+  view — zoom and pan stay in step across every panel of the same projection,
+  including both rows of a comparison. In the score card, the orange/green
+  chips under “GT divisions” jump to the frame of an annotated division and say
+  why it was or was not recovered. Use ←/→ to step, space to play,
+  m for the score card, s to save, c to compare.
+</div>
+
+<div class="modal-backdrop" id="saveModal" hidden>
+  <div class="modal">
+    <h2>Save submission</h2>
+    <p class="hint">Copies <b id="saveSource">submission.csv</b> into <code>save_files/</code>
+      so it can be compared against later runs.</p>
+    <input type="text" id="saveName" placeholder="name for the .csv (e.g. run-with-gap-closing)" autocomplete="off" spellcheck="false">
+    <div class="modal-msg" id="saveMsg"></div>
+    <div class="modal-actions">
+      <button id="saveCancel">Cancel</button>
+      <button id="saveConfirm" class="primary">Save</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="compareModal" hidden>
+  <div class="modal">
+    <h2>Compare submissions</h2>
+    <p class="hint">Panel <b>A</b> stays the submission you are viewing;
+      pick the one to show next to it as <b>B</b>.</p>
+    <div class="file-list" id="compareList"></div>
+    <div class="modal-msg" id="compareMsg"></div>
+    <div class="modal-actions">
+      <button id="compareExit" class="left">Exit compare</button>
+      <button id="compareCancel">Cancel</button>
+      <button id="compareConfirm" class="primary">Compare</button>
+    </div>
+  </div>
 </div>
 
 <script>
 const datasetSel = document.getElementById("dataset");
+const stagesRoot = document.getElementById("stages");
 const slider = document.getElementById("slider");
 const tLabel = document.getElementById("tLabel");
 const tMaxEl = document.getElementById("tMax");
@@ -163,9 +268,12 @@ const metricsCard = document.getElementById("metrics");
 const metricsBody = document.getElementById("metricsBody");
 const metricsChip = document.getElementById("metricsChip");
 const metricsToggle = document.getElementById("metricsToggle");
+const compareBtn = document.getElementById("compareBtn");
 
-const MAX_MAIN_PX = 550;
-const MAX_SIDE_PX = 550;
+const MAX_PANEL_PX = 640;
+// In compare a row may not shrink below this: two rows of tiny panels are
+// unreadable, and the page scrolling a little is the cheaper trade.
+const MIN_COMPARE_PX = 360;
 const MIN_ZOOM = 1;
 const MAX_ZOOM = 20;
 
@@ -173,51 +281,289 @@ const MAX_ZOOM = 20;
 const SHAPE_AXIS = { x: 3, y: 2, z: 1 };
 const VOXEL_AXIS = { x: 2, y: 1, z: 0 };
 
-const PANELS = [
-  { key: "xy", label: "XY", axisH: "x", axisV: "y", maxPx: MAX_MAIN_PX, sizeMul: 1.3, canvas: document.getElementById("canvasXY") },
-  { key: "xz", label: "XZ", axisH: "x", axisV: "z", maxPx: MAX_SIDE_PX, sizeMul: 0.55, canvas: document.getElementById("canvasXZ") },
-  { key: "yz", label: "YZ", axisH: "y", axisV: "z", maxPx: MAX_SIDE_PX, sizeMul: 0.55, canvas: document.getElementById("canvasYZ") },
+const VIEWS = [
+  { key: "xy", label: "XY — top-down", axisH: "x", axisV: "y", sizeMul: 1.3 },
+  { key: "xz", label: "XZ — front", axisH: "x", axisV: "z", sizeMul: 0.55 },
+  { key: "yz", label: "YZ — side", axisH: "y", axisV: "z", sizeMul: 0.55 },
 ];
-for (const p of PANELS) p.ctx = p.canvas.getContext("2d");
 
-let datasets = [];
-let current = null;
+// Zoom/pan is per projection, not per panel, so the same region stays framed
+// in both submissions while comparing them.
+const viewState = {};
+for (const v of VIEWS) viewState[v.key] = { zoom: 1, panX: 0, panY: 0 };
+
 let t = 0;
 let tail = parseInt(tailInput.value, 10);
 let playing = false;
 let playTimer = null;
 let requestToken = 0;
-let lastOverlay = null;
-let lastImgs = null;
 let pointSize = parseFloat(pointSizeInput.value);
 let pointOpacity = parseInt(pointOpacityInput.value, 10) / 100;
-let selectedTrack = null;
 const imgCache = new Map();
+
+function makeInstance(src, label, tag) {
+  return {
+    src, label, tag,
+    datasets: [], current: null,
+    overlay: null, imgs: null,
+    metrics: null, metricsToken: 0, overall: null,
+    selectedTrack: null,
+    panels: [], statEl: null,
+  };
+}
+
+// instances[0] is always the submission being examined; instances[1] only
+// exists while comparing.
+let instances = [makeInstance("", "submission.csv", "A")];
+const comparing = () => instances.length > 1;
 
 function trackColor(id) {
   const hue = (id * 137.508) % 360;
   return `hsl(${hue.toFixed(1)} 80% 60%)`;
 }
 
-function applyPanelSizes(shape, voxelScale) {
-  for (const p of PANELS) {
-    const hN = shape ? shape[SHAPE_AXIS[p.axisH]] : p.canvas.width || 256;
-    const vN = shape ? shape[SHAPE_AXIS[p.axisV]] : p.canvas.height || 256;
-    const hVoxel = voxelScale ? voxelScale[VOXEL_AXIS[p.axisH]] : 1;
-    const vVoxel = voxelScale ? voxelScale[VOXEL_AXIS[p.axisV]] : 1;
-    const physW = hN * hVoxel;
-    const physH = vN * vVoxel;
-    const k = p.maxPx / Math.max(physW, physH);
-    p.canvas.width = Math.max(1, Math.round(physW * k));
-    p.canvas.height = Math.max(1, Math.round(physH * k));
-    p.hScale = hVoxel * k;
-    p.vScale = vVoxel * k;
-    p.dotScale = (p.hScale + p.vScale) / 2;
-    p.zoom = 1;
-    p.panX = 0;
-    p.panY = 0;
+// --- layout ---------------------------------------------------------------
+
+function chromeHeight() {
+  // What the rest of the page actually occupies, measured rather than guessed:
+  // a guess that is too generous wastes panel size, one that is too tight makes
+  // the six compare panels overflow the window.
+  let h = 20;  // body padding
+  for (const el of document.body.children) {
+    // The toolbar, the score card and the modals are out of flow, and an
+    // element hidden in compare mode measures 0, so none of them cost height.
+    if (el === stagesRoot || el.classList.contains("toolbar") ||
+        el.classList.contains("metrics") || el.classList.contains("modal-backdrop")) continue;
+    if (!el.offsetHeight) continue;
+    h += el.offsetHeight + 10;  // + the body's flex gap
+  }
+  return h;
+}
+
+function panelMaxPx() {
+  const avail = Math.max(320, document.documentElement.clientWidth - 20);
+  const perPanel = (avail - (VIEWS.length - 1) * 8) / VIEWS.length;
+  // Every submission is one row of three projections, so comparing halves the
+  // height each row may take; each row also spends a little on its own header
+  // (the projection labels only exist on the first row while comparing).
+  const perRow = 10 + (comparing() ? 16 : 0);
+  const byHeight = (window.innerHeight - chromeHeight()) / instances.length - perRow;
+  const floor = comparing() ? MIN_COMPARE_PX : 170;
+  return Math.max(floor, Math.min(MAX_PANEL_PX, perPanel, byHeight));
+}
+
+function buildStages() {
+  stagesRoot.innerHTML = "";
+  // Set before the panels are measured: it changes what else is on the page.
+  document.body.classList.toggle("compare", comparing());
+  for (const inst of instances) {
+    const block = document.createElement("div");
+    block.className = "instance";
+
+    const head = document.createElement("div");
+    head.className = "instance-head";
+    head.innerHTML =
+      `<span class="tag">${inst.tag}</span><span class="name"></span><span class="inst-stat"></span>`;
+    head.querySelector(".name").textContent = inst.label;
+    if (!comparing()) head.style.display = "none";
+    inst.statEl = head.querySelector(".inst-stat");
+    block.appendChild(head);
+
+    const row = document.createElement("div");
+    row.className = "stages-row";
+    inst.panels = [];
+    for (const v of VIEWS) {
+      const panel = document.createElement("div");
+      panel.className = "panel";
+      const label = document.createElement("div");
+      label.className = "panel-label";
+      label.textContent = v.label;
+      const stage = document.createElement("div");
+      stage.className = "stage";
+      const canvas = document.createElement("canvas");
+      stage.appendChild(canvas);
+      panel.appendChild(label);
+      panel.appendChild(stage);
+      row.appendChild(panel);
+
+      const p = { ...v, canvas, ctx: canvas.getContext("2d"), inst };
+      attachPanelEvents(p);
+      inst.panels.push(p);
+    }
+    block.appendChild(row);
+    stagesRoot.appendChild(block);
+  }
+  applyPanelSizes();
+  redrawAll();
+}
+
+function applyPanelSizes() {
+  const maxPx = panelMaxPx();
+  // A submission that is missing this dataset still borrows its geometry, so
+  // the empty panels stay lined up with their counterparts in the other row.
+  const ref = instances.find(i => i.current) || null;
+  for (const inst of instances) {
+    const geom = inst.current || (ref && ref.current);
+    const shape = geom ? geom.shape : null;
+    const voxel = geom ? geom.voxel_scale : null;
+    for (const p of inst.panels) {
+      const hN = shape ? shape[SHAPE_AXIS[p.axisH]] : 256;
+      const vN = shape ? shape[SHAPE_AXIS[p.axisV]] : 256;
+      const hVoxel = voxel ? voxel[VOXEL_AXIS[p.axisH]] : 1;
+      const vVoxel = voxel ? voxel[VOXEL_AXIS[p.axisV]] : 1;
+      const physW = hN * hVoxel;
+      const physH = vN * vVoxel;
+      const k = maxPx / Math.max(physW, physH);
+      p.canvas.width = Math.max(1, Math.round(physW * k));
+      p.canvas.height = Math.max(1, Math.round(physH * k));
+      p.hScale = hVoxel * k;
+      p.vScale = vVoxel * k;
+      p.dotScale = (p.hScale + p.vScale) / 2;
+    }
   }
 }
+
+function resetViews() {
+  for (const v of VIEWS) viewState[v.key] = { zoom: 1, panX: 0, panY: 0 };
+}
+
+// --- drawing --------------------------------------------------------------
+
+function redrawAll() {
+  for (const inst of instances) for (const p of inst.panels) drawPanel(p);
+}
+
+function drawPanel(p) {
+  const inst = p.inst;
+  const st = viewState[p.key];
+  const ctx = p.ctx;
+  const w = p.canvas.width, h = p.canvas.height;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, w, h);
+  ctx.setTransform(st.zoom, 0, 0, st.zoom, st.panX, st.panY);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+
+  const img = inst.imgs ? inst.imgs[p.key] : null;
+  if (img && img.width) ctx.drawImage(img, 0, 0, w, h);
+
+  const overlay = inst.overlay;
+  if (overlay) {
+    const span = Math.max(t - overlay.tail_from, 1);
+    for (const e of overlay.edges) {
+      const dimmed = inst.selectedTrack !== null && e.track !== inst.selectedTrack;
+      const age = (t - e.t2) / span;
+      ctx.strokeStyle = trackColor(e.track);
+      ctx.globalAlpha = dimmed ? 0.06 : 0.85 - 0.65 * age;
+      ctx.lineWidth = (dimmed ? pointSize * 0.5 : pointSize * 0.9) * p.dotScale * p.sizeMul;
+      ctx.beginPath();
+      ctx.moveTo(e[p.axisH + "1"] * p.hScale, e[p.axisV + "1"] * p.vScale);
+      ctx.lineTo(e[p.axisH + "2"] * p.hScale, e[p.axisV + "2"] * p.vScale);
+      ctx.stroke();
+    }
+
+    for (const n of overlay.nodes) {
+      const dimmed = inst.selectedTrack !== null && n.track !== inst.selectedTrack;
+      const r = (dimmed ? pointSize * 0.7 : pointSize) * p.dotScale * p.sizeMul;
+      ctx.globalAlpha = dimmed ? pointOpacity * 0.15 : (inst.selectedTrack !== null ? 1 : pointOpacity);
+      ctx.beginPath();
+      ctx.arc(n[p.axisH] * p.hScale, n[p.axisV] * p.vScale, r, 0, Math.PI * 2);
+      ctx.fillStyle = trackColor(n.track);
+      ctx.fill();
+    }
+  }
+
+  ctx.globalAlpha = 1;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+}
+
+function pickNode(p, worldX, worldY) {
+  const overlay = p.inst.overlay;
+  if (!overlay) return null;
+  let best = null, bestDist = (10 * p.dotScale) / viewState[p.key].zoom;
+  for (const n of overlay.nodes) {
+    const dx = n[p.axisH] * p.hScale - worldX;
+    const dy = n[p.axisV] * p.vScale - worldY;
+    const d = Math.hypot(dx, dy);
+    if (d < bestDist) { bestDist = d; best = n; }
+  }
+  return best;
+}
+
+function setSelectedTrack(inst, trackId) {
+  inst.selectedTrack = trackId;
+  clearSelectionBtn.style.display =
+    instances.some(i => i.selectedTrack !== null) ? "" : "none";
+  redrawAll();
+}
+
+function clampPan(p) {
+  const st = viewState[p.key];
+  const minX = p.canvas.width * (1 - st.zoom);
+  const minY = p.canvas.height * (1 - st.zoom);
+  st.panX = Math.min(0, Math.max(minX, st.panX));
+  st.panY = Math.min(0, Math.max(minY, st.panY));
+}
+
+function attachPanelEvents(p) {
+  let dragging = false, moved = false, start = null;
+
+  p.canvas.addEventListener("pointerdown", (e) => {
+    const st = viewState[p.key];
+    dragging = true;
+    moved = false;
+    start = { x: e.clientX, y: e.clientY, panX: st.panX, panY: st.panY };
+    p.canvas.setPointerCapture(e.pointerId);
+  });
+
+  p.canvas.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    const dx = e.clientX - start.x, dy = e.clientY - start.y;
+    if (Math.hypot(dx, dy) > 3) moved = true;
+    if (!moved) return;
+    const st = viewState[p.key];
+    const rect = p.canvas.getBoundingClientRect();
+    st.panX = start.panX + dx * (p.canvas.width / rect.width);
+    st.panY = start.panY + dy * (p.canvas.height / rect.height);
+    clampPan(p);
+    redrawAll();
+  });
+
+  p.canvas.addEventListener("pointerup", (e) => {
+    dragging = false;
+    if (moved) return;
+    const st = viewState[p.key];
+    const rect = p.canvas.getBoundingClientRect();
+    const mx = (e.clientX - rect.left) * (p.canvas.width / rect.width);
+    const my = (e.clientY - rect.top) * (p.canvas.height / rect.height);
+    const hit = pickNode(p, (mx - st.panX) / st.zoom, (my - st.panY) / st.zoom);
+    setSelectedTrack(p.inst, hit ? hit.track : null);
+  });
+
+  p.canvas.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const st = viewState[p.key];
+    const rect = p.canvas.getBoundingClientRect();
+    const mx = (e.clientX - rect.left) * (p.canvas.width / rect.width);
+    const my = (e.clientY - rect.top) * (p.canvas.height / rect.height);
+    const newZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, st.zoom * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
+    const worldX = (mx - st.panX) / st.zoom;
+    const worldY = (my - st.panY) / st.zoom;
+    st.zoom = newZoom;
+    st.panX = mx - worldX * newZoom;
+    st.panY = my - worldY * newZoom;
+    clampPan(p);
+    redrawAll();
+  }, { passive: false });
+
+  p.canvas.addEventListener("dblclick", () => {
+    viewState[p.key] = { zoom: 1, panX: 0, panY: 0 };
+    redrawAll();
+  });
+}
+
+// --- frame loading --------------------------------------------------------
 
 function frameUrl(name, frame, view) {
   return `/api/frame/${name}/${frame}.png?view=${view}`;
@@ -231,164 +577,73 @@ function loadImage(name, frame, view) {
     img.src = frameUrl(name, frame, view);
     imgCache.set(key, img);
   }
-  return img.complete ? Promise.resolve(img) : new Promise((res) => { img.onload = () => res(img); img.onerror = () => res(img); });
+  return img.complete
+    ? Promise.resolve(img)
+    : new Promise((res) => { img.onload = () => res(img); img.onerror = () => res(img); });
 }
 
-function preload(name, frame) {
-  if (current === null || frame < 0 || frame > current.t_max) return;
-  for (const p of PANELS) {
-    const key = `${name}:${frame}:${p.key}`;
-    if (imgCache.has(key)) continue;
-    const img = new Image();
-    img.src = frameUrl(name, frame, p.key);
-    imgCache.set(key, img);
+function preload(frame) {
+  if (frame < 0) return;
+  for (const inst of instances) {
+    if (!inst.current || frame > inst.current.t_max) continue;
+    for (const v of VIEWS) {
+      const key = `${inst.current.name}:${frame}:${v.key}`;
+      if (imgCache.has(key)) continue;
+      const img = new Image();
+      img.src = frameUrl(inst.current.name, frame, v.key);
+      imgCache.set(key, img);
+    }
   }
 }
 
 async function loadFrame(frame) {
   const token = ++requestToken;
-  const name = current.name;
+  const views = VIEWS;
 
-  const imgsPromise = Promise.all(PANELS.map((p) => loadImage(name, frame, p.key)));
-  const overlayPromise = fetch(`/api/nodes/${name}/${frame}?tail=${tail}`).then((r) => r.json());
+  await Promise.all(instances.map(async (inst) => {
+    if (!inst.current) { inst.overlay = null; inst.imgs = null; return; }
+    const name = inst.current.name;
+    const imgsPromise = Promise.all(views.map(v => loadImage(name, frame, v.key)));
+    const overlayPromise = fetch(
+      `/api/nodes/${name}/${frame}?tail=${tail}&src=${encodeURIComponent(inst.src)}`
+    ).then(r => r.ok ? r.json() : null).catch(() => null);
 
-  const [imgs, overlay] = await Promise.all([imgsPromise, overlayPromise]);
+    const [imgs, overlay] = await Promise.all([imgsPromise, overlayPromise]);
+    if (token !== requestToken) return;
+    inst.imgs = {};
+    views.forEach((v, i) => { inst.imgs[v.key] = imgs[i]; });
+    inst.overlay = overlay;
+  }));
+
   if (token !== requestToken) return;
-
-  lastOverlay = overlay;
-  lastImgs = imgs;
-  statNodes.textContent = overlay.nodes.length;
+  updateStats();
   redrawAll();
-
-  preload(name, frame + 1);
-  preload(name, frame - 1);
+  preload(frame + 1);
+  preload(frame - 1);
 }
 
-function redrawAll() {
-  if (!lastOverlay || !lastImgs) return;
-  PANELS.forEach((p, i) => drawPanel(p, lastImgs[i], lastOverlay));
-}
-
-function drawPanel(p, img, overlay) {
-  const ctx = p.ctx;
-  const w = p.canvas.width, h = p.canvas.height;
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.fillStyle = "#000";
-  ctx.fillRect(0, 0, w, h);
-  ctx.setTransform(p.zoom, 0, 0, p.zoom, p.panX, p.panY);
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = "high";
-  if (img.width) ctx.drawImage(img, 0, 0, w, h);
-
-  const span = Math.max(t - overlay.tail_from, 1);
-  for (const e of overlay.edges) {
-    const dimmed = selectedTrack !== null && e.track !== selectedTrack;
-    const age = (t - e.t2) / span;
-    ctx.strokeStyle = trackColor(e.track);
-    ctx.globalAlpha = dimmed ? 0.06 : 0.85 - 0.65 * age;
-    ctx.lineWidth = (dimmed ? pointSize * 0.5 : pointSize * 0.9) * p.dotScale * p.sizeMul;
-    ctx.beginPath();
-    ctx.moveTo(e[p.axisH + "1"] * p.hScale, e[p.axisV + "1"] * p.vScale);
-    ctx.lineTo(e[p.axisH + "2"] * p.hScale, e[p.axisV + "2"] * p.vScale);
-    ctx.stroke();
+function updateStats() {
+  const a = instances[0];
+  statNodes.textContent = a.overlay ? a.overlay.nodes.length : 0;
+  statTracks.textContent = a.current ? a.current.n_tracks : 0;
+  statShape.textContent = a.current && a.current.shape
+    ? a.current.shape.join(" × ") : "n/a (no .zarr found)";
+  for (const inst of instances) {
+    if (!inst.statEl) continue;
+    if (!inst.current) {
+      inst.statEl.className = "inst-stat missing";
+      inst.statEl.textContent = "— dataset not in this submission";
+    } else {
+      inst.statEl.className = "inst-stat";
+      const n = inst.overlay ? inst.overlay.nodes.length : 0;
+      inst.statEl.textContent = `${n} nodes at t · ${inst.current.n_tracks} tracks`;
+    }
   }
-
-  for (const n of overlay.nodes) {
-    const dimmed = selectedTrack !== null && n.track !== selectedTrack;
-    const r = (dimmed ? pointSize * 0.7 : pointSize) * p.dotScale * p.sizeMul;
-    ctx.globalAlpha = dimmed ? pointOpacity * 0.15 : (selectedTrack !== null ? 1 : pointOpacity);
-    ctx.beginPath();
-    ctx.arc(n[p.axisH] * p.hScale, n[p.axisV] * p.vScale, r, 0, Math.PI * 2);
-    ctx.fillStyle = trackColor(n.track);
-    ctx.fill();
-  }
-
-  ctx.globalAlpha = 1;
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-}
-
-function pickNode(p, worldX, worldY) {
-  if (!lastOverlay) return null;
-  let best = null, bestDist = (10 * p.dotScale) / p.zoom;
-  for (const n of lastOverlay.nodes) {
-    const dx = n[p.axisH] * p.hScale - worldX;
-    const dy = n[p.axisV] * p.vScale - worldY;
-    const d = Math.hypot(dx, dy);
-    if (d < bestDist) { bestDist = d; best = n; }
-  }
-  return best;
-}
-
-function setSelectedTrack(trackId) {
-  selectedTrack = trackId;
-  clearSelectionBtn.style.display = trackId === null ? "none" : "";
-  redrawAll();
-}
-
-function clampPan(p) {
-  const minX = p.canvas.width * (1 - p.zoom);
-  const minY = p.canvas.height * (1 - p.zoom);
-  p.panX = Math.min(0, Math.max(minX, p.panX));
-  p.panY = Math.min(0, Math.max(minY, p.panY));
-}
-
-for (const p of PANELS) {
-  let dragging = false, moved = false, start = null;
-
-  p.canvas.addEventListener("pointerdown", (e) => {
-    dragging = true;
-    moved = false;
-    start = { x: e.clientX, y: e.clientY, panX: p.panX, panY: p.panY };
-    p.canvas.setPointerCapture(e.pointerId);
-  });
-
-  p.canvas.addEventListener("pointermove", (e) => {
-    if (!dragging) return;
-    const dx = e.clientX - start.x, dy = e.clientY - start.y;
-    if (Math.hypot(dx, dy) > 3) moved = true;
-    if (!moved) return;
-    const rect = p.canvas.getBoundingClientRect();
-    p.panX = start.panX + dx * (p.canvas.width / rect.width);
-    p.panY = start.panY + dy * (p.canvas.height / rect.height);
-    clampPan(p);
-    redrawAll();
-  });
-
-  p.canvas.addEventListener("pointerup", (e) => {
-    dragging = false;
-    if (moved) return;
-    const rect = p.canvas.getBoundingClientRect();
-    const mx = (e.clientX - rect.left) * (p.canvas.width / rect.width);
-    const my = (e.clientY - rect.top) * (p.canvas.height / rect.height);
-    const wx = (mx - p.panX) / p.zoom;
-    const wy = (my - p.panY) / p.zoom;
-    const hit = pickNode(p, wx, wy);
-    setSelectedTrack(hit ? hit.track : null);
-  });
-
-  p.canvas.addEventListener("wheel", (e) => {
-    e.preventDefault();
-    const rect = p.canvas.getBoundingClientRect();
-    const mx = (e.clientX - rect.left) * (p.canvas.width / rect.width);
-    const my = (e.clientY - rect.top) * (p.canvas.height / rect.height);
-    const newZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, p.zoom * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
-    const worldX = (mx - p.panX) / p.zoom;
-    const worldY = (my - p.panY) / p.zoom;
-    p.zoom = newZoom;
-    p.panX = mx - worldX * newZoom;
-    p.panY = my - worldY * newZoom;
-    clampPan(p);
-    redrawAll();
-  }, { passive: false });
-
-  p.canvas.addEventListener("dblclick", () => {
-    p.zoom = 1; p.panX = 0; p.panY = 0;
-    redrawAll();
-  });
 }
 
 function setFrame(frame) {
-  frame = Math.max(0, Math.min(current.t_max, frame));
+  const tMax = parseInt(slider.max, 10) || 0;
+  frame = Math.max(0, Math.min(tMax, frame));
   t = frame;
   slider.value = t;
   tLabel.textContent = t;
@@ -406,7 +661,7 @@ function togglePlay() {
   playing = true;
   playBtn.textContent = "⏸ Pause";
   playTimer = setInterval(() => {
-    if (t >= current.t_max) { stopPlaying(); return; }
+    if (t >= (parseInt(slider.max, 10) || 0)) { stopPlaying(); return; }
     setFrame(t + 1);
   }, 220);
 }
@@ -414,58 +669,167 @@ function togglePlay() {
 // --- score card -----------------------------------------------------------
 // Scored server-side against labels_geff/{dataset}.geff and cached there, so
 // re-selecting a dataset is instant.
-let overall = null;
-let lastMetrics = null;
-let metricsToken = 0;
 
 const num = (v) => (v === null || v === undefined ? "—" : v.toFixed(4));
 const pct = (v) => (v === null || v === undefined ? "—" : (100 * v).toFixed(1) + "%");
+const has = (v) => v !== null && v !== undefined;
+const esc = (s) => String(s).replace(/[&<>"]/g, c =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
-function overallHtml() {
-  if (!overall) return "";
-  const o = overall.overall, e = o.edge_totals;
-  return `<hr>
-    <div class="row head"><span>All ${o.n_samples} samples</span><span>${num(o.score)}</span></div>
-    <div class="row sub"><span>TP / FP / FN</span><span>${e.tp} / ${e.fp} / ${e.fn}</span></div>`;
+// Each row knows how to print itself (`v`) and, when the two submissions are
+// worth subtracting, which number to diff (`d`) and which direction is better
+// (`better`). That keeps the single and compare layouts one code path.
+const d4 = (v) => v.toFixed(4);
+const d0 = (v) => v.toFixed(0);
+
+const SAMPLE_ROWS = [
+  { cls: "score", label: "Score", v: m => num(m.score), d: m => m.score, better: 1, dfmt: d4 },
+  { cls: "head", label: "Adjusted edge J", v: m => num(m.adjusted_edge_jaccard),
+    d: m => m.adjusted_edge_jaccard, better: 1, dfmt: d4 },
+  { cls: "sub", label: "TP / FP / FN", v: m => `${m.edge.tp} / ${m.edge.fp} / ${m.edge.fn}` },
+  { cls: "sub", label: "precision / recall",
+    v: m => `${pct(m.edge.precision)} / ${pct(m.edge.recall)}` },
+  { cls: "head", label: "Division J", v: m => divJ(m.division),
+    d: m => m.division.jaccard, better: 1, dfmt: d4 },
+  { cls: "sub", label: "TP / FP / FN",
+    v: m => `${m.division.tp} / ${m.division.fp} / ${m.division.fn}` },
+  { cls: "sub", label: "GT divisions / forks",
+    v: m => `${m.division.n_gt_divisions} / ${m.division.n_pred_forks}` },
+  { cls: "head", label: "Detected GT cells", v: m => pct(m.detection_recall),
+    d: m => m.detection_recall, better: 1, dfmt: v => (100 * v).toFixed(1) },
+  { cls: "sub", label: "matched / GT nodes", v: m => `${m.n_matched_nodes} / ${m.n_gt_nodes}` },
+  { cls: "sub", label: "predicted nodes", v: m => String(m.n_pred_nodes) },
+  { cls: "sub", label: "node penalty", v: m => num(m.node_penalty),
+    d: m => m.node_penalty, better: 1, dfmt: d4 },
+  { cls: "head", label: "Missed GT links", v: m => String(m.edge.fn),
+    d: m => m.edge.fn, better: -1, dfmt: d0 },
+  { cls: "sub", label: "never detected", v: m => String(m.edge.missed.no_detection),
+    d: m => m.edge.missed.no_detection, better: -1, dfmt: d0 },
+  { cls: "sub", label: "linked to another cell", v: m => String(m.edge.missed.wrong_link),
+    d: m => m.edge.missed.wrong_link, better: -1, dfmt: d0 },
+  { cls: "sub", label: "track just stops", v: m => String(m.edge.missed.broken_link),
+    d: m => m.edge.missed.broken_link, better: -1, dfmt: d0 },
+];
+
+const OVERALL_ROWS = [
+  { cls: "head", label: "Score", v: o => num(o.score), d: o => o.score, better: 1, dfmt: d4 },
+  { cls: "sub", label: "adjusted edge J", v: o => num(o.adjusted_edge_jaccard),
+    d: o => o.adjusted_edge_jaccard, better: 1, dfmt: d4 },
+  { cls: "sub", label: "edge TP / FP / FN",
+    v: o => `${o.edge_totals.tp} / ${o.edge_totals.fp} / ${o.edge_totals.fn}` },
+  { cls: "sub", label: "division J", v: o => divJ(o.division),
+    d: o => o.division.jaccard, better: 1, dfmt: d4 },
+  { cls: "sub", label: "division TP / FP / FN",
+    v: o => `${o.division.tp} / ${o.division.fp} / ${o.division.fn}` },
+];
+
+// A sample with nothing to divide has a null Jaccard, which is not the same
+// result as getting every annotated division wrong.
+function divJ(d) {
+  return d.n_gt_divisions ? num(d.jaccard) : "n/a";
+}
+
+function deltaCell(spec, objs) {
+  if (!spec.d || objs.length < 2) return "";
+  const a = objs[0] && spec.d(objs[0]);
+  const b = objs[1] && spec.d(objs[1]);
+  if (!has(a) || !has(b)) return `<span class="flat">—</span>`;
+  const diff = b - a;
+  if (Math.abs(diff) < 1e-9) return `<span class="flat">±0</span>`;
+  const cls = diff * spec.better > 0 ? "up" : "down";
+  return `<span class="${cls}">${diff > 0 ? "+" : "−"}${spec.dfmt(Math.abs(diff))}</span>`;
+}
+
+function rowsHtml(specs, objs) {
+  return specs.map(spec => {
+    const cells = objs.map(o => `<span>${o ? spec.v(o) : "—"}</span>`).join("");
+    return `<div class="row ${spec.cls}"><span>${spec.label}</span>${cells}` +
+           `${deltaCell(spec, objs)}</div>`;
+  }).join("");
+}
+
+function headerRow(label) {
+  if (!comparing()) return "";
+  const tags = instances.map(i => `<span>${i.tag}</span>`).join("");
+  return `<div class="row cols"><span>${label}</span>${tags}<span>Δ</span></div>`;
+}
+
+function chipsHtml(inst, items, render) {
+  if (!items || !items.length) return "";
+  const tag = comparing() ? `<span class="tagged">${inst.tag}</span>` : "";
+  return `<div class="chips">${tag}${items.map(render).join("")}</div>`;
+}
+
+function divisionChips(inst) {
+  const m = inst.metrics;
+  if (!m || m.error) return "";
+  return chipsHtml(inst, m.division.divisions, dv =>
+    `<button class="${dv.status === "recovered" ? "hit" : "miss"}" data-t="${dv.t}"
+      title="t=${dv.t} · ${esc(dv.status)} — ${esc(dv.reason)}">t=${dv.t}</button>`);
+}
+
+function worstFrameChips(inst) {
+  const m = inst.metrics;
+  if (!m || m.error) return "";
+  return chipsHtml(inst, m.worst_frames, f =>
+    `<button data-t="${f.t}" title="${f.fp} FP / ${f.fn} FN">t=${f.t}</button>`);
+}
+
+function cardHtml() {
+  // A submission that is missing the dataset, or still scoring, contributes a
+  // null column rather than dropping the row and misaligning everything.
+  const ms = instances.map(i => (i.metrics && !i.metrics.error ? i.metrics : null));
+  const notes = instances
+    .filter(i => i.metrics && i.metrics.error)
+    .map(i => `<div class="note">${i.tag} · ${esc(i.metrics.error)}</div>`).join("");
+  const pending = instances.some(i => !i.metrics);
+
+  let html = comparing()
+    ? `<div class="note">${instances.map(i => `${i.tag} · ${esc(i.label)}`).join("<br>")}</div>`
+    : "";
+  html += notes;
+  if (pending) html += `<div class="note">computing…</div>`;
+  if (ms.some(Boolean)) {
+    html += headerRow("this sample") + rowsHtml(SAMPLE_ROWS, ms);
+    const divChips = instances.map(divisionChips).join("");
+    if (divChips) {
+      html += `<div class="row head"><span>GT divisions</span>` +
+              `${instances.map(() => "<span></span>").join("")}</div>` + divChips;
+    }
+    const frameChips = instances.map(worstFrameChips).join("");
+    if (frameChips) {
+      html += `<div class="row head"><span>Worst frames</span>` +
+              `${instances.map(() => "<span></span>").join("")}</div>` + frameChips;
+    }
+  }
+
+  const os = instances.map(i => (i.overall ? i.overall.overall : null));
+  if (os.some(Boolean)) {
+    const n = (os.find(Boolean)).n_samples;
+    html += `<hr>` + headerRow(`all ${n} samples`) +
+            (comparing() ? "" : `<div class="row head"><span>All ${n} samples</span><span></span></div>`) +
+            rowsHtml(OVERALL_ROWS, os);
+  }
+  return html;
 }
 
 function renderMetrics() {
-  const m = lastMetrics;
-  if (m && !m.error) {
-    metricsChip.textContent = num(m.score);
-  } else {
-    metricsChip.textContent = m ? "n/a" : "…";
+  const parts = instances.map(inst => {
+    const m = inst.metrics;
+    if (!m) return "…";
+    return m.error ? "n/a" : num(m.score);
+  });
+  // Collapsed, the chip is the whole comparison, so it carries the delta too.
+  const ms = instances.map(i => (i.metrics && !i.metrics.error ? i.metrics : null));
+  if (comparing() && ms[0] && ms[1]) {
+    const diff = ms[1].score - ms[0].score;
+    parts.push(`${diff >= 0 ? "+" : "−"}${Math.abs(diff).toFixed(4)}`);
   }
-  if (!m) { metricsBody.innerHTML = `<div class="note">computing…</div>` + overallHtml(); return; }
-  if (m.error) { metricsBody.innerHTML = `<div class="note">${m.error}</div>` + overallHtml(); return; }
-  const e = m.edge, miss = e.missed;
-  metricsBody.innerHTML = `
-    <div class="row score"><span>Score</span><span>${num(m.score)}</span></div>
-    <div class="row head"><span>Adjusted edge J</span><span>${num(m.adjusted_edge_jaccard)}</span></div>
-    <div class="row sub"><span>TP / FP / FN</span><span>${e.tp} / ${e.fp} / ${e.fn}</span></div>
-    <div class="row sub"><span>precision / recall</span>
-      <span>${pct(e.precision)} / ${pct(e.recall)}</span></div>
-    <div class="row head"><span>Detected GT cells</span><span>${pct(m.detection_recall)}</span></div>
-    <div class="row sub"><span>matched / GT nodes</span>
-      <span>${m.n_matched_nodes} / ${m.n_gt_nodes}</span></div>
-    <div class="row sub"><span>node penalty</span><span>${num(m.node_penalty)}</span></div>
-    <div class="row head"><span>Missed GT links</span><span>${e.fn}</span></div>
-    <div class="row sub"><span>never detected</span><span>${miss.no_detection}</span></div>
-    <div class="row sub"><span>linked to another cell</span><span>${miss.wrong_link}</span></div>
-    <div class="row sub"><span>track just stops</span><span>${miss.broken_link}</span></div>
-    ${worstFramesHtml(m.worst_frames)}
-    ${overallHtml()}`;
-  for (const b of metricsBody.querySelectorAll(".frames button")) {
+  metricsChip.textContent = parts.join(" | ");
+  metricsBody.innerHTML = cardHtml();
+  for (const b of metricsBody.querySelectorAll(".chips button")) {
     b.onclick = () => { stopPlaying(); setFrame(parseInt(b.dataset.t, 10)); };
   }
-}
-
-function worstFramesHtml(frames) {
-  if (!frames || !frames.length) return "";
-  const chips = frames.map(f =>
-    `<button data-t="${f.t}" title="${f.fp} FP / ${f.fn} FN">t=${f.t}</button>`).join("");
-  return `<div class="row head"><span>Worst frames</span><span></span></div>
-    <div class="frames">${chips}</div>`;
 }
 
 function setMetricsOpen(open) {
@@ -473,34 +837,230 @@ function setMetricsOpen(open) {
   localStorage.setItem("metricsOpen", open ? "1" : "0");
 }
 
-async function loadMetrics(name) {
-  const token = ++metricsToken;
-  lastMetrics = null;
+async function loadMetrics(inst) {
+  const token = ++inst.metricsToken;
+  inst.metrics = null;
   renderMetrics();
+  if (!inst.current) {
+    inst.metrics = { error: "dataset not in this submission" };
+    renderMetrics();
+    return;
+  }
   let m;
   try {
-    const r = await fetch(`/api/metrics/${name}`);
+    const r = await fetch(
+      `/api/metrics/${inst.current.name}?src=${encodeURIComponent(inst.src)}`);
     m = r.ok ? await r.json() : { error: "no ground truth for this dataset" };
   } catch (err) {
     m = { error: "scoring failed" };
   }
-  if (token !== metricsToken) return;
-  lastMetrics = m;
+  if (token !== inst.metricsToken) return;
+  inst.metrics = m;
   renderMetrics();
 }
 
-async function selectDataset(name) {
-  stopPlaying();
-  current = datasets.find(d => d.name === name);
-  imgCache.clear();
-  applyPanelSizes(current.shape, current.voxel_scale);
-  slider.max = current.t_max;
-  tMaxEl.textContent = current.t_max;
-  statTracks.textContent = current.n_tracks;
-  statShape.textContent = current.shape ? current.shape.join(" × ") : "n/a (no .zarr found)";
-  loadMetrics(name);
-  setFrame(0);
+function loadOverall(inst) {
+  // Whole-split aggregate: scored in the background so the first frame is not
+  // held up by the datasets that are not on screen yet.
+  if (inst.overall) return;
+  fetch(`/api/metrics?src=${encodeURIComponent(inst.src)}`)
+    .then(r => r.ok ? r.json() : null)
+    .then(o => { if (o) { inst.overall = o; renderMetrics(); } })
+    .catch(() => {});
 }
+
+// --- dataset selection ----------------------------------------------------
+
+async function loadDatasets(inst) {
+  try {
+    inst.datasets = await fetch(
+      `/api/datasets?src=${encodeURIComponent(inst.src)}`).then(r => r.json());
+  } catch (err) {
+    inst.datasets = [];
+  }
+}
+
+function selectDataset(name, keepFrame = false) {
+  stopPlaying();
+  imgCache.clear();
+  for (const inst of instances) {
+    inst.current = inst.datasets.find(d => d.name === name) || null;
+    inst.selectedTrack = null;
+    inst.overlay = null;
+    inst.imgs = null;
+  }
+  clearSelectionBtn.style.display = "none";
+  resetViews();
+  buildStages();
+
+  const tMax = Math.max(0, ...instances.map(i => (i.current ? i.current.t_max : 0)));
+  slider.max = tMax;
+  tMaxEl.textContent = tMax;
+  for (const inst of instances) loadMetrics(inst);
+  for (const inst of instances) loadOverall(inst);
+  // Entering or leaving compare keeps you on the frame you were studying;
+  // switching dataset starts over at t=0.
+  setFrame(keepFrame ? Math.min(t, tMax) : 0);
+}
+
+// --- save -----------------------------------------------------------------
+
+const saveModal = document.getElementById("saveModal");
+const saveNameInput = document.getElementById("saveName");
+const saveMsg = document.getElementById("saveMsg");
+const saveSourceEl = document.getElementById("saveSource");
+const saveConfirm = document.getElementById("saveConfirm");
+let overwriteArmed = false;
+
+function defaultSaveName() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, "0");
+  return `submission-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}` +
+         `-${p(d.getHours())}${p(d.getMinutes())}`;
+}
+
+function openSave() {
+  saveSourceEl.textContent = instances[0].label;
+  saveNameInput.value = defaultSaveName();
+  saveMsg.textContent = "";
+  saveMsg.className = "modal-msg";
+  saveConfirm.textContent = "Save";
+  overwriteArmed = false;
+  saveModal.hidden = false;
+  saveNameInput.focus();
+  saveNameInput.select();
+}
+
+function closeSave() { saveModal.hidden = true; }
+
+async function doSave() {
+  const name = saveNameInput.value.trim();
+  if (!name) {
+    saveMsg.className = "modal-msg";
+    saveMsg.textContent = "Give the file a name first.";
+    return;
+  }
+  saveConfirm.disabled = true;
+  try {
+    const r = await fetch("/api/save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, src: instances[0].src, overwrite: overwriteArmed }),
+    });
+    if (r.status === 409) {
+      overwriteArmed = true;
+      saveConfirm.textContent = "Overwrite";
+      saveMsg.className = "modal-msg";
+      saveMsg.textContent = `save_files/${name}.csv already exists — click Overwrite to replace it.`;
+      return;
+    }
+    if (!r.ok) {
+      const body = await r.json().catch(() => ({}));
+      saveMsg.className = "modal-msg";
+      saveMsg.textContent = body.detail || "Save failed.";
+      return;
+    }
+    const saved = await r.json();
+    saveMsg.className = "modal-msg ok";
+    saveMsg.textContent = `Saved to save_files/${saved.name}.csv (${fmtSize(saved.size)}).`;
+    overwriteArmed = false;
+    saveConfirm.textContent = "Save";
+    setTimeout(closeSave, 900);
+  } catch (err) {
+    saveMsg.className = "modal-msg";
+    saveMsg.textContent = "Save failed: the server did not respond.";
+  } finally {
+    saveConfirm.disabled = false;
+  }
+}
+
+function fmtSize(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+// --- compare --------------------------------------------------------------
+
+const compareModal = document.getElementById("compareModal");
+const compareList = document.getElementById("compareList");
+const compareMsg = document.getElementById("compareMsg");
+const compareConfirm = document.getElementById("compareConfirm");
+const compareExit = document.getElementById("compareExit");
+let comparePick = null;
+
+async function openCompare() {
+  compareMsg.textContent = "";
+  compareList.innerHTML = `<div class="empty">loading…</div>`;
+  compareExit.style.display = comparing() ? "" : "none";
+  comparePick = comparing() ? { src: instances[1].src, label: instances[1].label } : null;
+  compareModal.hidden = false;
+
+  let sources;
+  try {
+    sources = await fetch("/api/sources").then(r => r.json());
+  } catch (err) {
+    compareList.innerHTML = `<div class="empty">could not list save_files/</div>`;
+    return;
+  }
+
+  const rows = [
+    { src: sources.current.src, label: sources.current.label, note: "live submission" },
+    ...sources.saved.map(s => ({
+      src: s.src, label: s.label,
+      note: `${fmtSize(s.size)} · ${new Date(s.modified * 1000).toLocaleString()}`,
+    })),
+  ];
+
+  compareList.innerHTML = "";
+  if (rows.length === 1) {
+    compareList.innerHTML =
+      `<div class="empty">No saved submissions yet — use 💾 Save to make one.</div>`;
+  }
+  for (const row of rows) {
+    const el = document.createElement("div");
+    el.className = "file" + (comparePick && comparePick.src === row.src ? " selected" : "");
+    el.innerHTML = `<span class="fname"></span><span class="meta"></span>`;
+    el.querySelector(".fname").textContent = row.label;
+    el.querySelector(".meta").textContent = row.note;
+    el.onclick = () => {
+      comparePick = { src: row.src, label: row.label };
+      for (const other of compareList.querySelectorAll(".file")) other.classList.remove("selected");
+      el.classList.add("selected");
+    };
+    compareList.appendChild(el);
+  }
+}
+
+function closeCompare() { compareModal.hidden = true; }
+
+async function applyCompare() {
+  if (!comparePick) {
+    compareMsg.textContent = "Pick a submission to compare against.";
+    return;
+  }
+  compareConfirm.disabled = true;
+  const b = makeInstance(comparePick.src, comparePick.label, "B");
+  await loadDatasets(b);
+  compareConfirm.disabled = false;
+  if (!b.datasets.length) {
+    compareMsg.textContent = "That file has no readable datasets.";
+    return;
+  }
+  instances = [instances[0], b];
+  compareBtn.classList.add("active");
+  closeCompare();
+  selectDataset(datasetSel.value, true);
+}
+
+function exitCompare() {
+  instances = [instances[0]];
+  compareBtn.classList.remove("active");
+  closeCompare();
+  selectDataset(datasetSel.value, true);
+}
+
+// --- wiring ---------------------------------------------------------------
 
 document.getElementById("prev").onclick = () => { stopPlaying(); setFrame(t - 1); };
 document.getElementById("next").onclick = () => { stopPlaying(); setFrame(t + 1); };
@@ -510,35 +1070,66 @@ tailInput.oninput = () => { tail = parseInt(tailInput.value, 10); tailValue.text
 datasetSel.onchange = () => selectDataset(datasetSel.value);
 pointSizeInput.oninput = () => { pointSize = parseFloat(pointSizeInput.value); redrawAll(); };
 pointOpacityInput.oninput = () => { pointOpacity = parseInt(pointOpacityInput.value, 10) / 100; redrawAll(); };
-clearSelectionBtn.onclick = () => setSelectedTrack(null);
+clearSelectionBtn.onclick = () => { for (const inst of instances) inst.selectedTrack = null;
+                                    clearSelectionBtn.style.display = "none"; redrawAll(); };
 metricsToggle.onclick = () => setMetricsOpen(metricsCard.classList.contains("collapsed"));
 setMetricsOpen(localStorage.getItem("metricsOpen") === "1");
 
+document.getElementById("saveBtn").onclick = openSave;
+document.getElementById("saveCancel").onclick = closeSave;
+saveConfirm.onclick = doSave;
+saveNameInput.onkeydown = (e) => {
+  if (e.key === "Enter") { e.preventDefault(); doSave(); return; }
+  if (e.key === "Escape") { closeSave(); return; }
+  // A different name is a different file, so a primed overwrite no longer applies.
+  if (overwriteArmed) {
+    overwriteArmed = false;
+    saveConfirm.textContent = "Save";
+    saveMsg.textContent = "";
+  }
+};
+saveModal.onclick = (e) => { if (e.target === saveModal) closeSave(); };
+
+compareBtn.onclick = openCompare;
+document.getElementById("compareCancel").onclick = closeCompare;
+compareConfirm.onclick = applyCompare;
+compareExit.onclick = exitCompare;
+compareModal.onclick = (e) => { if (e.target === compareModal) closeCompare(); };
+
+let resizeTimer = null;
+window.addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => { applyPanelSizes(); redrawAll(); }, 120);
+});
+
 window.addEventListener("keydown", (e) => {
+  if (!saveModal.hidden || !compareModal.hidden) {
+    if (e.code === "Escape") { closeSave(); closeCompare(); }
+    return;
+  }
   if (e.target.tagName === "SELECT" || e.target.tagName === "INPUT") return;
   if (e.code === "ArrowRight") { stopPlaying(); setFrame(t + 1); }
   else if (e.code === "ArrowLeft") { stopPlaying(); setFrame(t - 1); }
   else if (e.code === "Space") { e.preventDefault(); togglePlay(); }
-  else if (e.code === "Escape") { setSelectedTrack(null); }
+  else if (e.code === "Escape") {
+    for (const inst of instances) inst.selectedTrack = null;
+    clearSelectionBtn.style.display = "none";
+    redrawAll();
+  }
   else if (e.code === "KeyM") { setMetricsOpen(metricsCard.classList.contains("collapsed")); }
+  else if (e.code === "KeyS") { openSave(); }
+  else if (e.code === "KeyC") { openCompare(); }
 });
 
 (async function init() {
-  datasets = await fetch("/api/datasets").then(r => r.json());
-  for (const d of datasets) {
+  const a = instances[0];
+  await loadDatasets(a);
+  for (const d of a.datasets) {
     const opt = document.createElement("option");
     opt.value = d.name;
     opt.textContent = `${d.name} (${d.n_nodes} nodes, ${d.n_tracks} tracks)`;
     datasetSel.appendChild(opt);
   }
-  if (datasets.length) {
-    await selectDataset(datasets[0].name);
-  }
-  // Whole-split aggregate: scored in the background so the first frame is not
-  // held up by the datasets that are not on screen yet.
-  fetch("/api/metrics")
-    .then(r => r.ok ? r.json() : null)
-    .then(o => { if (o) { overall = o; renderMetrics(); } })
-    .catch(() => {});
+  if (a.datasets.length) selectDataset(a.datasets[0].name);
 })();
 </script>

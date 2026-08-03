@@ -369,6 +369,10 @@ def _division_metric(pred: TrackGraph, gt: TrackGraph, matches: dict[int, int]) 
     gt_divisions = sorted(gt.forks)
     recoverable: dict[int, set[int]] = {}
     anchored: set[int] = set()
+    # Why each GT division did or did not come back, so a division score of 0
+    # can be read as "the tracker never forks here" vs "it forks in the wrong
+    # place" without re-running the metric by hand.
+    diagnosis: dict[int, dict] = {}
 
     for parent, parent_side, lineages, window in _division_windows(gt):
         local = match_nodes(pred, gt, gt_ids=window)
@@ -389,9 +393,44 @@ def _division_metric(pred: TrackGraph, gt: TrackGraph, matches: dict[int, int]) 
         if ok:
             recoverable[parent] = ok
 
+        i = gt.index[parent]
+        diagnosis[parent] = {
+            "parent": int(parent),
+            "t": int(gt.t[i]),
+            # Back to voxels, which is what the viewer draws in.
+            "z": float(gt.pos[i, 0] / SCALE_ZYX[0]),
+            "y": float(gt.pos[i, 1] / SCALE_ZYX[1]),
+            "x": float(gt.pos[i, 2] / SCALE_ZYX[2]),
+            "n_daughters_detected": sum(
+                1 for lineage in lineages if any(g in lineage for g in local.values())
+            ),
+            "n_candidate_forks": len(forks),
+            "anchored": bool(anchors),
+        }
+
     paired = _max_matching(recoverable)  # fork -> GT division
     tp = len(paired)
     fn = len(gt_divisions) - tp
+
+    hit = set(paired.values())
+    for parent, info in diagnosis.items():
+        if parent in hit:
+            info["status"], info["reason"] = "recovered", "matched a predicted fork"
+        elif parent in recoverable:
+            info["status"] = "missed"
+            info["reason"] = "its only valid fork was paired with another division"
+        elif not info["anchored"]:
+            info["status"] = "missed"
+            info["reason"] = "the dividing cell itself was never detected"
+        elif not info["n_candidate_forks"]:
+            info["status"] = "missed"
+            info["reason"] = (
+                "the cell was detected but the prediction never forks here"
+                f" ({info['n_daughters_detected']}/2 daughters detected)"
+            )
+        else:
+            info["status"] = "missed"
+            info["reason"] = "a fork was predicted here but its two branches do not follow the GT daughters"
 
     false_positives: set[int] = set()
     for fork in sorted(pred.forks):
@@ -422,14 +461,22 @@ def _division_metric(pred: TrackGraph, gt: TrackGraph, matches: dict[int, int]) 
         "jaccard": tp / denom if denom else None,
         "n_gt_divisions": len(gt_divisions),
         "n_pred_forks": len(pred.forks),
+        "divisions": [diagnosis[p] for p in gt_divisions],
     }
 
 
 def _node_count_penalty(n_pred_nodes: int, n_true_nodes: int | None) -> float:
-    """1 - a * (T_pred - T_true) / T_true, the over-prediction penalty factor."""
+    """1 - a * max(0, T_pred - T_true) / T_true, the over-prediction factor.
+
+    Only over-prediction is penalised. Detecting *fewer* nodes than the
+    organisers' estimate is not a bonus: without the max() a sample that
+    under-detects scores above its own edge Jaccard, which inflated the local
+    score by up to 4% against the leaderboard.
+    """
     if not n_true_nodes:
         return 1.0
-    return 1.0 - NODE_COUNT_PENALTY * (n_pred_nodes - n_true_nodes) / n_true_nodes
+    over = max(0, n_pred_nodes - n_true_nodes)
+    return max(0.0, 1.0 - NODE_COUNT_PENALTY * over / n_true_nodes)
 
 
 # --------------------------------------------------------------------------- #
@@ -482,7 +529,10 @@ def aggregate(results: dict[str, dict]) -> dict:
         else None
     )
 
-    div = {k: sum(r["division"][k] for r in results.values()) for k in ("tp", "fp", "fn")}
+    div = {
+        k: sum(r["division"][k] for r in results.values())
+        for k in ("tp", "fp", "fn", "n_gt_divisions", "n_pred_forks")
+    }
     denom = div["tp"] + div["fp"] + div["fn"]
     div["jaccard"] = div["tp"] / denom if denom else None
 

@@ -1,13 +1,19 @@
 """Loading and caching for the tracking viewer service.
 
-Wraps a submission.csv plus the matching .zarr image volumes so the FastAPI
-app in app.py can serve frame images and node/edge overlays cheaply enough
-for interactive frame-by-frame stepping.
+Wraps one or more submission.csv files plus the matching .zarr image volumes
+so the FastAPI app in app.py can serve frame images and node/edge overlays
+cheaply enough for interactive frame-by-frame stepping.
+
+Two submissions can be open at once (the compare view), so everything that
+depends on a submission is keyed by a *source*: `None` is the live
+submission.csv, any other string names a snapshot in save_files/.
 """
 from __future__ import annotations
 
 import io
 import os
+import re
+import shutil
 from functools import lru_cache
 from pathlib import Path
 
@@ -19,8 +25,22 @@ from PIL import Image
 from . import metrics
 
 SUBMISSION_CSV = Path(os.environ.get("BIOHUB_SUBMISSION_CSV", "submission.csv"))
-RESULTS_DIR = Path(os.environ.get("BIOHUB_RESULTS_DIR", "results"))
+# The image volumes. BIOHUB_RESULTS_DIR is the old name of this setting, kept
+# working so existing shells/scripts do not silently point at nothing.
+ZARR_DIR = Path(
+    os.environ.get("BIOHUB_ZARR_DIR")
+    or os.environ.get("BIOHUB_RESULTS_DIR")
+    or "files_zarr"
+)
 LABELS_DIR = Path(os.environ.get("BIOHUB_LABELS_DIR", "labels_geff"))
+# Named snapshots of a submission, written by the Save button.
+SAVE_DIR = Path(os.environ.get("BIOHUB_SAVE_DIR", "save_files"))
+
+CURRENT_LABEL = SUBMISSION_CSV.name
+
+# Snapshot names become file names, so keep them boring: no separators, no
+# leading dot, nothing that could escape SAVE_DIR.
+_SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$")
 
 
 class DatasetNotFound(KeyError):
@@ -32,6 +52,18 @@ class FrameOutOfRange(IndexError):
 
 
 class GroundTruthNotFound(KeyError):
+    pass
+
+
+class SourceNotFound(KeyError):
+    pass
+
+
+class InvalidName(ValueError):
+    pass
+
+
+class NameTaken(FileExistsError):
     pass
 
 
@@ -93,34 +125,101 @@ def _assign_track_ids(node_ids: pd.Index, edges: pd.DataFrame) -> pd.Series:
     return pd.Series(track_ids, index=node_ids, name="track_id")
 
 
-@lru_cache(maxsize=1)
-def _submission() -> pd.DataFrame:
-    if not SUBMISSION_CSV.exists():
+# --------------------------------------------------------------------------- #
+# sources: the live submission.csv, plus any saved snapshot
+# --------------------------------------------------------------------------- #
+
+def source_path(src: str | None) -> Path:
+    """CSV backing a source. `None`/"" is the live submission."""
+    if not src:
+        return SUBMISSION_CSV
+    if not _SAFE_NAME.match(src):
+        raise InvalidName(f"invalid save name {src!r}")
+    path = SAVE_DIR / f"{src}.csv"
+    if not path.exists():
+        raise SourceNotFound(f"no saved submission named {src!r}")
+    return path
+
+
+def source_label(src: str | None) -> str:
+    return CURRENT_LABEL if not src else f"{src}.csv"
+
+
+def list_saved() -> list[dict]:
+    """Saved snapshots, newest first."""
+    if not SAVE_DIR.exists():
+        return []
+    out = []
+    for path in SAVE_DIR.glob("*.csv"):
+        stat = path.stat()
+        out.append({"name": path.stem, "size": stat.st_size, "modified": stat.st_mtime})
+    return sorted(out, key=lambda s: -s["modified"])
+
+
+def save_snapshot(name: str, src: str | None = None, overwrite: bool = False) -> dict:
+    """Copy the CSV behind `src` into SAVE_DIR under `name`."""
+    name = name.strip()
+    if name.lower().endswith(".csv"):
+        name = name[:-4].strip()
+    if not _SAFE_NAME.match(name):
+        raise InvalidName(
+            "name must be 1-64 chars of letters, digits, space, dot, dash or "
+            "underscore, and start with a letter or digit"
+        )
+
+    source = source_path(src)
+    if not source.exists():
+        raise FileNotFoundError(f"nothing to save: {source} does not exist")
+
+    target = SAVE_DIR / f"{name}.csv"
+    existed = target.exists()
+    if existed and not overwrite:
+        raise NameTaken(name)
+
+    SAVE_DIR.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, target)
+    if existed:
+        # The name now points at different rows, so nothing cached under it is
+        # still valid. The caches are small and cheap to refill.
+        _clear_submission_caches()
+    stat = target.stat()
+    return {"name": name, "size": stat.st_size, "modified": stat.st_mtime}
+
+
+def _clear_submission_caches() -> None:
+    for cache in (_submission, get_dataset, _pred_graph, evaluate):
+        cache.cache_clear()
+
+
+@lru_cache(maxsize=8)
+def _submission(src: str | None = None) -> pd.DataFrame:
+    path = source_path(src)
+    if not path.exists():
         raise FileNotFoundError(
-            f"Submission CSV not found at {SUBMISSION_CSV} "
+            f"Submission CSV not found at {path} "
             "(set BIOHUB_SUBMISSION_CSV to override)"
         )
-    df = pd.read_csv(SUBMISSION_CSV)
+    df = pd.read_csv(path)
     df["dataset"] = df["dataset"].astype(str)
     return df
 
 
-def dataset_names() -> list[str]:
-    return sorted(_submission().dataset.unique())
+def dataset_names(src: str | None = None) -> list[str]:
+    return sorted(_submission(src).dataset.unique())
 
 
-@lru_cache(maxsize=8)
-def get_dataset(name: str) -> Dataset:
-    df = _submission()
+@lru_cache(maxsize=16)
+def get_dataset(name: str, src: str | None = None) -> Dataset:
+    df = _submission(src)
     df = df[df.dataset == name]
     if df.empty:
         raise DatasetNotFound(name)
     return Dataset(name, df)
 
 
-@lru_cache(maxsize=8)
-def _pred_graph(name: str) -> metrics.TrackGraph:
-    ds = get_dataset(name)
+@lru_cache(maxsize=16)
+def _pred_graph(name: str, src: str | None = None) -> metrics.TrackGraph:
+    ds = get_dataset(name, src)
     nodes = ds.nodes
     edges = ds.edges[["source_id", "target_id"]].to_numpy()
     return metrics.build_graph(
@@ -158,19 +257,19 @@ def _gt_graph(name: str) -> tuple[metrics.TrackGraph, int | None]:
     return graph, int(estimated) if estimated else None
 
 
-@lru_cache(maxsize=8)
-def evaluate(name: str) -> dict:
+@lru_cache(maxsize=16)
+def evaluate(name: str, src: str | None = None) -> dict:
     """Score the prediction for one dataset against its ground truth."""
     gt, estimated = _gt_graph(name)
-    return metrics.evaluate(_pred_graph(name), gt, estimated)
+    return metrics.evaluate(_pred_graph(name, src), gt, estimated)
 
 
-def evaluate_all() -> dict:
+def evaluate_all(src: str | None = None) -> dict:
     """Per-sample scores plus the leaderboard-style aggregate over all of them."""
     per_sample = {}
-    for name in dataset_names():
+    for name in dataset_names(src):
         try:
-            per_sample[name] = evaluate(name)
+            per_sample[name] = evaluate(name, src)
         except (GroundTruthNotFound, DatasetNotFound):
             continue
     return {"samples": per_sample, "overall": metrics.aggregate(per_sample)}
@@ -178,7 +277,7 @@ def evaluate_all() -> dict:
 
 @lru_cache(maxsize=8)
 def _zarr_group(name: str):
-    path = RESULTS_DIR / f"{name}.zarr"
+    path = ZARR_DIR / f"{name}.zarr"
     if not path.exists():
         raise DatasetNotFound(f"no .zarr volume for {name!r} at {path}")
     return zarr.open_group(str(path), mode="r")

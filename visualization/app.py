@@ -5,18 +5,23 @@ Serves a Z-max-intensity-projection background per frame (decoded from the
 matching .zarr volume) plus node/track overlays, so predictions on the
 (label-free) test set can be stepped through frame by frame in the browser.
 
+Every submission-dependent route takes an optional `src`: empty means the live
+submission.csv, any other value names a snapshot in save_files/. That is what
+lets the compare view put two submissions side by side on one page.
+
 Run with:
     uvicorn visualization.app:app --reload --port 8000
 
 Configure input locations with:
     BIOHUB_SUBMISSION_CSV   path to submission.csv (default: ./submission.csv)
-    BIOHUB_RESULTS_DIR      directory containing {dataset}.zarr volumes (default: ./results)
+    BIOHUB_ZARR_DIR         directory containing {dataset}.zarr volumes (default: ./files_zarr)
+    BIOHUB_SAVE_DIR         directory for saved submissions (default: ./save_files)
 """
 from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, Response
 
 from . import tracking_data as data
@@ -24,6 +29,26 @@ from . import tracking_data as data
 app = FastAPI(title="Biohub Tracking Viewer")
 
 _TEMPLATE_PATH = Path(__file__).parent / "templates" / "viewer.html"
+
+# `src=""` (the live submission) and `src=some_name` share every route, so this
+# one dependency-free helper normalises the empty string to None.
+Source = Query(default="", description="saved submission name; empty = submission.csv")
+
+
+def _src(src: str) -> str | None:
+    return src or None
+
+
+def _resolve(src: str) -> str | None:
+    """Normalise and validate a `src` before it reaches the loaders."""
+    name = _src(src)
+    if name is None:
+        return None
+    try:
+        data.source_path(name)
+    except (data.InvalidName, data.SourceNotFound) as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return name
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -37,10 +62,11 @@ def index():
 
 
 @app.get("/api/datasets")
-def list_datasets():
+def list_datasets(src: str = Source):
+    source = _resolve(src)
     out = []
-    for name in data.dataset_names():
-        ds = data.get_dataset(name)
+    for name in data.dataset_names(source):
+        ds = data.get_dataset(name, source)
         out.append(
             {
                 "name": name,
@@ -55,22 +81,67 @@ def list_datasets():
     return out
 
 
+# --------------------------------------------------------------------------- #
+# saved submissions
+# --------------------------------------------------------------------------- #
+
+@app.get("/api/sources")
+def list_sources():
+    """The live submission plus every saved snapshot, for the compare picker."""
+    return {
+        "current": {"src": "", "label": data.source_label(None)},
+        "saved": [
+            {"src": s["name"], "label": f"{s['name']}.csv", **s}
+            for s in data.list_saved()
+        ],
+    }
+
+
+@app.post("/api/save")
+def save_submission(
+    name: str = Body(..., embed=True),
+    src: str = Body(default="", embed=True),
+    overwrite: bool = Body(default=False, embed=True),
+):
+    """Copy the submission behind `src` into save_files/{name}.csv."""
+    source = _resolve(src)
+    try:
+        saved = data.save_snapshot(name, source, overwrite=overwrite)
+    except data.InvalidName as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except data.NameTaken as exc:
+        raise HTTPException(409, f"{name!r} already exists") from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return saved
+
+
+# --------------------------------------------------------------------------- #
+# metrics
+# --------------------------------------------------------------------------- #
+
 @app.get("/api/metrics")
-def metrics_all():
+def metrics_all(src: str = Source):
     """Every sample plus the leaderboard-style aggregate over all of them."""
-    return data.evaluate_all()
+    return data.evaluate_all(_resolve(src))
 
 
 @app.get("/api/metrics/{dataset}")
-def metrics_for(dataset: str):
+def metrics_for(dataset: str, src: str = Source):
     try:
-        return data.evaluate(dataset)
+        return data.evaluate(dataset, _resolve(src))
     except (data.DatasetNotFound, data.GroundTruthNotFound) as exc:
         raise HTTPException(404, str(exc)) from exc
 
 
+# --------------------------------------------------------------------------- #
+# frames and overlays
+# --------------------------------------------------------------------------- #
+
 @app.get("/api/frame/{dataset}/{t}.png")
 def frame_png(dataset: str, t: int, view: str = Query(default="xy", pattern="^(xy|xz|yz)$")):
+    # The background image comes from the .zarr volume, which both compared
+    # submissions share, so this route deliberately takes no `src`.
     try:
         png = data.frame_png(dataset, t, view)
     except data.DatasetNotFound as exc:
@@ -81,9 +152,14 @@ def frame_png(dataset: str, t: int, view: str = Query(default="xy", pattern="^(x
 
 
 @app.get("/api/nodes/{dataset}/{t}")
-def nodes_at(dataset: str, t: int, tail: int = Query(default=10, ge=0, le=99)):
+def nodes_at(
+    dataset: str,
+    t: int,
+    tail: int = Query(default=10, ge=0, le=99),
+    src: str = Source,
+):
     try:
-        ds = data.get_dataset(dataset)
+        ds = data.get_dataset(dataset, _resolve(src))
     except data.DatasetNotFound as exc:
         raise HTTPException(404, str(exc)) from exc
 
