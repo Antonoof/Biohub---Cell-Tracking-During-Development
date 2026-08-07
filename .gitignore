@@ -1,38 +1,3 @@
-# Competition data and generated artifacts
-data/
-input/
-outputs/
-results/
 *.zarr/
 *.geff/
 *.zip
-*.csv
-*.png
-*.jpg
-
-# Model artifacts
-weights/
-models/*.pt
-models/*.pth
-models/*.ckpt
-*.onnx
-
-# Secrets and local configuration
-.env
-.kaggle/
-kaggle.json
-
-# Python and notebooks
-__pycache__/
-*.py[cod]
-.pytest_cache/
-.mypy_cache/
-.ipynb_checkpoints/
-.venv/
-venv/
-
-# Editors and OS
-.vscode/
-.idea/
-.DS_Store
-Thumbs.db
