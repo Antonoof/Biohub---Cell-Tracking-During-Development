@@ -1,0 +1,44 @@
+{
+  "version": "biohub-division-parent-gate-v2-official-leave4out",
+  "training_cache": "biohub-division-official-event-cache-v2",
+  "train_videos": 195,
+  "practice_clips_held_out": [
+    "44b6_0113de3b",
+    "44b6_0b24845f",
+    "6bba_05b6850b",
+    "6bba_05db0fb1"
+  ],
+  "feature_recipe": [
+    "source_features_41",
+    "v1_best_pair_features_78",
+    "v1_best_pair_probability",
+    "v1_source_probability"
+  ],
+  "input_features": 121,
+  "selection": {
+    "high_gate_min": 0.895,
+    "rescue_gate_min": 0.8,
+    "rescue_pair_probability_min": 0.85,
+    "rescue_pair_probability_max": 0.92,
+    "rescue_v1_source_probability_min": 0.9475,
+    "one_source_per_tube": true,
+    "one_parent_per_child": true
+  },
+  "validation": {
+    "grouped_oof_action_jaccard": 0.5462962962962963,
+    "grouped_oof_tp": 118,
+    "grouped_oof_fp": 68,
+    "grouped_oof_fn": 30,
+    "held_four_graph_division_jaccard": 0.6666666666666666,
+    "held_four_graph_division_tp": 2,
+    "held_four_graph_division_fp": 0,
+    "held_four_graph_division_fn": 1,
+    "held_four_adjusted_edge_jaccard": 0.9306729966832246,
+    "held_four_combined_proxy": 0.9973396633498912
+  },
+  "sparse_safety": {
+    "unknown_rows_used_as_negatives": false,
+    "faulty_v1_training_cache_used": false,
+    "thresholds_chosen_from_held_four": false
+  }
+}

@@ -1,0 +1,179 @@
+{
+  "version": "model-c-v2-event-decoder-v1",
+  "method": "native Model-C TTA evidence appended to frozen Division-V2 candidates",
+  "train_videos": 175,
+  "held_videos": 20,
+  "practice_videos": 4,
+  "model_c_feature_names": [
+    "c_source_mapped",
+    "c_source_map_distance_um",
+    "c_edge_a_present",
+    "c_edge_b_present",
+    "c_edge_a_probability",
+    "c_edge_b_probability",
+    "c_edge_min_probability",
+    "c_edge_mean_probability",
+    "c_edge_max_probability",
+    "c_edge_a_parent_margin",
+    "c_edge_b_parent_margin",
+    "c_edge_min_parent_margin",
+    "c_edge_winner_count",
+    "c_edge_a_distance_um",
+    "c_edge_b_distance_um",
+    "c_edge_a_rank",
+    "c_edge_b_rank",
+    "c_source_evidence_count",
+    "c_source_winner_count",
+    "c_source_probability_ge_05_count",
+    "c_source_winner_probability_ge_05_count",
+    "c_source_max_probability",
+    "c_target_a_map_distance_um",
+    "c_target_b_map_distance_um"
+  ],
+  "pair_input_features": 102,
+  "source_input_features": 144,
+  "control": {
+    "label": "V2-FEATURE CONTROL",
+    "use_model_c": false,
+    "oof_frozen_threshold": {
+      "threshold": 0.8,
+      "tp": 34,
+      "fp": 57,
+      "fn": 97,
+      "selected": 91,
+      "jaccard": 0.18085106382978725
+    },
+    "held_frozen": {
+      "threshold": 0.8,
+      "tp": 2,
+      "fp": 10,
+      "fn": 15,
+      "selected": 12,
+      "jaccard": 0.07407407407407407
+    },
+    "held_per_embryo": {
+      "44b6": {
+        "threshold": 0.8,
+        "tp": 1,
+        "fp": 3,
+        "fn": 7,
+        "selected": 4,
+        "jaccard": 0.09090909090909091
+      },
+      "6bba": {
+        "threshold": 0.8,
+        "tp": 1,
+        "fp": 7,
+        "fn": 8,
+        "selected": 8,
+        "jaccard": 0.0625
+      }
+    },
+    "held_calibrated_threshold": {
+      "threshold": 0.9800000000000001,
+      "tp": 2,
+      "fp": 2,
+      "fn": 15,
+      "selected": 4,
+      "jaccard": 0.10526315789473684
+    },
+    "practice_final_test": {
+      "threshold": 0.9800000000000001,
+      "tp": 0,
+      "fp": 0,
+      "fn": 3,
+      "selected": 0,
+      "jaccard": 0.0
+    }
+  },
+  "combined": {
+    "label": "V2+MODEL-C",
+    "use_model_c": true,
+    "oof_frozen_threshold": {
+      "threshold": 0.9600000000000001,
+      "tp": 69,
+      "fp": 50,
+      "fn": 62,
+      "selected": 119,
+      "jaccard": 0.3812154696132597
+    },
+    "held_frozen": {
+      "threshold": 0.9600000000000001,
+      "tp": 4,
+      "fp": 4,
+      "fn": 13,
+      "selected": 8,
+      "jaccard": 0.19047619047619047
+    },
+    "held_per_embryo": {
+      "44b6": {
+        "threshold": 0.9600000000000001,
+        "tp": 2,
+        "fp": 2,
+        "fn": 6,
+        "selected": 4,
+        "jaccard": 0.2
+      },
+      "6bba": {
+        "threshold": 0.9600000000000001,
+        "tp": 2,
+        "fp": 2,
+        "fn": 7,
+        "selected": 4,
+        "jaccard": 0.18181818181818182
+      }
+    },
+    "held_calibrated_threshold": {
+      "threshold": 0.9800000000000001,
+      "tp": 4,
+      "fp": 2,
+      "fn": 13,
+      "selected": 6,
+      "jaccard": 0.21052631578947367
+    },
+    "practice_final_test": {
+      "threshold": 0.9800000000000001,
+      "tp": 0,
+      "fp": 0,
+      "fn": 3,
+      "selected": 0,
+      "jaccard": 0.0
+    }
+  },
+  "practice_additive": {
+    "frozen_v2": {
+      "threshold": 0.5,
+      "tp": 2,
+      "fp": 1,
+      "fn": 1,
+      "selected": 3,
+      "jaccard": 0.5
+    },
+    "control_union": {
+      "threshold": 0.5,
+      "tp": 2,
+      "fp": 1,
+      "fn": 1,
+      "selected": 3,
+      "jaccard": 0.5
+    },
+    "model_c_union": {
+      "threshold": 0.5,
+      "tp": 2,
+      "fp": 1,
+      "fn": 1,
+      "selected": 3,
+      "jaccard": 0.5
+    }
+  },
+  "model_c_adds_practice_value": false,
+  "promotion_gate": "Model C must add value over frozen V2 and beat the identically trained V2-feature control on the untouched four practice clips before official graph replay",
+  "sparse_safety": {
+    "unannotated_sources_as_negatives": false,
+    "practice_clips_used_for_final_gate": true,
+    "threshold_selected_on_practice": false,
+    "threshold_selected_on_validation_held20": true,
+    "practice_used_for_training_or_threshold": false,
+    "frozen_v2_probabilities_used_as_features": false
+  }
+}

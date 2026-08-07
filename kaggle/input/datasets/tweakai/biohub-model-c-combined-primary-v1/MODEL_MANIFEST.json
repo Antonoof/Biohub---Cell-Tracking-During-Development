@@ -1,0 +1,22 @@
+{
+  "name": "biohub-model-c-combined-primary-v1",
+  "version": 1,
+  "model_c_checkpoint": "model_c/edge_predictor_best.pth",
+  "model_c_sha256": "3a4cfd682cfea77ec225af2f0e910a752dbf5b43ebe57cc40b0adc9fc4214cda",
+  "decoder_pair_model": "decoder/pair_model.joblib",
+  "decoder_source_model": "decoder/source_model.joblib",
+  "decoder_threshold": 0.96,
+  "pair_input_features": 102,
+  "source_input_features": 144,
+  "model_c_fused_graph_weight": 0.0,
+  "combined_decoder_is_primary": true,
+  "division_v2_applied_first": false,
+  "atomic_fallback": "Legacy Division V2 on combined-decoder failure; A+B baseline on worker failure",
+  "training_split": {
+    "train_videos": 175,
+    "held_videos": 20,
+    "practice_videos": 4,
+    "practice_used_for_training": false,
+    "practice_used_for_threshold": false
+  }
+}
