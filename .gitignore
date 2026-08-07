@@ -1,3 +1,4 @@
 *.zarr/
 *.geff/
 *.zip
+kaggle/
