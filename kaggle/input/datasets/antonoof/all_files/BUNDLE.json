@@ -1,0 +1,25 @@
+{
+  "name": "antonoof/all_files",
+  "purpose": "Single-dataset bundle for biohun_team.ipynb: every artifact the pipeline loads at inference time, and nothing else.",
+  "built_from": {
+    "p1": "pilkwang/biohub-tracking-support-pack-50ep-v1",
+    "p2": "pilkwang/biohub-temporal-unet3d-seed314159-v1",
+    "deepcenter": "pilkwang/biohub-deepcenter-unet3d-center-prior-v1",
+    "model_c": "tweakai/biohub-model-c-combined-primary-v1",
+    "source_cardinality": "tweakai/biohub-public934-source-cardinality-v2",
+    "unigraft_p1p2": "tweakai/biohub-unigraft-p1p2-independent-v1",
+    "live_v2_bundle": "tweakai/biohub-live-v2-global-bundle-v2",
+    "ownership": "tweakai/biohub-ownership-exact-v2",
+    "edgegraft": "tweakai/biohub-edgegraft-v3-full-population-v1",
+    "candidategraft": "tweakai/biohub-candidategraft-direct-v1",
+    "basegraph_repair": "tweakai/biohub-basegraph-repair-v1",
+    "motion_corrector": "tweakai/biohub-motion-corrector-v1"
+  },
+  "sha256": {
+    "p1/weights/unet_transformer/split_0/edge_predictor_best.pth": "12f6881ee3620a831697ca098ff8f48e687a24225f4e048b538deec3562fe771",
+    "p2/weights/unet_transformer/split_0/edge_predictor_best.pth": "9bac2fa0dadc4a6fc1899e0caf187f4b553e0a7cd90ba1261a68b35ffe9e305f",
+    "deepcenter/best.pt": "8040999a92f6b7bbd98fa8cf458141e045c0f9ad7c936bdb3b18e1f7edafe2a0"
+  },
+  "file_count": 130,
+  "bytes": 390776161
+}

@@ -1,0 +1,38 @@
+{
+  "version": "biohub-basegraph-repair-v1",
+  "role": "pre-motion P1/P2 candidate fusion plus consensus endpoint bridges",
+  "policy": {
+    "candidate_fusion": "mean independent P1/P2 association probability",
+    "edge_threshold": 0.4,
+    "native_threshold": 0.01,
+    "candidate_rank": 8,
+    "max_distance_um": 14.0,
+    "endpoint_both_models_required": true,
+    "endpoint_pmin": 0.03,
+    "endpoint_consensus_um": 3.0,
+    "endpoint_dedupe_um": 3.0
+  },
+  "validation": {
+    "all199_raw_control_adj_edge": 0.915828093102,
+    "all199_repaired_adj_edge": 0.918796499291,
+    "all199_delta": 0.002968406189,
+    "edge_tp_delta": 405,
+    "edge_fp_delta": -3,
+    "edge_fn_delta": -405,
+    "movies_improved": 119,
+    "movies_regressed": 71,
+    "movies_unchanged": 9,
+    "runtime_parity_movies": 6,
+    "runtime_parity_exact": true
+  },
+  "contract": {
+    "ground_truth_at_inference": false,
+    "new_gpu_inference": false,
+    "existing_fork_topology_changed": false,
+    "baseline_fallback_unchanged": true
+  },
+  "files": {
+    "README.md": "b91ca776a181542f61edab2a9f9f77ad171cb0f6cc74392c78372f727c93c61b",
+    "basegraph_candidate_fusion_runtime_v1.py": "84581efeb5a4e5406757e23c9763b8c9e89915b4477320fe308cacfb8e5d0087"
+  }
+}
