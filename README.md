@@ -1,36 +1,6 @@
-# Biohub Cell Tracking Team
+# Biohub Cell Tracking — l1ghtsource
 
-Reproducible code for the Biohub Cell Tracking During Development competition.
-
-## Repository layout
-
-- `notebooks/` — Kaggle inference notebooks.
-- `scripts/` — proposal export and learned motion-cost training.
-- `validation/` — local metrics and run-comparison utilities (validation branch).
-- `visualization/` — prediction/GT visualization utilities (validation branch).
-- `docs/` — workflow and experiment notes.
-
-Start with [`docs/EXPERIMENTS.md`](docs/EXPERIMENTS.md) for the complete score
-chronology, current weaknesses, active work, rejected paths, and do-not-repeat
-registry.
-
-## Current stable pipeline
-
-The `main` branch contains the A+B true ensemble with registration-aware
-post-processing and a learned residual cost inside the sequential Hungarian
-motion relinker.
-
-Model checkpoints and competition data are intentionally excluded. See
-`models/README.md` for the expected external artifacts.
-
-## Environment
-
-The code targets Python 3.12 and the offline dependency bundle used by the
-Kaggle notebook. Paths are configured through the `BIOHUB_*` environment
-variables documented in the notebook.
-
-## Collaboration
-
-Use `main` for submission-ready code. Visualization and local-validation work
-lives on the `validation-visualization` branch and should be merged only after
-it is reproducible and does not change inference behavior.
+Working branch for reproducing and developing the Biohub Cell Tracking During
+Development solution. It contains the production reproducibility bundle,
+stage-specific training code, packaged inference models and offline wheels.
+The bundle records a historical Kaggle score of **0.957**

@@ -1,0 +1,1132 @@
+{
+  "package": "biohub_motion_corrector_team_handoff_20260831",
+  "created_utc": "2026-08-31T20:35:23.211042+00:00",
+  "production_checkpoint_sha256": "57b2fa4f0585c5915f46c2c99e9b48690b74654ea5652f19577963c474cf2ae5",
+  "production_checkpoint_verified": true,
+  "training_population": "historical equal-weight A+B raw shared detections before edge prediction, ILP, or post-processing",
+  "proposal_npz_count": 199,
+  "file_count_excluding_manifest_and_checksums": 224,
+  "total_bytes_excluding_manifest_and_checksums": 73641165,
+  "files": [
+    {
+      "path": "CURRENT_PRODUCTION/checkpoint_inspection.json",
+      "bytes": 1877,
+      "sha256": "b99b79f07884d546605b98458f0e01a9ca575e609e09303d606350608cd0174a"
+    },
+    {
+      "path": "CURRENT_PRODUCTION/inspect_checkpoint.py",
+      "bytes": 1054,
+      "sha256": "2096b26d3ede04faffe324d93a0ce2da191127cd2b628230dd8e7050bd299581"
+    },
+    {
+      "path": "CURRENT_PRODUCTION/motion_corrector_best.pt",
+      "bytes": 19005,
+      "sha256": "57b2fa4f0585c5915f46c2c99e9b48690b74654ea5652f19577963c474cf2ae5"
+    },
+    {
+      "path": "CURRENT_PRODUCTION/validation_history.json",
+      "bytes": 4623,
+      "sha256": "22bf73ac4220072d9c069eeda6f8e3e68cab385a88a3d5e94af750c3775c6121"
+    },
+    {
+      "path": "PRODUCTION_RUNTIME/production_motion_runtime_excerpt.py",
+      "bytes": 2025,
+      "sha256": "d165063220ba241b75e37de225f7e310fa31152a727d102c0136a3b9cb1c4a7d"
+    },
+    {
+      "path": "PRODUCTION_RUNTIME/production_runtime_contract.json",
+      "bytes": 1416,
+      "sha256": "6309ee45a134d17072e092e34488259aeeaa6f2a2b295572337481979cee97bc"
+    },
+    {
+      "path": "README.md",
+      "bytes": 7879,
+      "sha256": "bfb80992b92ea207792a00defd4c1c0040eccd4d091f99bdc9ebf8091c125f1c"
+    },
+    {
+      "path": "REFERENCE_ONLY_NONPRODUCTION_V2/README_WARNING.md",
+      "bytes": 526,
+      "sha256": "9b13b5411ebb660f899bfeec062df8fd81787bb2aecfde5ef74e67f09a4576c4"
+    },
+    {
+      "path": "REFERENCE_ONLY_NONPRODUCTION_V2/config.json",
+      "bytes": 1749,
+      "sha256": "07ea5ebc5b2d0f3f28164b5cda5d84cb49f97a4e31afd49058331a05e2863ece"
+    },
+    {
+      "path": "REFERENCE_ONLY_NONPRODUCTION_V2/metrics.json",
+      "bytes": 13940,
+      "sha256": "e6a4674c2fa2f12b4e2dad715ed8836d9a244c7dad35db8413da0cd5599ef552"
+    },
+    {
+      "path": "REFERENCE_ONLY_NONPRODUCTION_V2/motion_corrector_best.pt",
+      "bytes": 19517,
+      "sha256": "ce9afb0cec9c2b0be28706cfa0fec3a8d9c17c4d1bfdd60bfa678aea02c5bdbf"
+    },
+    {
+      "path": "REFERENCE_ONLY_NONPRODUCTION_V2/run_motion_cost_corrector_v2.sh",
+      "bytes": 1020,
+      "sha256": "348933eea4540a89be90c7cd0ea51e32663e837b28a95b91831fbd7662146193"
+    },
+    {
+      "path": "REFERENCE_ONLY_NONPRODUCTION_V2/summary.json",
+      "bytes": 2981,
+      "sha256": "71ae9ff311811dca395d87f2c5a2dcfb5d64def9ab5c94bfa26aac39780fe5ac"
+    },
+    {
+      "path": "REFERENCE_ONLY_NONPRODUCTION_V2/train_motion_cost_corrector_v2.py",
+      "bytes": 38728,
+      "sha256": "58408f4364e237b3eb4c7fae22c74cde0786781aefebe0b28ef16b6599b1f027"
+    },
+    {
+      "path": "REFERENCE_ONLY_NONPRODUCTION_V2/training_console.log",
+      "bytes": 21626,
+      "sha256": "8fc096667cc78df92b0038365f847ece551e898b85ab47ccc21be8755b164305"
+    },
+    {
+      "path": "TRAINING_V1/AB_GRAPH_IDENTITY.md",
+      "bytes": 945,
+      "sha256": "1ab00e558c5abafd42b1bfad2ce8e2b71f4a12a841554b68bf8b55ddb6c870ac"
+    },
+    {
+      "path": "TRAINING_V1/TRAINING_POPULATION.md",
+      "bytes": 1096,
+      "sha256": "643e4f263621a2759020eab9abd0df25fde515f54a3de6dc981e87a2959ffa59"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_0113de3b.npz",
+      "bytes": 223073,
+      "sha256": "d60f74d3c21696c9c44141c1a778956e73ebdc9cd20a63d3f648168e17714ca0"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_0b24845f.npz",
+      "bytes": 524480,
+      "sha256": "66e3b0bd13416dc7c1d1ba8a0080fed4fea732d836511fd1c6ab384e38aa431f"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_0c582fdc.npz",
+      "bytes": 307095,
+      "sha256": "aeac930304181b506fe7565d4c2a23d599b32576f299d9792f07e109186f2963"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_0db75fae.npz",
+      "bytes": 178645,
+      "sha256": "43c52f43449e230b1a3ef415de38b4939612243b132f22540f2dee96eeac1fed"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_12dfb391.npz",
+      "bytes": 539263,
+      "sha256": "2a59f7378ba090c70cc3f5c46bad35c24daaefa15de35357f5e899fe4cabd236"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_144b256d.npz",
+      "bytes": 705025,
+      "sha256": "2e2db1109e9729de3df48fe8875a4a9c335d0d55e73a72d24b8cfd77a6031af1"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_1574802b.npz",
+      "bytes": 192299,
+      "sha256": "5c8f5eed0c1404f76863b63cae576ff0479439da5d3aa0a6a15def9621df1f3f"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_18ced818.npz",
+      "bytes": 863208,
+      "sha256": "27b1062a83d14aaa3e94827930db1743eb9c71e58262133481ef4bc0f3bb2fc3"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_1d530831.npz",
+      "bytes": 432388,
+      "sha256": "6b76865cbf9414190a357d7d138e9362f4a2b7c21ec146037b506bc4ad31bc8a"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_24264f12.npz",
+      "bytes": 257594,
+      "sha256": "66533197874896b8a3fac39680268aabe7632fe52dc13696e06c6b0668feb741"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_267148e4.npz",
+      "bytes": 251302,
+      "sha256": "fcc5a5e3f28c04aaa55a76b89d4af99d49dbdb2caa5e5803ca7ca10c159de9ed"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_2a2eff9f.npz",
+      "bytes": 580305,
+      "sha256": "d08743c68b90325e9eb2cfebb4acb5c7b737dc6b7c6570875e560dfb632f8632"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_2f31fc2f.npz",
+      "bytes": 333641,
+      "sha256": "03a7466acd859f82381338310941cd86e6a949be67fd9d1a122d36cc4a18f05c"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_33b596bf.npz",
+      "bytes": 234012,
+      "sha256": "e42aba03380c2fec80c0a36684232775bb74fed6b77557d534e64c2b2a31eccf"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_341df25f.npz",
+      "bytes": 93911,
+      "sha256": "15da935549ba42102ed4a91c8fd20a925c5471b9a1c8d4638595ccf13795fc90"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_3a861e03.npz",
+      "bytes": 353807,
+      "sha256": "d7163a6257705a51577c42acc15302ed82d590c95a090e9c0853f8cfe6ba5da2"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_3bb3690f.npz",
+      "bytes": 330226,
+      "sha256": "991656e986d8c6461fecca22097203dd664ea7d7ea8b0f333b3c33c2d895244a"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_40c45f5a.npz",
+      "bytes": 409607,
+      "sha256": "5c6c491b699be1c2f8221ad2ca86b78ea273271f65716593b52f7d1dd45cb2f2"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_415c0a3a.npz",
+      "bytes": 566666,
+      "sha256": "3f3a8587dc0243f02d2c72773aa3f13e78ed4cea2839422538ea50575f4c9dcd"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_53f95252.npz",
+      "bytes": 427130,
+      "sha256": "43699d6a5b91525f8533864cc003f4688dc70848033d7f80c3f84e7128bb2be9"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_551a5dba.npz",
+      "bytes": 677581,
+      "sha256": "f630aef392fdc64e8a9d3fb0005223e1079cd373bed94c2d41146df2131625ee"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_5740d24b.npz",
+      "bytes": 204779,
+      "sha256": "474baf012e0dd8095038b271fdf0b9fd193560fb4fdcef6b1771bf5f3a47056c"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_587a1e22.npz",
+      "bytes": 174612,
+      "sha256": "8aa665c63d7a6685d49b4cb83ef4e5135458bf47dae1fc33f5e41dc366d8038f"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_5f15d135.npz",
+      "bytes": 424083,
+      "sha256": "32efb13f44fe627d57399fecf66ca8fa3a1e634a7cee78be4599db19d4bae0b2"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_668e0cc7.npz",
+      "bytes": 355958,
+      "sha256": "0f114a25153608c93baa643bc08797d917824ac69488f236e67843e498f123f4"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_66f9292d.npz",
+      "bytes": 571209,
+      "sha256": "cbdb64f81e9bd35519307f8874e889c1828117e67019efadc2c8c0188c2e808c"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_706092f0.npz",
+      "bytes": 713935,
+      "sha256": "a3bfb9a4937314c9233c4ee89c37c26fd1a874aee19261a4e47b624af07cf4b3"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_71a4179f.npz",
+      "bytes": 651838,
+      "sha256": "a573861c2b0ec56880e3ebe4198b9ea2033a366a20586ab05b4a28ed450a9035"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_74d0c52e.npz",
+      "bytes": 161652,
+      "sha256": "dc9838f799588421b2de6bec64f1a983ea8257a55182fd816e91d15723c050a3"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_7a302da0.npz",
+      "bytes": 754483,
+      "sha256": "fdd7908f40644150d8ceb00746480320cb7d88934926400d4285d7f743d615ca"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_7e557709.npz",
+      "bytes": 473629,
+      "sha256": "97f3f4a6a0ca17ca5d9dc24452967b2b33e5a2415b0be4452d0e35eb307bcddb"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_808952d6.npz",
+      "bytes": 180949,
+      "sha256": "3cc8a56a2950427fa310c11c7f41dd620ed88c8fefbbe3e638c15407e053f2ad"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_81c256f0.npz",
+      "bytes": 122760,
+      "sha256": "2a6b18595542a846deb90fccc2a50f0a14bd6ff382ff85b268840320faf5e118"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_87bba6c4.npz",
+      "bytes": 341679,
+      "sha256": "d3bc77a120ea5f60d73eea21555f42eb518ccadd1d7bcf927d4be2fcb492fef9"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_8cc6506c.npz",
+      "bytes": 365518,
+      "sha256": "d8cd9aa2cc217a0e2d14f71083592a80d9f9d3c3fcad94f2ba402ab44f3776bc"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_8f5ab931.npz",
+      "bytes": 315564,
+      "sha256": "e079b5313fb0dca0367bed74e33f9b4236c7c1f89acafdc9749e530c3be47c18"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_8f9ecab4.npz",
+      "bytes": 730421,
+      "sha256": "0d09909754e0ea1900ae05a7848824d30a04ebf07e2fac0970c70f542644d835"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_90724892.npz",
+      "bytes": 256674,
+      "sha256": "1ba0fcca1bbea889a26f909518006a3527a5d1a98df38d1438ccb8f23c09e275"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_949adeb1.npz",
+      "bytes": 450137,
+      "sha256": "b57c2b47a29c201958ea5ae7391f126fedd446581bdea194d464d85a375b301e"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_95029e92.npz",
+      "bytes": 55156,
+      "sha256": "1911d0311e2b4b7750120a88889f76cf73ab842cc2d7db8d7bd989fb350c6476"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_97725144.npz",
+      "bytes": 450435,
+      "sha256": "824bcfaef78281d4e92ca5d439346aef959b71e29dd80607eda845ed7a0d98fc"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_996155de.npz",
+      "bytes": 110808,
+      "sha256": "b21a64a0ce7906a0afd14924bda0b1e7eb6ff189a703ed91a80703d89fdaed18"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_9be80b04.npz",
+      "bytes": 673886,
+      "sha256": "273aa76bb7a075ba313443735aa1c092537cef5d6e8bf519c5a4c727e4a80059"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_9bfa6a0a.npz",
+      "bytes": 596362,
+      "sha256": "da661ba3d48fce08af66a89f5f99a50cfc52e518a9da1507db28a80fbf2570e9"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_a21120c2.npz",
+      "bytes": 196578,
+      "sha256": "acc97c2d6f128d632639e06a872166df8001e2597d2eea72384b22fe2ad360b1"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_a2bb48bb.npz",
+      "bytes": 822660,
+      "sha256": "69106dc58e73da6535bae75a91b3b6ade9afee79752bf1eea253bf1f26abc5ef"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_aaf8b0ea.npz",
+      "bytes": 243301,
+      "sha256": "cd362eb390798ad477a369f688a197e15d0beabf2c992ed5b35bcf8d3b575008"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_abf82518.npz",
+      "bytes": 301344,
+      "sha256": "5d57b3a1f6a5e7333602c2792a18284fde56baa9b181f8447361049f043ae2c9"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_b2c44266.npz",
+      "bytes": 593583,
+      "sha256": "f6e6e2d9a03d31a7f2d8e40ebd0baaf2e566d35a65e79433cd4edf4a9a07d6a4"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_c15fded2.npz",
+      "bytes": 188745,
+      "sha256": "69b3959cb68f0e7242d04fc62af3a93f4135796ac8771490c5d6ccbe52e79d4a"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_c50204e0.npz",
+      "bytes": 601524,
+      "sha256": "b3880ee4ac0a6224f6eec7d682723eeb2b9ce4935007518087e687e110462091"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_c771cb04.npz",
+      "bytes": 624755,
+      "sha256": "586c8181af92036f1d8520b02d70e2036d25056656e4512b4014395d63f51c66"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_c8e2a523.npz",
+      "bytes": 277813,
+      "sha256": "95ef3bf8ee1966b43a173b416a1e1ed028b2bf932d76741d03e0bc2e23148473"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_c96cfa10.npz",
+      "bytes": 458102,
+      "sha256": "6ee98d211282d475b568b357ae01b75b26e109bbc8e49644672683101ed863bb"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_cf2536e8.npz",
+      "bytes": 596960,
+      "sha256": "d0139e1706c4bc8205ebccbbe49d3c731a4eafd3ebd058cc851dc01155f987f3"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_cf8fed6b.npz",
+      "bytes": 414797,
+      "sha256": "a9ecc020f63bd7737b17fee7d4f2709cf4a755d8fb4346d8c4407673ae9df02b"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_d29c9ab2.npz",
+      "bytes": 320957,
+      "sha256": "955feaa04b7020b08ee9f30d4f6d47d5853ad334d08164249543c5e068eb6fc9"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_d2f34f90.npz",
+      "bytes": 297228,
+      "sha256": "f862350808bc7740a87d98d6fa9c6a5cbcf916f57757055d3b6aa5cfeceb9f5c"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_d5e7d891.npz",
+      "bytes": 521793,
+      "sha256": "58110147a622626927551083e07823ac597c1e2d47565dd3cbdff7953e04d55c"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_d754aa59.npz",
+      "bytes": 71310,
+      "sha256": "f2f0fc24dc92f2f37e90e1d686d68750f56d70a307b365b65d06483fa2533614"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_d78e09d9.npz",
+      "bytes": 223529,
+      "sha256": "6d160740b7474c3cec668fb3b7d77abaf422b4362f72a6b7bc59f831b8b5331e"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_db3c847b.npz",
+      "bytes": 197224,
+      "sha256": "ef3b8e9107fd4b7e8a7cc027a06803d9754d185c42d35b017b42c63798753766"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_ddf577ad.npz",
+      "bytes": 521999,
+      "sha256": "1d80579d00eb2f91466222645ff3e0b5f30c0b539543392b05ae8d9036df297b"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_deabac95.npz",
+      "bytes": 150146,
+      "sha256": "ef679f52bbce3f40c82f6722ec3a3ccdc867ad70162872e3203ea74ca2717103"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_e28840c6.npz",
+      "bytes": 735068,
+      "sha256": "242751deab7a3a3487e052a32c04e5f353c7596ee5b09e8ed331b30b6e528536"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_e29f0176.npz",
+      "bytes": 140491,
+      "sha256": "27b026f0dae123f1d791ee82d66ef33498fb687bdd0a037b38e67666067025b4"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_e31261b4.npz",
+      "bytes": 692653,
+      "sha256": "060b2689e083388953fa47fca14cc8e8ed03d82cc5093c1032a278524ef7f8f5"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_e35b117d.npz",
+      "bytes": 463119,
+      "sha256": "ea203ce950c8a2b6a84a2d59cc6f4e43e43ed86c54976066e1485d4057691095"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_e57ff5c6.npz",
+      "bytes": 284800,
+      "sha256": "19cd3ef142f4097ea24f10c05b63e2379ee95b9531f36eb3143ccc18778c2804"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_eb2880fc.npz",
+      "bytes": 457340,
+      "sha256": "cc67fffb9ec49ed3201e080d0225f75f0b92c8be994ccf05332c4ed243f617ca"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/44b6_f28707c6.npz",
+      "bytes": 207630,
+      "sha256": "ed005c5e236089b50188105f5c27a2e376937714ba29d9ffc985fb8ddb806e92"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_05b6850b.npz",
+      "bytes": 82592,
+      "sha256": "9f6decc9d9c1774ce1bbbab399d4524b77cd48e0abeb10632b7a016e9ddd5e00"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_05db0fb1.npz",
+      "bytes": 686981,
+      "sha256": "175c0049d10e165e97116c6d6a28271c0a3529ea1b4a6a88d87ecbfa9f22f117"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_062c8d37.npz",
+      "bytes": 67342,
+      "sha256": "2ce40205e7b1b98c493a297f1564e801389110d60907987ac36a34e809868d77"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_07477033.npz",
+      "bytes": 60253,
+      "sha256": "a0cb689b27c0ac80fe79f37e1176e73d5732712938d71ae4036e794d20db2064"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_07e24132.npz",
+      "bytes": 503671,
+      "sha256": "00c7da417bcaddcc75a326499b774d927e638313cf890109c6188d6001621263"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_085bf656.npz",
+      "bytes": 84439,
+      "sha256": "7d136f26a049f244f779d05fc36ae08423b7b7d37b1cd5438daa22f67bc8e7bf"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_09961292.npz",
+      "bytes": 279312,
+      "sha256": "1daf436043c44c85700a7fc54e4914b1d1782ae0fb55e6b094941bf1828a2eae"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_0c7fa718.npz",
+      "bytes": 130106,
+      "sha256": "82e8e2d51c7838a60e32fb9396f2758443b1b58f415a6ace26b137b886559b62"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_0e7c0d07.npz",
+      "bytes": 234265,
+      "sha256": "198aae379129b0faea89a25e177b28a722c17679fe9842778f85c9e3110eb192"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_12665c0e.npz",
+      "bytes": 79833,
+      "sha256": "9e023248b8c5d51e0680bf9c285af0c0c84da9ed90690c9fd278e1f44574eee6"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_13f19531.npz",
+      "bytes": 62132,
+      "sha256": "08b15f91a552c0d91e91d00aaa51ab92ab9930aa33ea7f8f4653cec0d6ec306d"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_15403b9a.npz",
+      "bytes": 57327,
+      "sha256": "0e23c9b4c067eb2ff49c906dca4a104cca924d70488a80784636403818d6a06c"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_1d0d8384.npz",
+      "bytes": 211770,
+      "sha256": "6d43577e4157b044df51c33da50eb8c008684e2fce7b2a5a3f2cdda5cc99103f"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_1ebfb80d.npz",
+      "bytes": 126160,
+      "sha256": "2519507fd5daf03c72a3a6fa32cd60c9c1bff5cadda5f56dce4bda690cd86500"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_1f58c2f6.npz",
+      "bytes": 374277,
+      "sha256": "92fbe64719f6a8384de330de977774256f2b6a8d9681bdf7884acb69b57e454e"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_207c6aaf.npz",
+      "bytes": 233529,
+      "sha256": "f5355b6ede37648989a40bdb45d2bfb33613289414f4e0118aa02ffe6c61914f"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_20852818.npz",
+      "bytes": 113686,
+      "sha256": "6bd93361f9312e3954e62bea2688d03b7e344261e3f30db2c26a201002d393ab"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_2312ac41.npz",
+      "bytes": 123319,
+      "sha256": "574ffeaa9583ef29a1e6311b313fdb54d1ce011ccd0f54a5e25a7aab3d74d0b7"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_23af9eeb.npz",
+      "bytes": 54843,
+      "sha256": "97d8b12e32fd6457e0bfa0e25e8c72dbe4a41c14e9c6bdc92f062e8588c6fe75"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_2540cd90.npz",
+      "bytes": 28758,
+      "sha256": "3bdd0fbc26267bd4492050687805cf75ea12d2eb4a9ca80d86d0827ebb03fec3"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_2646afc7.npz",
+      "bytes": 61990,
+      "sha256": "f373bc25036d288ce176795be92ebb636cc64a262aa54991f94a08ae48ca6a0d"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_268e1230.npz",
+      "bytes": 72524,
+      "sha256": "aaa49468eb6d986268fb2d5e13d67ac900d42756099fd5d56dbd11d174d4e5f7"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_2819ca14.npz",
+      "bytes": 49341,
+      "sha256": "30c99cf1350a59aa8d48fbeb063a99daeee06328e94e7eb0019a9c9634c8aaac"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_283bf9f1.npz",
+      "bytes": 207595,
+      "sha256": "abeaac69fec99476d7e8af7d12d79015bdaaa30a4e9c895af97c78f40ac88d31"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_312f0dc3.npz",
+      "bytes": 97124,
+      "sha256": "721161a623c434045cb4bae8bd21cd7793c328ee4a33ce6d4ff330b1a0f2e4ee"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_32db13fc.npz",
+      "bytes": 483815,
+      "sha256": "b029cb465f8019c479d00a8b02e46c71cdec48fda7fc10254d5e3ef134b72786"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_337b1b3a.npz",
+      "bytes": 258335,
+      "sha256": "f2aa5691b5f98f7d50857b77f10c51fcc9242fe2e8c2b6a483234db74eaaa33a"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_372c8cb8.npz",
+      "bytes": 71958,
+      "sha256": "bd03523268d5696da696db8ae9d4a514cad332441e32d5059f1ebf9f32ffb312"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_3a1849c2.npz",
+      "bytes": 84014,
+      "sha256": "1cab4a524b9e85c4428cea2ea01602c5396ebc70c57d063d1fa318576bbf326d"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_3abfe10a.npz",
+      "bytes": 649089,
+      "sha256": "056ef2ef84ca8a101b6d9c8c6a66b9ba0886dc989a97e30e2a05d421f1047564"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_3c5691b6.npz",
+      "bytes": 77535,
+      "sha256": "930628f8f285548ab8d6cf9ce08833e3b5e5eff99b7b3b60206ebb5776ad90c5"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_3db54e20.npz",
+      "bytes": 244897,
+      "sha256": "6a883f7c4c5b14e141d463b6ee7c8becbfd898b31b7e177e1a05d190f4ca092d"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_3fda6b25.npz",
+      "bytes": 144868,
+      "sha256": "3b9cd7d6837d8c20dd4f418d2baa5dd7d97636a8c7925590b10d08e28fa7a991"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_43fea39d.npz",
+      "bytes": 68783,
+      "sha256": "16faed1381e889edc8bc8941655d5d34c4f28536adeeb0429bff86d0d7252a4c"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_474be664.npz",
+      "bytes": 424470,
+      "sha256": "15a4c49600541198882b56312d8c8bdccf1452f9b6fc8953eaf79c384c89feba"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_48816121.npz",
+      "bytes": 218527,
+      "sha256": "98053baff0c871a0fa4e5d1c20231edbbb664ea85fd654edadfd64afcae9583d"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_4aa14c89.npz",
+      "bytes": 90097,
+      "sha256": "c2ff7689d5b30b84748d7c8ce279de2ca14beaec151be7a966ccf7ded6b8e09b"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_4f99ce20.npz",
+      "bytes": 53983,
+      "sha256": "5313cf3bd814fa308b5d323cb2bd0c3e8128d7052ca3001477feb9eda8cfec11"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_4ffd3da3.npz",
+      "bytes": 204428,
+      "sha256": "83b6f8c629164e8e53f4d51cff1680d43b5a399b9aa11d936432895f20709ad1"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_55b7eebe.npz",
+      "bytes": 47612,
+      "sha256": "2480adbae20195ba64225b8c8e0548d78049bbc75b942d5f2c9d8a0b94018eac"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_55c70843.npz",
+      "bytes": 493774,
+      "sha256": "8a3be95363dfa36659c38db83a708b9baedb81abc45f6de64b7b41b8318ce64b"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_57b7cc1e.npz",
+      "bytes": 976714,
+      "sha256": "9a4716605c168f8480c9cb05614d3fe5116a82b3ad0019a65c2fcd3cb2a1a24b"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_5a4d9360.npz",
+      "bytes": 55613,
+      "sha256": "7dd7839e63c0c8f69903bbafe1aaa8a2f7686ea3ba7a5dc69a2284336dcf21ff"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_5b28472a.npz",
+      "bytes": 79826,
+      "sha256": "9144569e5779d92108b3fceda93f19a2cd653bc117ae75a657d9e34bc79c5d9f"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_5c039895.npz",
+      "bytes": 74587,
+      "sha256": "4ab8f9f363c8c53f0b530232b39c2257f163adeef739d3afd8fb92a4c10a9077"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_5c824876.npz",
+      "bytes": 243706,
+      "sha256": "828b7a8f6d14b776d1b8a9734432b4f4dda807a78c8a507269d5f38407804887"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_5dfe9ad1.npz",
+      "bytes": 294413,
+      "sha256": "5933f1355dccc2eb278fba30cbac9101d74ecd88d3c1a768f97b02c5ea4c7274"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_5f89039d.npz",
+      "bytes": 41234,
+      "sha256": "6169a232547fad0cb4548675c2ebfddc268ad26af27a2b98b9f15d7da92e9ce9"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_61dd1e0d.npz",
+      "bytes": 122930,
+      "sha256": "b4eb7ffedb9506210664d6a19976389f69b5c0e132fe5d37bff21eaa0470287c"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_61ecbe65.npz",
+      "bytes": 68450,
+      "sha256": "b80a2b9320784364ddf8137d227ac61f2446f430536da03a9d3fdf619499e9de"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_6321a359.npz",
+      "bytes": 58435,
+      "sha256": "9feb5b35765f328dfe1b0354fe794cfc7bd3a623419ea0cd95974880ec01a0b9"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_6479435d.npz",
+      "bytes": 315789,
+      "sha256": "4bf8fbc9841e271ba76c4ec357e055fbdd15520f5d2f7ee3bfdd66e7c8f2b8ff"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_67ebd073.npz",
+      "bytes": 217554,
+      "sha256": "6444d901a58326f03760a822da86e2e05682e372ea2259bc5b6e841159e3044b"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_6ca87370.npz",
+      "bytes": 66821,
+      "sha256": "0f39463555bb8d6257b8d10bfdaf734109f6d1efd94f9148fb2ae922dc8ed504"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_6db0e9b4.npz",
+      "bytes": 304891,
+      "sha256": "71c2a2c3df36a21d5cbbe7de8393bbf68bfc56677c4db54eb530ea4ba8dbcf9c"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_6feb10f0.npz",
+      "bytes": 235699,
+      "sha256": "9859edca6af227a3b60467a0e5bfc9e3dcbcfc9b131d0fd6a92a79878004926d"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_6feeb0b1.npz",
+      "bytes": 79337,
+      "sha256": "4942342a7c2a84eafe5dcef3c40ba2ebad051ffa01cad69a82719f2e0b7ca01a"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_705ec2c9.npz",
+      "bytes": 79791,
+      "sha256": "6683126d13654194a60f04a834acaefc4c65b7bae5339a596eec71a03ecaba31"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_718b21f9.npz",
+      "bytes": 39448,
+      "sha256": "82e7e659cb1b1a8fb3bc69c1794b80811a6d7bf344ca4f77c642aad8a257d836"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_74686d6a.npz",
+      "bytes": 330751,
+      "sha256": "6808552a2c567507e1a1c77664abf92840c82fb824e3b8ea2e330811ef143b6d"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_767a1e17.npz",
+      "bytes": 538810,
+      "sha256": "1e86bd32511af835053ac77805366861eccfd7c42946c87f634f41728941acf2"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_76db78c1.npz",
+      "bytes": 44790,
+      "sha256": "43ed3be0df2f0a3a32a065dd0e0dc51762703faa79ba8dd8751be42b56ddeeb0"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_784a78c9.npz",
+      "bytes": 116529,
+      "sha256": "ecf30f4433006de6bdb41ae5242ac8324c3c90d180ba4bea7571f6ce29866eaa"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_786893ac.npz",
+      "bytes": 881244,
+      "sha256": "30e09d73860b3cead974b7116aed5e489fb8e7a9ffa8b7d0ddb9af9e737a5ecf"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_789f8168.npz",
+      "bytes": 112359,
+      "sha256": "25f10c88ed405920c1c853b185dd302c990497d9841761d41ac4325de0b9ff96"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_78a7bd97.npz",
+      "bytes": 465790,
+      "sha256": "88beec4a8ad8c078caf2ebc8b8add2927858206226ad45e20d05cf44941b4546"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_7af54fde.npz",
+      "bytes": 123879,
+      "sha256": "a499cc5e333c9b09d19a33b38163d6d8bd20ac5acd56085219e5b6ed73ea8f52"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_7b5d3b2c.npz",
+      "bytes": 57539,
+      "sha256": "720d7fa89c94f88f7145abf0e2efb196714473acab6675bfb8bc7b35f1fc7697"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_7d3058ae.npz",
+      "bytes": 83944,
+      "sha256": "9587977bbf810c624e640e8510d2120c8fc37a02691e1d111a9259f15f813750"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_7f87b3d8.npz",
+      "bytes": 96629,
+      "sha256": "f9ce42f3d79609e6664cec03a91c760fb68fc7f8789258f7347531549d771033"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_80d12824.npz",
+      "bytes": 107332,
+      "sha256": "265fe0595d9653cdeeaf12a4336a4d9c623c99157c0e4ab705b6da7f2d44f30b"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_825bd1c6.npz",
+      "bytes": 76156,
+      "sha256": "76c51e30c2fa6c9b6a0bf704df82d2951da9ce92953e09c1901be6d8e82df703"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_87289e13.npz",
+      "bytes": 135775,
+      "sha256": "02a2104faa3ed221c425f2a8562e6985b93aacf5b01895fe95a6d1f1d8e195eb"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_8b7818bf.npz",
+      "bytes": 63640,
+      "sha256": "5d342ca03438617fe638d2a476eff482188a6a42d3f86b22fde69bb3b8c36de3"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_907271db.npz",
+      "bytes": 66176,
+      "sha256": "60cd1a5ea6cebe28f79858520e97c4aa47542b88030693a64ea941bc14cd447b"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_91951b3a.npz",
+      "bytes": 106805,
+      "sha256": "b2a99a7740ed1ddc4fd11919d585f63b05dac32a15ffca2c5d22278fbe24b879"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_96833384.npz",
+      "bytes": 52438,
+      "sha256": "4ee3b1dab81906ae86014aada32fbb01f1ecb86672ba2a0bbd01f430f72901b1"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_969618f6.npz",
+      "bytes": 166974,
+      "sha256": "07ad52d27ad9161d9a79316ca40b44681dd15102ad30dfa3bd2d8bef69914e26"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_971fa5e0.npz",
+      "bytes": 56407,
+      "sha256": "26354ac0854a54886af5917a774c7f7f66cfc6047bb4753fa3c016aab90330af"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_9a41d029.npz",
+      "bytes": 174566,
+      "sha256": "31db65d875a7f1d176e8fdd526213985f01b528335a61bb0703052b972fc3697"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_9e23430b.npz",
+      "bytes": 104367,
+      "sha256": "6f7076f1de1a4ff3d49d0fbe0523989bc67165cf1a0a795d3d866b46bc428227"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_a5e926bb.npz",
+      "bytes": 79898,
+      "sha256": "6a15b4153721e49c070dda890b044e54925d87940cde2a5aacb1facb91e5b228"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_a90a0b9c.npz",
+      "bytes": 490762,
+      "sha256": "7c49807dcc96ca9ccdfa0351f6d4aaf43b2966599597dd90c85db94bc11a22f3"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_ab78413d.npz",
+      "bytes": 250389,
+      "sha256": "c76a3f11d348fae0f593f80af63406d3dbfd5986690b4a38061ca76c7f7b8a62"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_acd782a8.npz",
+      "bytes": 188314,
+      "sha256": "6145e632fef823188c01d345ef2d9fd5601f963e6c4f8c157f950dae99a44566"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_ae82a791.npz",
+      "bytes": 64160,
+      "sha256": "6c378002ee2fcbe01e06fc2766fb00b933fd98801ac30313c3bbe7a1168f4ccf"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_aeee7805.npz",
+      "bytes": 54804,
+      "sha256": "b434e0cfc0e21a755bfd48db37238b62b1fdddb1c8c29124e558c85a415e2301"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_af149c94.npz",
+      "bytes": 81928,
+      "sha256": "93de80b0ada322c2417bc466e5bf7373931db329aa95c75ad0c54a5c88419389"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_afb141ff.npz",
+      "bytes": 67986,
+      "sha256": "5f2416d5d328fd875c880111b0591bd4ac55fef75e35518cbc34f12ee7967415"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_b1ae37b9.npz",
+      "bytes": 242683,
+      "sha256": "42f3560d157ffb165ed4d5fa2dc8397e1d74b9e052a8d26eb8d6e3f69a767448"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_b204cac7.npz",
+      "bytes": 68587,
+      "sha256": "a75b25be5769095cd89fac8f969a05d1f01cfaa480afe0d80c1d59941f4f6130"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_b329af44.npz",
+      "bytes": 678818,
+      "sha256": "59890e7a628f288ae2699c849feb6cbbe003fa7b00fd919c7ac1db5bf01c1a4c"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_b693381b.npz",
+      "bytes": 63554,
+      "sha256": "932807fabb0d04d05324b63b775c0422546c331c06a063a5228c94b4b70db6e8"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_bb9f20c3.npz",
+      "bytes": 208291,
+      "sha256": "56e3de6f8ace1e368406ac06742ba674d24feb93dee920a36a01e606639875bd"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_bbb708ca.npz",
+      "bytes": 79694,
+      "sha256": "f91d9dfd3a3aaf15a415a25ff84c78dc8694073bc0879d7a1e989dfbea02c915"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_c27cba08.npz",
+      "bytes": 68672,
+      "sha256": "56ff4c0231f9203c446caa95c04ce896268ba8a0ec6902cfb9f27efa16d5b33c"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_c328f2fd.npz",
+      "bytes": 320556,
+      "sha256": "ac2c6a60b42dcb53310bdc272c27bb405e1e729e3b10a8837f151337d42b3de6"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_c73a1d11.npz",
+      "bytes": 328698,
+      "sha256": "1237b445de94bc9e66c0213d81e94ef5b5621673c6714d4f7e5f9e1ebee95f52"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_cdcfe533.npz",
+      "bytes": 243347,
+      "sha256": "e315c297c266e58feada101b771f7d019c17c6baa2ae7613ead7d607b526d3a5"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_cf35214c.npz",
+      "bytes": 328569,
+      "sha256": "28e410cc0b0ef8eef821d1ec9e9b8935e904b009cda327cd6ddedbfd386770ea"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_cff5865f.npz",
+      "bytes": 426792,
+      "sha256": "11e029e440af901de55b62a75867b4691fc540da5eb6a316ba99017dd689e5cd"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_d0fc38b5.npz",
+      "bytes": 66398,
+      "sha256": "fab85ceea9ba6e45abaf01d0e79d8aa8f6266538a981cc02a4a63f9039d68ab3"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_d1acb6ff.npz",
+      "bytes": 172094,
+      "sha256": "32c30cbc24ec951581a1954068d992eb92b68bc7bc111f8834b4f36e2199bb25"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_d2b9fc0c.npz",
+      "bytes": 164286,
+      "sha256": "3509ae4b1d2be15d8ac51711ad5960187363838976fb11a2513232ff6555e350"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_d3da753b.npz",
+      "bytes": 144095,
+      "sha256": "31a199ec164b9c17dd8695fc0cd2ca127585e0a35bf6dce80a2c4f7616d9829b"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_d5eae175.npz",
+      "bytes": 36953,
+      "sha256": "437308cbccaaa9ac46c08c7523d29fcb50b3fb70d57b0087dd80019fad2c660a"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_d6ecebbb.npz",
+      "bytes": 68376,
+      "sha256": "d5ef835dc1611126a7a867e0556a233f4a21d2317967378d367c061d182acb09"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_d82a4fc6.npz",
+      "bytes": 358412,
+      "sha256": "d138807826fabe5dd6890168c6a7021d5fa6770b1422362b1efa60e35dc7f5c5"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_debd7bfa.npz",
+      "bytes": 116511,
+      "sha256": "3765b79df9b5b371d2c49a2c7b0dd3919c1b47aa8b813df9c1d042b5eba60f86"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_df673a83.npz",
+      "bytes": 201052,
+      "sha256": "ea63b9674a705beb4f28747541894a9c2d9fdbcfd07260f3d80776997ce5990a"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_e16ffc58.npz",
+      "bytes": 61322,
+      "sha256": "9f450fe933c8e16c60649abcde17ca74af8151b930bafefd1e53f0d455863d9b"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_e5e44988.npz",
+      "bytes": 57634,
+      "sha256": "dd433c2f2e5f421c821feae14c15b0db1a9c37d0067ca5974a6fab58eb908623"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_ebdf3b34.npz",
+      "bytes": 570676,
+      "sha256": "8732fac50121370adbcab483a91dcf41df72994e45c5387dd58cb9c32ace72b0"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_ebff6e76.npz",
+      "bytes": 692533,
+      "sha256": "50319b04736d60f03197cebe71d8f21f6bb6ac35927134b522d7a136855933cd"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_ed9377fd.npz",
+      "bytes": 46612,
+      "sha256": "265604ca3952e52ce2b113eabe4f72e02bda7185eab5d9ec452ea6e651fbc8df"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_edf14583.npz",
+      "bytes": 619210,
+      "sha256": "a400ff46052fa223ecb7a663627c6e747082c1a1dfeeb069ee8f551f472fe6b5"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_eebc57a5.npz",
+      "bytes": 119018,
+      "sha256": "96b767ac327aaa95781edf15a956c347f9d71089b497ba6299ccea3154f16968"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_ef7b4f7e.npz",
+      "bytes": 64646,
+      "sha256": "dc83d55adc63ac768fcb9aacc1120af7b9ed4bbb1fdc7ec881757f74c52aa091"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_f17befbc.npz",
+      "bytes": 257265,
+      "sha256": "4512ef0296c0ccb08757aa63d8bf29aab40237691119ff8ff045190a4268b8dc"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_f1fde7e0.npz",
+      "bytes": 82898,
+      "sha256": "587054b410ce6c8338064184eb32a26f2b552bdefeb03e52cc510a60538cb0b6"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_f20478e9.npz",
+      "bytes": 51697,
+      "sha256": "69af0f62a4a109a6a2877bf9e7aaee792722acfb308c1406a01ad1c155cb3cfb"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_f4ae811c.npz",
+      "bytes": 101076,
+      "sha256": "4e571459a17efa0d1429b753764384b10eccaa9e89e4b45202fb816a1c898560"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_f8ffd5e7.npz",
+      "bytes": 347919,
+      "sha256": "f696ffa3ebe90454914ca5ec72eb1f843e68d38387ef37ef30121e6759aa8506"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_fbc898dc.npz",
+      "bytes": 52209,
+      "sha256": "c7fb4b65275ff4e6af745871c7904d6d1a3842b70eedb645f095b41864e75974"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_fc516dc6.npz",
+      "bytes": 82962,
+      "sha256": "e0e8e66142fcd887d559e035284ba41c426bf7170e994e137463fae5aa3bed8a"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_fc5f39dc.npz",
+      "bytes": 175121,
+      "sha256": "edda59cd8c41430e2d0d1c53a5c8bfe6dc30ef0d1b255927f04b8ab40c6fef22"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_fc83837d.npz",
+      "bytes": 195992,
+      "sha256": "cae450ff12411dd122b74659f577127ab78ff172315e977c60c5d46064970d73"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/6bba_fe670320.npz",
+      "bytes": 100897,
+      "sha256": "5e931929b8b26db4f06dada08a83523777733ab8d3ac8d47225cd29df3b1d4bc"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/manifest.csv",
+      "bytes": 16903,
+      "sha256": "d2a81b31100909ac521f6bdef0cca9f7665d81eef2a22cab2a0ae963d7f0feac"
+    },
+    {
+      "path": "TRAINING_V1/ab_proposals/manifest.json",
+      "bytes": 1071,
+      "sha256": "d5c82da15734ae116dae5f1dba67f7c653aea0e3015889754ae89699e53f3d4a"
+    },
+    {
+      "path": "TRAINING_V1/finetune_edge_head_on_proposals.py",
+      "bytes": 30102,
+      "sha256": "a93b1593261a8e51c0fcc44515685bcb87e0b2d736f480c1aaae2c2a7ecc107d"
+    },
+    {
+      "path": "TRAINING_V1/historical_training_console.log",
+      "bytes": 18909,
+      "sha256": "4e3ccd1596fab5ffea1b3db109f92620f240af1c43914da8603b37273b89b6fe"
+    },
+    {
+      "path": "TRAINING_V1/splits_ensembleB.json",
+      "bytes": 4021,
+      "sha256": "bd8412cd8b4033d665a0fdcdcb2f5da288ce679266c964d655b5381c5e8bfad9"
+    },
+    {
+      "path": "TRAINING_V1/train_motion_cost_corrector.py",
+      "bytes": 11622,
+      "sha256": "3f801a3dd557e9e5293c0894c0f22a27b4afe8acb19d54c2d608239c13125aed"
+    },
+    {
+      "path": "TRAINING_V1/training_cache/train.npz",
+      "bytes": 9835598,
+      "sha256": "b65bdc06e39d61f8775ad6511c9558993ab66ff8aa27bfb5c50ff8d4238f26d6"
+    },
+    {
+      "path": "TRAINING_V1/training_cache/val.npz",
+      "bytes": 10997840,
+      "sha256": "a86761ad9b879842328b0a72494a2cffd9a068d11207959fceec6dc59c8a4ec5"
+    }
+  ]
+}

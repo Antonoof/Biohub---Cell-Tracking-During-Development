@@ -1,0 +1,58 @@
+{
+  "version": "biohub-public934-source-cardinality-v2",
+  "checkpoint_sha256": "18AFB6E10B0D551354240DF50497B5C9B5330D2DC08A5BF6FEF570F09CCB2CC3",
+  "source_features": 41,
+  "pair_features": 150,
+  "pair_feature_order": [
+    "v2_geometry_78",
+    "model_c_native_evidence_24",
+    "public_p1_native_evidence_24",
+    "public_p2_native_evidence_24"
+  ],
+  "options": "CONTINUE plus DIVIDE(a,b) pairs, normalized per source",
+  "threshold": 0.4,
+  "threshold_source": "five-fold grouped train-video OOF",
+  "max_pairs_training_and_serving": 128,
+  "pair_cap_order": "stable V2 geometry order",
+  "maximum_supervised_pairs_per_source": 96,
+  "unknown_supervised_as_negative": false,
+  "null_daughter_class": false,
+  "runtime_files": [
+    "source_cardinality_runtime.py",
+    "source_cardinality_graph_runtime.py",
+    "export_model_c_native_division_evidence.py"
+  ],
+  "native_evidence": {
+    "detection_tta_views": 4,
+    "detection_threshold": 0.96875,
+    "pool_kernel_um": 5.0,
+    "edge_feature_view": "identity",
+    "radius_um": 20.0,
+    "topk_per_source": 16,
+    "minimum_probability": 0.01
+  },
+  "graph_contract": {
+    "tube_nms": true,
+    "one_event_per_tube": true,
+    "atomic_two_daughter_transaction": true,
+    "maximum_indegree": 1,
+    "maximum_outdegree": 2
+  },
+  "held20_exact": {
+    "adjusted_edge_jaccard": 0.9052288552670273,
+    "division_tp": 7,
+    "division_fp": 8,
+    "division_fn": 10,
+    "division_jaccard": 0.28,
+    "composite": 0.9332288552670274
+  },
+  "combined_preserved_graph_held20_exact": {
+    "adjusted_edge_jaccard": 0.9128668822765525,
+    "division_tp": 6,
+    "division_fp": 10,
+    "division_fn": 11,
+    "division_jaccard": 0.2222222222222222,
+    "composite": 0.9350891044987748,
+    "delta_vs_existing_public934": 0.018124904498774796
+  }
+}

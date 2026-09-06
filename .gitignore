@@ -9,6 +9,9 @@ results/
 *.csv
 *.png
 *.jpg
+kaggle/input/datasets/pilkwang
+kaggle/input/datasets/tweakai
+synthetic
 
 # Model artifacts
 weights/
@@ -36,3 +39,8 @@ venv/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Local planning documents
+/IMPLEMENTATION_PLAN.md
+/IMPROVEMENT_PLAN.md
+/IMPROVMENT_PLAN.md
