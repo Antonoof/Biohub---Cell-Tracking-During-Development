@@ -137,6 +137,21 @@ def test_infer_notebook_uses_package_apis() -> None:
     assert 'process_graph' in source
     assert 'assemble_submission' in source
     assert 'upgrade.csv_columns' in source
+    assert '/kaggle/input' in source
+    assert '/kaggle/working' in source
+    assert 'BIOHUB_ROOT' in source
+    assert 'sys.path' in source
+    assert 'submission.csv' in source
+    assert 'DATASETS_DIR' in source
+    assert 'ensure_dependencies' in source
+    assert '--find-links' in source
+    assert '--no-index' in source
+    assert 'pilkwang/biohub-tracking-support-pack-50ep-v1' in source
+    assert 'tweakai/biohub-edgegraft-v3-full-population-v1' in source
+    assert "artifact(MODELS['model_c_dir'], 'deploy_spec.json')" in source
+    assert 'Float16' in source
+    assert 'weights.zip' in source
+    assert "uv', 'pip', 'install'" not in source
 
 
 def _argparse_dests(fn) -> set[str]:

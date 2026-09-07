@@ -232,9 +232,12 @@ def _read_yaml(path: Path) -> dict[str, Any]:
     return loaded
 
 
-def resolve_bundle_paths(bundle_dir: Path) -> dict[str, Path]:
+def resolve_bundle_paths(
+    bundle_dir: Path,
+    overrides: dict[str, Path] | None = None,
+) -> dict[str, Path]:
     root = bundle_dir.resolve()
-    return {
+    paths = {
         'bundle_dir': root,
         'p1_checkpoint': root
         / 'p1'
@@ -259,6 +262,10 @@ def resolve_bundle_paths(bundle_dir: Path) -> dict[str, Path]:
         'edgegraft_dir': root / 'edgegraft',
         'candidategraft_dir': root / 'candidategraft',
     }
+    if overrides:
+        for key, value in overrides.items():
+            paths[key] = Path(value).resolve()
+    return paths
 
 
 def build_tracking_paths(
@@ -303,6 +310,7 @@ def load_tracking_config(
     work_dir: Path,
     submission: Path | None = None,
     config_path: Path | None = None,
+    bundle_paths: dict[str, Path] | None = None,
 ) -> TrackingConfig:
     if config_path is not None:
         path = Path(config_path)
@@ -316,5 +324,5 @@ def load_tracking_config(
     payload = {key: raw[key] for key in TRACKING_KEYS if key in raw}
     payload['voxel_scale_um'] = tuple(float(v) for v in payload['voxel_scale_um'])
     payload['paths'] = build_tracking_paths(work_dir, test_dir, submission=submission)
-    payload['bundle'] = resolve_bundle_paths(resolve_path(bundle_dir))
+    payload['bundle'] = resolve_bundle_paths(resolve_path(bundle_dir), bundle_paths)
     return TrackingConfig.model_validate(payload)

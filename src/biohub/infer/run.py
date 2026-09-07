@@ -80,12 +80,14 @@ def build_tracking(
     bundle_dir: Path,
     test_dir: Path,
     work_dir: Path,
+    bundle_paths: dict[str, Path] | None = None,
 ) -> TrackingConfig:
     return load_tracking_config(
         config_path=config_path,
         bundle_dir=bundle_dir,
         test_dir=test_dir,
         work_dir=work_dir,
+        bundle_paths=bundle_paths,
     )
 
 
@@ -110,6 +112,8 @@ def _predictor_environment(tracking: TrackingConfig) -> dict[str, str]:
     speed = tracking.speed
     association = tracking.association
     max_bytes = int(speed.uncompressed_evidence_max_mb * 1024 * 1024)
+    src = str(PROJECT_ROOT / 'src')
+    pythonpath = os.environ.get('PYTHONPATH', '')
     return {
         'BIOHUB_UNCOMPRESSED_EVIDENCE': '1' if speed.uncompressed_evidence else '0',
         'BIOHUB_UNCOMPRESSED_EVIDENCE_MAX_BYTES': str(max_bytes),
@@ -119,6 +123,8 @@ def _predictor_environment(tracking: TrackingConfig) -> dict[str, str]:
             association.guarded_secondary_edge_weight
         ),
         'BIOHUB_CUDNN_BENCHMARK': '1' if speed.cudnn_benchmark else '0',
+        'BIOHUB_ROOT': str(PROJECT_ROOT),
+        'PYTHONPATH': src if not pythonpath else src + os.pathsep + pythonpath,
     }
 
 
