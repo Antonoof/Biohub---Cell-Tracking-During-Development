@@ -88,8 +88,7 @@ def test_compare_reads_completeness_when_manifest_omits_level(tmp_path: Path) ->
     movie_id = _write_gt(train_dir)
     catalog = tmp_path / 'catalog.json'
     catalog.write_text(
-        json.dumps({'movies': [{'movie_id': movie_id, 'estimated_number_of_nodes': 3}]})
-        + '\n'
+        json.dumps({'movies': [{'movie_id': movie_id, 'estimated_number_of_nodes': 3}]}) + '\n'
     )
     config = _eval_config(tmp_path, train_dir, catalog)
     payload = run_evaluate(

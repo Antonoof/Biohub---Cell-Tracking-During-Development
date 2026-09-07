@@ -101,8 +101,7 @@ def load_model(
         constructed = [hidden_dim, n_heads, n_blocks]
         if saved != constructed:
             raise RuntimeError(
-                'Detector architecture mismatch: '
-                f'checkpoint {saved} vs config {constructed}'
+                f'Detector architecture mismatch: checkpoint {saved} vs config {constructed}'
             )
     missing, unexpected = model.load_state_dict(state, strict=False)
     allowed_missing = {'_arch'}

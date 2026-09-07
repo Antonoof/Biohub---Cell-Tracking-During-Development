@@ -13,7 +13,7 @@ def _bank(path: Path) -> Path:
     for video_index in range(5):
         dataset = f'vid_{video_index}'
         for source in range(6):
-            row = {name: float(rng.normal()) for name in FEATURES}
+            row: dict[str, object] = {name: float(rng.normal()) for name in FEATURES}
             row.update(
                 {
                     'dataset': dataset,

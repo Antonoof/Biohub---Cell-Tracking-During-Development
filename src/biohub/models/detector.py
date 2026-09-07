@@ -28,8 +28,6 @@ class UNetNodeTransformer(nn.Module):
             n_blocks=n_blocks,
             dropout=dropout,
         )
-        # Head count does not change parameter shapes. Persist it so load_model
-        # can refuse an 8-head checkpoint loaded into a 4-head default graph.
         self.register_buffer(
             '_arch',
             torch.tensor([int(hidden_dim), int(n_heads), int(n_blocks)], dtype=torch.int64),

@@ -526,12 +526,10 @@ def train_fold(data, train_embryo: str, val_embryo: str, args, device):
     pm, ps = px[pair_train].mean(0), px[pair_train].std(0).clip(1e-4)
     source_hidden = _hidden_tuple(args.source_hidden, (96, 48))
     pair_hidden = _hidden_tuple(args.pair_hidden, (128, 64))
-    source_model = DivisionMLP(
-        sx.shape[1], source_hidden, args.dropout_1, args.dropout_2
-    ).to(device)
-    pair_model = DivisionMLP(
-        px.shape[1], pair_hidden, args.dropout_1, args.dropout_2
-    ).to(device)
+    source_model = DivisionMLP(sx.shape[1], source_hidden, args.dropout_1, args.dropout_2).to(
+        device
+    )
+    pair_model = DivisionMLP(px.shape[1], pair_hidden, args.dropout_1, args.dropout_2).to(device)
     opt = torch.optim.AdamW(
         list(source_model.parameters()) + list(pair_model.parameters()),
         lr=args.lr,
@@ -637,12 +635,10 @@ def train_full(data, epochs: int, threshold: float, args, device):
     pm, ps = px.mean(0), px.std(0).clip(1e-4)
     source_hidden = _hidden_tuple(args.source_hidden, (96, 48))
     pair_hidden = _hidden_tuple(args.pair_hidden, (128, 64))
-    source_model = DivisionMLP(
-        sx.shape[1], source_hidden, args.dropout_1, args.dropout_2
-    ).to(device)
-    pair_model = DivisionMLP(
-        px.shape[1], pair_hidden, args.dropout_1, args.dropout_2
-    ).to(device)
+    source_model = DivisionMLP(sx.shape[1], source_hidden, args.dropout_1, args.dropout_2).to(
+        device
+    )
+    pair_model = DivisionMLP(px.shape[1], pair_hidden, args.dropout_1, args.dropout_2).to(device)
     opt = torch.optim.AdamW(
         list(source_model.parameters()) + list(pair_model.parameters()),
         lr=args.lr,

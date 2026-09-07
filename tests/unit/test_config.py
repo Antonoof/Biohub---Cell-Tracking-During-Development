@@ -136,6 +136,7 @@ def test_infer_notebook_uses_package_apis() -> None:
     assert 'GraphUpgrade' in source
     assert 'process_graph' in source
     assert 'assemble_submission' in source
+    assert "configs' / ('infer_kaggle.yaml' if ON_KAGGLE else 'infer.yaml')" in source
     assert 'upgrade.csv_columns' in source
     assert '/kaggle/input' in source
     assert '/kaggle/working' in source

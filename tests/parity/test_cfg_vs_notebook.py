@@ -6,7 +6,6 @@ from biohub.paths import PROJECT_ROOT
 from tests.parity.notebook import notebook_cell_source
 
 PATH_KEYS = {'root', 'dir', 'path', 'paths', 'gt_dir', 'report_path'}
-# Serving yaml may differ on throughput knobs; notebook still pins association/division math.
 THROUGHPUT_KEYS = {
     ('detection', 'unet_batch_size'),
     ('graph', 'deepcenter_device'),

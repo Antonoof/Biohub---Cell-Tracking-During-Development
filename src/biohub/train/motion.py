@@ -4,6 +4,8 @@ import argparse
 import hashlib
 import json
 import pickle
+import shutil
+import tempfile
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -21,7 +23,9 @@ from torch.utils.data import DataLoader, TensorDataset
 from biohub.features.motion import MOTION_TRAIN_FEATURES as FEATURES
 from biohub.features.motion import RUNTIME_DROP
 from biohub.infer.config import GraphConfig
+from biohub.metrics.official import supervised_edge_score
 from biohub.models.motion import MotionResidual
+from biohub.modules.graph.geometry import sanitized_edge_probs
 from biohub.modules.graph.motion import motion_relink_edges
 from biohub.paths import PROJECT_ROOT
 from biohub.train import motion_cache as ft
@@ -31,7 +35,7 @@ from biohub.utils.parallel import ordered_process_map
 from biohub.utils.seed import dataloader_generator, seed_everything
 from biohub.utils.yaml_config import load_yaml
 
-CACHE_GENERATOR_VERSION = 'proposal_sha256_v1'
+CACHE_GENERATOR_VERSION = 'rollout_probs_required_v1'
 
 
 def argspec():
@@ -218,10 +222,21 @@ def rollout_graph(video) -> dict:
     for index in range(len(video.coords)):
         t, z, y, x = (float(value) for value in video.coords[index])
         nodes_by_id[int(index)] = {'t': int(t), 'z': z, 'y': y, 'x': x}
+    learned = getattr(video, 'edges', None)
+    edges = (
+        None
+        if learned is None
+        else [
+            {'source_id': int(source), 'target_id': int(target), 'edge_prob': float(prob)}
+            for source, target, prob in learned
+        ]
+    )
     return {
+        'stem': getattr(video, 'stem', ''),
         'nodes_by_id': nodes_by_id,
         'matches': np.asarray(video.matches),
         'gt_edges': [(int(src), int(dst)) for src, dst in video.gt_edges],
+        'edges': edges,
     }
 
 
@@ -231,6 +246,57 @@ def _motion_video_cache(item):
     rows, meta, _gid = video_rows(video, 0, name == 'train', args)
     payload = rollout_graph(video) if name != 'train' else None
     return rows, meta, payload
+
+
+def _missing_rollout_stems(rollouts) -> list[str]:
+    return [
+        str(payload.get('stem') or index)
+        for index, payload in enumerate(rollouts)
+        if payload.get('edges') is None
+    ]
+
+
+def _commit_motion_cache(
+    cache: Path,
+    name: str,
+    *,
+    arrays: list,
+    group_meta: np.ndarray,
+    manifest: dict,
+    rollouts: list | None,
+) -> None:
+    if rollouts is not None:
+        missing = _missing_rollout_stems(rollouts)
+        if missing:
+            raise RuntimeError(
+                'Proposal NPZ missing learned edge probability columns '
+                '(edge_source/edge_target/edge_prob); geometry-only rollout is not a '
+                f'serving fallback. missing={missing}'
+            )
+    cache.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=f'.staging-{name}-', dir=cache))
+    try:
+        np.savez_compressed(
+            staging / f'{name}.npz',
+            features=arrays[0],
+            labels=arrays[1],
+            supervision=arrays[2],
+            groups=arrays[3],
+            src=arrays[4],
+            tgt=arrays[5],
+            registered=arrays[6],
+            group_meta=group_meta,
+            feature_names=np.asarray(FEATURES),
+        )
+        (staging / f'{name}_manifest.json').write_text(
+            json.dumps(manifest, indent=2, sort_keys=True) + '\n'
+        )
+        if rollouts is not None:
+            (staging / f'{name}_rollout.pkl').write_bytes(pickle.dumps(rollouts))
+        for path in staging.iterdir():
+            path.replace(cache / path.name)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
 
 
 def make_cache(stems, name, args):
@@ -250,26 +316,15 @@ def make_cache(stems, name, args):
             rollouts.append(payload)
     arrays = [np.concatenate([r[i] for r in allrows]) for i in range(7)]
     gm = np.asarray(meta, np.int32)
-    args.cache.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(
-        args.cache / f'{name}.npz',
-        features=arrays[0],
-        labels=arrays[1],
-        supervision=arrays[2],
-        groups=arrays[3],
-        src=arrays[4],
-        tgt=arrays[5],
-        registered=arrays[6],
+    _commit_motion_cache(
+        Path(args.cache),
+        name,
+        arrays=arrays,
         group_meta=gm,
-        feature_names=np.asarray(FEATURES),
+        manifest=cache_manifest(limited, name, args),
+        rollouts=None if name == 'train' else rollouts,
     )
     print(name, len(arrays[1]), 'positive', int(arrays[1].sum()), 'groups', len(gm))
-    manifest_path = args.cache / f'{name}_manifest.json'
-    manifest_path.write_text(
-        json.dumps(cache_manifest(limited, name, args), indent=2, sort_keys=True) + '\n'
-    )
-    if name != 'train':
-        (args.cache / f'{name}_rollout.pkl').write_bytes(pickle.dumps(rollouts))
 
 
 def _file_sha256(path: Path) -> str:
@@ -314,6 +369,12 @@ def assert_cache_manifest(stems, name, args) -> None:
         raise RuntimeError(
             f'Motion rollout cache missing: {name}_rollout.pkl; pass --rebuild-cache'
         )
+    if name != 'train':
+        payloads = pickle.loads((Path(args.cache) / f'{name}_rollout.pkl').read_bytes())
+        if any(item.get('edges') is None for item in payloads):
+            raise RuntimeError(
+                'Motion rollout cache missing learned edge probabilities; pass --rebuild-cache'
+            )
 
 
 def serving_motion_runtime(corrector=None, *, config_path: Path | None = None):
@@ -368,23 +429,51 @@ def serving_motion_runtime(corrector=None, *, config_path: Path | None = None):
     )
 
 
-def score_motion_rollout(payloads, corrector=None, *, config_path: Path | None = None) -> dict:
+def _payload_learned_edges(payload, *, geometry_only: bool) -> list[dict]:
+    if geometry_only:
+        return []
+    if 'edges' not in payload or payload['edges'] is None:
+        stem = payload.get('stem') or 'unknown'
+        raise RuntimeError(
+            'Motion serving rollout requires learned edge probabilities; '
+            f'{stem} has no edge_source/edge_target/edge_prob schema. '
+            'Use geometry_only=True for diagnostic scoring'
+        )
+    raw_edges = list(payload['edges'])
+    if raw_edges and not isinstance(raw_edges[0], dict):
+        return [
+            {'source_id': int(source), 'target_id': int(target), 'edge_prob': float(prob)}
+            for source, target, prob in raw_edges
+        ]
+    return raw_edges
+
+
+def score_motion_rollout(
+    payloads,
+    corrector=None,
+    *,
+    config_path: Path | None = None,
+    geometry_only: bool = False,
+) -> dict:
     upgrade = serving_motion_runtime(corrector, config_path=config_path)
     tp = fp = fn = 0
     for payload in payloads:
         stats: dict = defaultdict(int)
-        selected = motion_relink_edges(upgrade, payload['nodes_by_id'], stats)
-        pred = set()
-        matches = np.asarray(payload['matches'])
-        for edge in selected:
-            src = int(matches[int(edge['source_id'])])
-            tgt = int(matches[int(edge['target_id'])])
-            if src >= 0 and tgt >= 0:
-                pred.add((src, tgt))
-        gt = {(int(src), int(dst)) for src, dst in payload['gt_edges']}
-        tp += len(pred & gt)
-        fp += len(pred - gt)
-        fn += len(gt - pred)
+        raw_edges = _payload_learned_edges(payload, geometry_only=geometry_only)
+        selected = motion_relink_edges(
+            upgrade,
+            payload['nodes_by_id'],
+            stats,
+            {} if geometry_only else sanitized_edge_probs(upgrade, raw_edges),
+        )
+        counts = supervised_edge_score(
+            [(int(edge['source_id']), int(edge['target_id'])) for edge in selected],
+            np.asarray(payload['matches']),
+            payload['gt_edges'],
+        )
+        tp += counts['tp']
+        fp += counts['fp']
+        fn += counts['fn']
     return {
         'tp': tp,
         'fp': fp,
@@ -392,6 +481,7 @@ def score_motion_rollout(payloads, corrector=None, *, config_path: Path | None =
         'precision': tp / max(tp + fp, 1),
         'recall': tp / max(tp + fn, 1),
         'jaccard': tp / max(tp + fp + fn, 1),
+        'geometry_only': geometry_only,
     }
 
 
@@ -508,9 +598,11 @@ def main():
         'std': std,
         'residual_scale': args.residual_scale,
     }
+    geometry = score_motion_rollout(rollout_payloads, baseline_corrector, geometry_only=True)
     baseline = score_motion_rollout(rollout_payloads, baseline_corrector)
     best = baseline['jaccard']
     print('MOTION DIAGNOSTIC', diagnostic)
+    print('MOTION ROLLOUT GEOMETRY', geometry)
     print('MOTION ROLLOUT BASELINE', baseline)
     torch.save(
         {
@@ -556,20 +648,20 @@ def main():
         corr = residuals(model, xv, mean, std, args)
         selected = assignments(xv[:, 0] - corr, reg, gv, src, tgt, meta, args)
         diagnostic = score(selected, yv, sv, gv, meta)
-        rollout = score_motion_rollout(
-            rollout_payloads,
-            {
-                'model': model,
-                'mean': mean,
-                'std': std,
-                'residual_scale': args.residual_scale,
-            },
-        )
+        corrector = {
+            'model': model,
+            'mean': mean,
+            'std': std,
+            'residual_scale': args.residual_scale,
+        }
+        geometry = score_motion_rollout(rollout_payloads, corrector, geometry_only=True)
+        rollout = score_motion_rollout(rollout_payloads, corrector)
         row = {
             'epoch': ep,
             'loss': float(np.mean(ls)),
             'seconds': time.time() - t0,
             'diagnostic_jaccard': diagnostic['jaccard'],
+            'diagnostic_rollout_jaccard': geometry['jaccard'],
             **rollout,
         }
         hist.append(row)
@@ -580,6 +672,7 @@ def main():
                 'train/loss': row['loss'],
                 'val/jaccard': row['jaccard'],
                 'val/diagnostic_jaccard': diagnostic['jaccard'],
+                'val/diagnostic_rollout_jaccard': geometry['jaccard'],
                 'val/precision': row.get('precision', 0.0),
                 'val/recall': row.get('recall', 0.0),
             },

@@ -1,4 +1,3 @@
-import json
 import os
 import subprocess
 import sys
@@ -24,14 +23,13 @@ BUNDLE = PROJECT_ROOT / 'kaggle' / 'input' / 'datasets' / 'antonoof' / 'all_file
 
 
 @pytest.mark.slow
+@pytest.mark.skipif(not GOLDEN.is_file(), reason='package golden CSV is missing')
+@pytest.mark.skipif(
+    not (TRAIN_DIR / f'{MOVIE}.zarr').exists() or not BUNDLE.exists(),
+    reason='train movie or frozen weights are missing',
+)
+@pytest.mark.skipif(not torch.cuda.is_available(), reason='GPU is missing')
 def test_infer_one_movie_matches_package_golden(tmp_path: Path) -> None:
-    movie = TRAIN_DIR / f'{MOVIE}.zarr'
-    if not GOLDEN.is_file():
-        pytest.skip('package golden CSV is missing')
-    if not movie.exists() or not BUNDLE.exists():
-        pytest.skip('train movie or frozen weights are missing')
-    if not torch.cuda.is_available():
-        pytest.skip('GPU is missing')
     raw = yaml.safe_load((PROJECT_ROOT / 'configs' / 'infer.yaml').read_text())
     raw['graph']['deepcenter_device'] = 'cpu'
     raw['runtime']['cpu_workers'] = 1
@@ -39,22 +37,6 @@ def test_infer_one_movie_matches_package_golden(tmp_path: Path) -> None:
     config_path = tmp_path / 'infer.yaml'
     config_path.write_text(yaml.safe_dump(raw, sort_keys=False))
     runs_root = tmp_path / 'runs'
-    payload_path = tmp_path / 'payload.json'
-    script = tmp_path / 'run_one.py'
-    script.write_text(
-        'import json\n'
-        'from pathlib import Path\n'
-        'from biohub.infer.run import run_inference\n'
-        'payload = run_inference(\n'
-        f'    config=Path({str(config_path)!r}),\n'
-        f'    movie={MOVIE!r},\n'
-        f'    movies_dir=Path({str(TRAIN_DIR)!r}),\n'
-        '    gpu_workers=1,\n'
-        "    run_id='package_golden',\n"
-        f'    runs_root=Path({str(runs_root)!r}),\n'
-        ')\n'
-        f'Path({str(payload_path)!r}).write_text(json.dumps(payload) + chr(10))\n'
-    )
     env = os.environ.copy()
     src = str(PROJECT_ROOT / 'src')
     pythonpath = env.get('PYTHONPATH', '')
@@ -69,7 +51,26 @@ def test_infer_one_movie_matches_package_golden(tmp_path: Path) -> None:
         'BLIS_NUM_THREADS',
     ):
         env[key] = '8'
-    subprocess.check_call([sys.executable, str(script)], cwd=PROJECT_ROOT, env=env)
-    payload = json.loads(payload_path.read_text())
-    produced = Path(payload['submission'])
+    subprocess.check_call(
+        [
+            sys.executable,
+            '-m',
+            'biohub.infer.run',
+            '--config',
+            str(config_path),
+            '--movie',
+            MOVIE,
+            '--movies-dir',
+            str(TRAIN_DIR),
+            '--gpu-workers',
+            '1',
+            '--run-id',
+            'package_golden',
+            '--runs-root',
+            str(runs_root),
+        ],
+        cwd=PROJECT_ROOT,
+        env=env,
+    )
+    produced = runs_root / 'package_golden' / 'workdir' / 'submission.csv'
     assert produced.read_bytes() == GOLDEN.read_bytes()

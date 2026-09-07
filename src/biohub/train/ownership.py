@@ -108,7 +108,7 @@ def export_serving_artifact(
     output: Path,
     models: list[ExtraTreesClassifier],
     scored: pd.DataFrame,
-    fold_rows: list[dict[str, int]],
+    fold_rows: list[dict[str, int | str]],
     args: argparse.Namespace,
 ) -> dict:
     model_dir = output / 'models'
@@ -197,7 +197,7 @@ def main() -> None:
     ]
     parts: list[pd.DataFrame] = []
     models: list[ExtraTreesClassifier] = []
-    fold_rows: list[dict[str, int]] = []
+    fold_rows: list[dict[str, int | str]] = []
     writer = open_writer(args.output)
     for fold, (fit, held) in enumerate(splits):
         model = make_model(args, fold)

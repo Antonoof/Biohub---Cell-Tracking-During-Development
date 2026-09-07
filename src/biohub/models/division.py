@@ -33,8 +33,10 @@ def load_division_checkpoint(
     map_location: str | torch.device = 'cpu',
 ) -> dict[str, Any]:
     payload = torch.load(path, map_location=map_location, weights_only=False)
-    source_hidden = tuple(int(value) for value in payload.get('source_hidden', (96, 48)))
-    pair_hidden = tuple(int(value) for value in payload.get('pair_hidden', (128, 64)))
+    source_hidden_raw = tuple(int(value) for value in payload.get('source_hidden', (96, 48)))
+    pair_hidden_raw = tuple(int(value) for value in payload.get('pair_hidden', (128, 64)))
+    source_hidden = (source_hidden_raw[0], source_hidden_raw[1])
+    pair_hidden = (pair_hidden_raw[0], pair_hidden_raw[1])
     dropout_1 = float(payload.get('dropout_1', 0.10))
     dropout_2 = float(payload.get('dropout_2', 0.05))
     source_features = int(payload['source_model']['net.0.weight'].shape[1])

@@ -36,6 +36,30 @@ def deepcenter_uses_cuda(device: str) -> bool:
     return str(device).startswith('cuda')
 
 
+def logical_cuda_pool(cuda_tokens: list[str]) -> list[str]:
+    return [f'cuda:{index}' for index in range(len(cuda_tokens))]
+
+
+def logical_cuda_device(device: str, cuda_tokens: list[str]) -> str:
+    text = str(device).strip()
+    if not text or text == 'cpu' or not cuda_tokens:
+        return 'cpu'
+    if text == 'cuda':
+        return 'cuda:0'
+    if text.startswith('cuda:') and text[5:].isdigit():
+        index = int(text[5:])
+        if index < 0 or index >= len(cuda_tokens):
+            raise ValueError(
+                f'Logical CUDA device {text} is outside visible pool '
+                f'cuda:0..cuda:{len(cuda_tokens) - 1}'
+            )
+        return f'cuda:{index}'
+    token = text[5:] if text.startswith('cuda:') else text
+    if token in cuda_tokens:
+        return f'cuda:{cuda_tokens.index(token)}'
+    raise ValueError(f'CUDA device {text} is not in the visible mask {cuda_tokens}')
+
+
 def assign_deepcenter_devices(
     *,
     n_workers: int,
@@ -48,15 +72,15 @@ def assign_deepcenter_devices(
         return []
     if not deepcenter_uses_cuda(graph_device):
         return ['cpu'] * n_workers
-    pool = [str(item) for item in explicit if str(item)]
-    if not pool:
-        if graph_device not in {'cuda', 'cpu'}:
-            pool = [graph_device]
-        else:
-            pool = [
-                token if str(token).startswith('cuda') else f'cuda:{token}' for token in cuda_tokens
-            ]
     n_gpu = max(0, int(gpu_workers))
+    named = [str(item) for item in explicit if str(item)]
+    if named:
+        pool = [logical_cuda_device(item, cuda_tokens) for item in named]
+    elif graph_device not in {'cuda', 'cpu'}:
+        pool = [logical_cuda_device(graph_device, cuda_tokens)]
+    else:
+        pool = logical_cuda_pool(cuda_tokens)
+    pool = [item for item in pool if item != 'cpu']
     if n_gpu <= 0 or not pool:
         return ['cpu'] * n_workers
     pool = pool[:n_gpu]
@@ -814,6 +838,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--run-id', default=None)
     parser.add_argument('--gpu-workers', type=int, default=None)
     parser.add_argument('--movies-dir', type=Path, default=None)
+    parser.add_argument('--runs-root', type=Path, default=None)
     args = parser.parse_args(argv)
     result = run_inference(
         config=args.config,
@@ -822,6 +847,7 @@ def main(argv: list[str] | None = None) -> int:
         gpu_workers=args.gpu_workers,
         movies_dir=args.movies_dir,
         movie_ids=args.movies,
+        runs_root=args.runs_root,
     )
     print(json.dumps(result, indent=2, default=str))
     return 0

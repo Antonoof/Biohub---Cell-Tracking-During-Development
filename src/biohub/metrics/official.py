@@ -52,6 +52,40 @@ def _jaccard(tp: int, fp: int, fn: int) -> float:
     return tp / denom if denom > 0 else float('nan')
 
 
+def supervised_edge_score(pred_edges, match_gt_id, gt_edges) -> dict:
+    gt = {(int(source), int(target)) for source, target in gt_edges}
+    outgoing = {source for source, _target in gt}
+    incoming = {target for _source, target in gt}
+    seen: set[tuple[int, int]] = set()
+    matched_gt: set[tuple[int, int]] = set()
+    valid_pred = 0
+    for source, target in pred_edges:
+        pair = (int(source), int(target))
+        if pair in seen:
+            continue
+        seen.add(pair)
+        src_m = int(match_gt_id[pair[0]])
+        tgt_m = int(match_gt_id[pair[1]])
+        out_valid = src_m >= 0 and src_m in outgoing
+        in_valid = tgt_m >= 0 and tgt_m in incoming
+        if not (out_valid or in_valid):
+            continue
+        valid_pred += 1
+        if src_m >= 0 and tgt_m >= 0 and (src_m, tgt_m) in gt:
+            matched_gt.add((src_m, tgt_m))
+    tp = len(matched_gt)
+    fp = valid_pred - tp
+    fn = len(gt) - tp
+    return {
+        'tp': tp,
+        'fp': fp,
+        'fn': fn,
+        'precision': tp / max(tp + fp, 1),
+        'recall': tp / max(tp + fn, 1),
+        'jaccard': _jaccard(tp, fp, fn) if tp + fp + fn else 0.0,
+    }
+
+
 def _evaluate_matched_graph(
     graph: td.graph.BaseGraph,
     gt_graph: td.graph.BaseGraph,

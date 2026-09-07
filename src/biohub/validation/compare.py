@@ -12,9 +12,7 @@ def load_summary(run_path: Path) -> dict[str, Any]:
         else {}
     )
     completeness_path = run_path / 'evaluation' / 'completeness.json'
-    completeness = (
-        json.loads(completeness_path.read_text()) if completeness_path.is_file() else {}
-    )
+    completeness = json.loads(completeness_path.read_text()) if completeness_path.is_file() else {}
     return {
         'summary': summary,
         'per_movie': per_movie,
@@ -48,8 +46,7 @@ def compare_runs(baseline: Path, candidate: Path) -> dict[str, Any]:
     right_rows = {row['movie_id']: row for row in right['per_movie']}
     if set(left_rows) != set(right_rows):
         raise ValueError(
-            'Refusing to compare different movie sets: '
-            f'{sorted(left_rows)} vs {sorted(right_rows)}'
+            f'Refusing to compare different movie sets: {sorted(left_rows)} vs {sorted(right_rows)}'
         )
     movie_ids = sorted(left_rows)
     deltas = []

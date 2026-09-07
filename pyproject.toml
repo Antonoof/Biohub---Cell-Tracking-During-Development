@@ -90,6 +90,7 @@ exclude = [
     "notebooks",
     "biohub_production_957_reproducibility_bundle",
     "kaggle",
+    "tests/fixtures/legacy_scorer",
 ]
 
 [[tool.uv.index]]

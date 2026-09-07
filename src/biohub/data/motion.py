@@ -47,6 +47,7 @@ class ProposalVideo:
     q_low: float
     q_high: float
     frozen_sources: frozenset[int]
+    edges: tuple[tuple[int, int, float], ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -77,6 +78,24 @@ def match_frame(
     return result
 
 
+_LEARNED_EDGE_KEYS = (
+    ('edge_source', 'edge_target', 'edge_prob'),
+    ('source_id', 'target_id', 'probability'),
+)
+
+
+def _proposal_learned_edges(item) -> tuple[tuple[int, int, float], ...] | None:
+    names = set(item.files)
+    for source_key, target_key, prob_key in _LEARNED_EDGE_KEYS:
+        if {source_key, target_key, prob_key} <= names:
+            sources, targets, probs = item[source_key], item[target_key], item[prob_key]
+            return tuple(
+                (int(source), int(target), float(prob))
+                for source, target, prob in zip(sources, targets, probs, strict=True)
+            )
+    return None
+
+
 def load_proposal_video(
     data_dir: Path, proposal_dir: Path, stem: str, match_um: float
 ) -> ProposalVideo:
@@ -92,6 +111,7 @@ def load_proposal_video(
         downsample = tuple(int(x) for x in item['downsample'])
         scale = tuple(float(x) for x in item['voxel_scale_um'])
         frozen = frozenset(int(x) for x in item['frozen_sources'])
+        learned_edges = _proposal_learned_edges(item)
 
     ds = open_dataset(
         data_dir / stem,
@@ -153,6 +173,7 @@ def load_proposal_video(
         q_low=float(ds.quantiles['0.001']),
         q_high=float(ds.quantiles['0.999']),
         frozen_sources=frozen,
+        edges=learned_edges,
     )
 
 
@@ -180,7 +201,7 @@ def window_counts(video: ProposalVideo, t: int, max_nodes: int) -> tuple[int, in
 class ProposalWindowDataset(Dataset):
     def __init__(
         self,
-        videos: list[ProposalVideo],
+        videos: list[Any],
         max_nodes: int,
         train: bool,
         steps_per_epoch: int | None,

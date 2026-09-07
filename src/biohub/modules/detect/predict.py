@@ -35,8 +35,6 @@ def _encode(model, imgs, cfg, device):
 
 
 def _safe_encode_batch(imgs: torch.Tensor) -> int:
-    # Temporal attention flattens (B * pooled_voxels) as the MHA batch. Native
-    # CUDA MHA rejects that axis at 65536, so a 64^3 movie can only encode B=1.
     pooled = 1
     for size in imgs.shape[-3:]:
         pooled *= max(int(size) // 2, 1)
@@ -127,7 +125,12 @@ def encode_detection_views(model, imgs, cfg, device, kind: str):
             n_native += 1
         del det_view
     det_logits = [value / n_views for value in det_sum]
-    native_detection = [value / n_native for value in native_sum]
+    native_frames: list[torch.Tensor] = []
+    for value in native_sum:
+        if value is None:
+            raise RuntimeError('native detection view is missing')
+        native_frames.append(value)
+    native_detection = [value / n_native for value in native_frames]
     return unet_out, det_logits, native_detection
 
 
@@ -233,9 +236,6 @@ def predict_video(
         if cached is not None:
             return cached
         image = load_frame(zarr_arr, frame_t, target_shape, downsample)
-        # Per-frame 1:1 cache of the exact UNet input tensor. TemporalUNet mixes
-        # later stages across the window, so overlapping windows cannot reuse
-        # mixed features even when they share a frame.
         image = ((image - q_low) / (q_high - q_low + 1e-6)).clamp(0.0)
         frame_cache[frame_t] = image
         return image
@@ -283,6 +283,8 @@ def predict_video(
             secondary_native_detection = None
             secondary_det_logits = None
             if secondary_unet_b is not None:
+                if secondary_det_b is None or secondary_native_b is None:
+                    raise RuntimeError('Secondary detection tensors missing')
                 secondary_unet_out = secondary_unet_b[window_i : window_i + 1]
                 secondary_det_logits = [det[window_i : window_i + 1] for det in secondary_det_b]
                 secondary_native_detection = [
@@ -291,6 +293,8 @@ def predict_video(
             division_unet_out: Any = None
             division_det_logits: Any = None
             if division_unet_b is not None:
+                if division_det_b is None:
+                    raise RuntimeError('Division detection tensors missing')
                 division_unet_out = division_unet_b[window_i : window_i + 1]
                 division_det_logits = [det[window_i : window_i + 1] for det in division_det_b]
             if secondary_model is not None and secondary_detection_weight > 0.0:
