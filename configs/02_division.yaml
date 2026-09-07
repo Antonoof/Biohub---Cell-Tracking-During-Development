@@ -1,0 +1,27 @@
+data: kaggle/input/competitions/biohub-cell-tracking-during-development/train
+division_audit: data/division_candidate_audit_v1
+cache: cache/division_training_cache_v1.npz
+output: runs/division_pair_model
+epochs: 60
+patience: 10
+batch_size: 2048
+lr: 0.002
+weight_decay: 0.0002
+seed: 2031
+device: cuda:0
+temporal_radius: 2
+max_pairs_positive_source: 96
+max_pairs_negative_source: 24
+source_hidden:
+- 96
+- 48
+pair_hidden:
+- 128
+- 64
+dropout_1: 0.1
+dropout_2: 0.05
+deterministic: false
+rebuild_cache: false
+cache_only: false
+stems: ''
+max_videos: 0

@@ -1,17 +1,24 @@
-# Competition data and generated artifacts
-data/
-input/
-outputs/
-results/
+# Local generated artifacts — keep out of Git
+runs/
+cache/
+releases/
+biohub_pipeline/
+
+# Competition dumps at the repo root only. src/biohub/data/ is package code.
+/data/
+/input/
+/outputs/
+/results/
+/synthetic
 *.zarr/
 *.geff/
 *.zip
 *.csv
+!tests/fixtures/*.csv
 *.png
 *.jpg
 kaggle/input/datasets/pilkwang
 kaggle/input/datasets/tweakai
-synthetic
 
 # Model artifacts
 weights/
@@ -44,3 +51,5 @@ Thumbs.db
 /IMPLEMENTATION_PLAN.md
 /IMPROVEMENT_PLAN.md
 /IMPROVMENT_PLAN.md
+.cursor/
+.ruff_cache/

@@ -1,0 +1,10 @@
+population: data/native_endpoint_candidate_graft_v2/direct_edges.parquet
+oof_report: data/native_endpoint_candidate_graft_screen_v1/summary.json
+output: runs/smoke/08_candidategraft
+threshold: 0.9
+seed: 271828
+learning_rate: 0.05
+max_iter: 8
+max_leaf_nodes: 7
+l2: 2.0
+deterministic: true

@@ -1,0 +1,36 @@
+method: unet_transformer
+data_dir: kaggle/input/competitions/biohub-cell-tracking-during-development/train
+weights_dir: runs/01_p2
+split: '0'
+epochs: 500
+lr: 0.0001
+batch_size: 8
+num_workers: 4
+unet_out_channels: 32
+unet_layers:
+- 32
+- 64
+- 128
+downsample:
+- 1
+- 4
+- 4
+det_loss_weight: 1.0
+det_neg_weight: 0.01
+window_size: 2
+pool_kernel_um: 5.0
+data_parallel: true
+seed: 314159
+splits: kaggle/input/competitions/biohub-cell-tracking-during-development/train/dataset_splits_alltrain.json
+deterministic: false
+hidden_dim: 128
+n_heads: 4
+n_blocks: 4
+dropout: 0.3
+weight_decay: 0.01
+brightness_aug: true
+flip_aug: true
+max_iters: null
+debug_video: null
+max_frames: null
+unet_weights: null

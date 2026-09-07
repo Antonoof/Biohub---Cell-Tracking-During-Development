@@ -1,0 +1,172 @@
+seed: 2026
+panel: smoke
+train_dir: kaggle/input/competitions/biohub-cell-tracking-during-development/train
+test_dir: kaggle/input/competitions/biohub-cell-tracking-during-development/test
+bundle_dir: kaggle/input/datasets/antonoof/all_files
+movie_catalog: src/biohub/validation/train_movies.json
+match_max_distance_um: 7.0
+experiment_tag: biohub_baseline
+voxel_scale_um:
+  - 1.625
+  - 0.40625
+  - 0.40625
+detection:
+  threshold: 0.96875
+  unet_batch_size: 4
+  subvoxel_refinement: true
+  det_tta: true
+  edge_activation: softmax
+  pool_kernel_um: 3.0
+  native_evidence_pool_um: 5.0
+  division_det_threshold: 0.99
+  division_pool_um: 3.0
+  division_radius_um: 20.0
+  division_topk: 16
+  division_min_probability: 0.01
+  native_evidence_radius_um: 20.0
+  native_evidence_topk: 16
+  native_evidence_min_probability: 0.01
+association:
+  secondary_edge_weight: 0.15
+  secondary_detection_weight: 0.475
+  secondary_link_mode: low_margin_consensus
+  secondary_mix_temperature: 1.0
+  secondary_low_margin_max: 0.35
+  dual_seed_edge_threshold: 0.48
+  minimum_candidate_retention: 0.9
+  guarded_secondary_edge_weight: 0.0
+  bidirectional_edge_weight: 0.3
+ilp:
+  use: true
+  edge_weight: -1.0
+  appearance: 0.0
+  disappearance: 1.5
+  division: 1.0
+graph:
+  edge_max_um: 14.0
+  enforce_next_frame: true
+  single_parent_repair: true
+  prune_isolated: true
+  motion_relink: true
+  relink_tight_um: 6.0
+  relink_relaxed_um: 10.0
+  relink_velocity_weight: 0.5
+  relink_frame_registration: true
+  relink_registration_weight: 1.0
+  relink_velocity_weight_axes:
+    - 0.0
+    - 0.45
+    - 0.47
+  relink_learned_bonus: 1.0
+  relink_max_match_cost: 7.5
+  relink_cost_cap_includes_learned: false
+  relink_motion_steps: 3
+  relink_motion_weight: 0.5
+  relink_corrector_uses_one_step: true
+  relink_joint_assignment: true
+  relink_tight_bonus_um: 3.0
+  relink_orphan_prior: false
+  relink_orphan_base_um: 7.5
+  relink_orphan_scale: 1.0
+  relink_orphan_floor: 0.5
+  relink_raw_distance_weight: 0.05
+  relink_max_frame_nodes: 4000
+  motion_feature_z_extent_um: 102.375
+  gap_close: true
+  gap_close_um: 5.8
+  gap_density_adaptive: true
+  gap_density_reference_um: 6.5
+  gap_density_gain: 0.04
+  gap_density_max_step_delta_um: 0.125
+  gap_density_neighbors: 3
+  gap_reuse_existing: true
+  gap_reuse_um: 4.0
+  gap_max_added_frac: 0.03
+  gap_max_added_abs: 2000
+  gap_refine_synthetic: true
+  gap_refine_win_z: 1
+  gap_refine_win_yx: 3
+  gap_refine_max_shift_um: 3.2
+  ownership_endpoint_graft: false
+  ownership_endpoint_agree_um: 3.0
+  ownership_endpoint_existing_um: 3.0
+  ownership_endpoint_parent_max_um: 14.0
+  ownership_endpoint_sister_max_um: 8.5
+  ownership_endpoint_min_prob: 0.03
+  deepcenter_gap_veto: true
+  deepcenter_gap_threshold: 0.25
+  deepcenter_gap_confirm_min_span_um: 8.5
+  deepcenter_score_win_z: 1
+  deepcenter_score_win_yx: 2
+  deepcenter_score_cache_max_frames: 8
+  deepcenter_device: cpu
+  safe_divisions: true
+  safe_div_max_um: 9.0
+  safe_div_sister_max_um: 14.0
+  safe_div_existing_child_max_um: 10.0
+  safe_div_sister_score_weight: 0.15
+  safe_div_sister_symmetry_tau: 0.6
+  safe_div_require_mutual_nn: true
+  safe_div_require_divergence: true
+  safe_div_diverge_um: 2.25
+  deepcenter_safe_div_veto: true
+  deepcenter_safe_div_threshold: 0.25
+  safe_div_frame_frac_cap: 0.0076
+  safe_div_global_frac_cap: 0.00375
+  filter_short_tracks: true
+  min_track_len: 6
+  keep_division_components: true
+  boundary_track_rescue: true
+  boundary_track_min_len: 2
+  linefit_smooth: true
+  linefit_weight: 0.8
+  linefit_window: 3
+  node_budget: true
+  node_budget_ratio: 1.0
+  node_budget_max_drop_frac: 0.03
+  node_budget_dense_min_detected: 40000
+  node_budget_dense_ratio: 0.98
+  node_budget_dense_max_drop_frac: 0.04
+  frame_cache_max_frames: 8
+division:
+  combined_decoder: true
+  model_c_threshold: 0.96
+  gbm_threshold: 0.65
+  gbm_rescue_delta: 0.15
+  gbm_steal_delta: 0.25
+models:
+  source_cardinality_enabled: true
+  unigraft_p1p2_enabled: true
+  live_v2_global_bundle_enabled: true
+  ownership_full_population_enabled: true
+  edgegraft_enabled: true
+  candidategraft_enabled: true
+  motion_corrector_enabled: true
+  motion_corrector_strength: 1.0
+  deepcenter_enabled: true
+  deepcenter_expected_epoch: 2
+speed:
+  vectorized_candidates: true
+  fast_geff_reader: true
+  fast_shard_writer: true
+  skip_redundant_raw_copies: true
+  lazy_baseline: true
+  longest_first: true
+  stage_timing: true
+  uncompressed_evidence: true
+  uncompressed_evidence_max_mb: 512.0
+  cudnn_benchmark: true
+  amp_fp16: false
+  thread_boost: true
+  thread_pool_total: 0
+  function_profile: smallest
+  runtime_accel: true
+runtime:
+  gpu_workers: 2
+  cpu_workers: 0
+  cpu_workers_while_predicting: 0
+  hard_limit_seconds: 42600
+  finalize_reserve_seconds: 600
+  min_upgrade_seconds: 60
+  emergency_shard: true
+  slice: ''

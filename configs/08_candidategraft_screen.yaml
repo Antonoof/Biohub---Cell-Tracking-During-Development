@@ -1,0 +1,5 @@
+population: data/native_endpoint_candidate_graft_v2
+output: runs/candidategraft_screen_v1
+folds: 5
+seed: 271828
+deterministic: false

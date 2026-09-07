@@ -1,0 +1,15 @@
+decisions: data/edgegraft_v2_rich_oof_decisions
+baseline: data/ug23_boundary_oof_exact_v1/final_candidate
+data: kaggle/input/competitions/biohub-cell-tracking-during-development/train
+baseline_exact: data/ug23_boundary_oof_exact_v1/exact_candidate/per_video.csv
+rich_report: data/edgegraft_v2_rich_transaction_gate/report.json
+output: runs/edgegraft_v3_metric_transaction_gate
+folds: 5
+match_distance: 7.0
+seed: 20260819
+learning_rate: 0.035
+max_iter: 180
+max_leaf_nodes: 15
+min_samples_leaf: 30
+l2: 5.0
+deterministic: false

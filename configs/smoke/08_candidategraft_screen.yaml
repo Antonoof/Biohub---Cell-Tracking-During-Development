@@ -1,0 +1,5 @@
+population: data/native_endpoint_candidate_graft_v2
+output: runs/smoke/08_candidategraft_screen
+folds: 2
+seed: 271828
+deterministic: true

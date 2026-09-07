@@ -1,0 +1,11 @@
+labels: data/edgegraft_current_labels_v2
+output: runs/edgegraft_current_ranker_v3
+folds: 5
+iterations: 180
+leaves: 31
+learning_rate: 0.06
+l2: 1.0
+seed: 20260819
+min_samples_leaf: 40
+max_bins: 255
+deterministic: false

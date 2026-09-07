@@ -1,0 +1,11 @@
+labels: data/edgegraft_current_labels_v2
+output: runs/smoke/07_edgegraft_ranker
+folds: 2
+iterations: 8
+leaves: 7
+learning_rate: 0.06
+l2: 1.0
+seed: 20260819
+min_samples_leaf: 4
+max_bins: 32
+deterministic: true

@@ -1,0 +1,9 @@
+root: data/edgegraft_oracle_root
+final: data/edgegraft_oracle_final
+data: kaggle/input/competitions/biohub-cell-tracking-during-development/train
+output: runs/07_edgegraft_oracle
+candidate_threshold: 0.01
+max_distance: 14.0
+match_distance: 7.0
+seed: 0
+deterministic: false
