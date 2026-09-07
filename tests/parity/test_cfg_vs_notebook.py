@@ -6,6 +6,13 @@ from biohub.paths import PROJECT_ROOT
 from tests.parity.notebook import notebook_cell_source
 
 PATH_KEYS = {'root', 'dir', 'path', 'paths', 'gt_dir', 'report_path'}
+# Serving yaml may differ on throughput knobs; notebook still pins association/division math.
+THROUGHPUT_KEYS = {
+    ('detection', 'unet_batch_size'),
+    ('graph', 'deepcenter_device'),
+    ('graph', 'deepcenter_score_cache_max_frames'),
+    ('graph', 'frame_cache_max_frames'),
+}
 
 
 def _without_paths(value):
@@ -34,6 +41,8 @@ def test_tracking_yaml_matches_notebook_cfg_numbers(tmp_path: Path) -> None:
     assert ours['voxel_scale_um'] == notebook_cfg['voxel_scale_um']
     for section in ('detection', 'association', 'ilp', 'graph', 'division'):
         for key, value in notebook_cfg[section].items():
+            if (section, key) in THROUGHPUT_KEYS:
+                continue
             assert ours[section][key] == value, f'{section}.{key}'
     for key, value in notebook_cfg['models'].items():
         if isinstance(value, dict) and 'enabled' in value:

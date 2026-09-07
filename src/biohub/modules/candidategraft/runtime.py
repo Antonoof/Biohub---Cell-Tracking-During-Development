@@ -34,10 +34,17 @@ class CandidateGraftDirectRuntime:
         self.threshold = float(report['threshold'])
         self.model = joblib.load(self.artifact_dir / 'candidategraft_direct.joblib')
         self.read_evidence = base.read_evidence
+        self._evidence_cache: dict[tuple[str, str], tuple[dict, dict]] = {}
 
     def _population(self, raw_nodes, final_nodes, final_edges, p1_path, p2_path):
-        p1, _p1_context = self.read_evidence(p1_path, raw_nodes)
-        p2, _p2_context = self.read_evidence(p2_path, raw_nodes)
+        cache_key = (str(Path(p1_path).resolve()), str(Path(p2_path).resolve()))
+        cached = self._evidence_cache.get(cache_key)
+        if cached is None:
+            p1, _p1_context = self.read_evidence(p1_path, raw_nodes)
+            p2, _p2_context = self.read_evidence(p2_path, raw_nodes)
+            self._evidence_cache[cache_key] = (p1, p2)
+        else:
+            p1, p2 = cached
         final_set = set(map(int, final_nodes))
         current = {(int(edge['source_id']), int(edge['target_id'])) for edge in final_edges}
         incoming, outgoing = _degrees(final_edges)

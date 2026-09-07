@@ -61,8 +61,8 @@ class GraphConfig(FrozenModel):
     deepcenter_gap_confirm_min_span_um: float = 8.5
     deepcenter_score_win_z: int = 1
     deepcenter_score_win_yx: int = 2
-    deepcenter_score_cache_max_frames: int = 8
-    deepcenter_device: str = 'cpu'
+    deepcenter_score_cache_max_frames: int = 256
+    deepcenter_device: str = 'cuda'
     safe_divisions: bool = True
     safe_div_max_um: float = 9.0
     safe_div_sister_max_um: float = 14.0
@@ -90,7 +90,7 @@ class GraphConfig(FrozenModel):
     node_budget_dense_min_detected: int = 0
     node_budget_dense_ratio: float = 1.0
     node_budget_dense_max_drop_frac: float = 0.0
-    frame_cache_max_frames: int = 8
+    frame_cache_max_frames: int = 256
 
 
 class DivisionConfig(FrozenModel):
@@ -116,7 +116,7 @@ class ModelBundleConfig(FrozenModel):
 
 class DetectionConfig(FrozenModel):
     threshold: float = 0.96875
-    unet_batch_size: int = 4
+    unet_batch_size: int = 32
     subvoxel_refinement: bool = True
     det_tta: bool = True
     edge_activation: str = 'softmax'
@@ -153,7 +153,6 @@ class IlpConfig(FrozenModel):
 
 
 class SpeedConfig(FrozenModel):
-    vectorized_candidates: bool = True
     fast_geff_reader: bool = True
     fast_shard_writer: bool = True
     skip_redundant_raw_copies: bool = True
@@ -166,14 +165,14 @@ class SpeedConfig(FrozenModel):
     amp_fp16: bool = False
     thread_boost: bool = True
     thread_pool_total: int = 0
-    function_profile: str = 'smallest'
-    runtime_accel: bool = True
 
 
 class RuntimeConfig(FrozenModel):
     gpu_workers: int = 1
-    cpu_workers: int = 0
+    cpu_workers: int = 64
     cpu_workers_while_predicting: int = 0
+    deepcenter_gpu_workers: int = 1
+    deepcenter_devices: tuple[str, ...] = ()
     hard_limit_seconds: int = 42600
     finalize_reserve_seconds: int = 600
     min_upgrade_seconds: int = 60
@@ -326,3 +325,9 @@ def load_tracking_config(
     payload['paths'] = build_tracking_paths(work_dir, test_dir, submission=submission)
     payload['bundle'] = resolve_bundle_paths(resolve_path(bundle_dir), bundle_paths)
     return TrackingConfig.model_validate(payload)
+
+
+def load_graph_config(config_path: Path | None = None) -> GraphConfig:
+    path = Path(config_path) if config_path is not None else PROJECT_ROOT / 'configs' / 'infer.yaml'
+    raw = _read_yaml(path)
+    return GraphConfig.model_validate(raw['graph'])

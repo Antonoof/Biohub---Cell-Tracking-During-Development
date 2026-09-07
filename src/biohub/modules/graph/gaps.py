@@ -38,6 +38,22 @@ def _dc_normalize_dynamic_range(volume, cfg):
     ).astype(np.float32)
 
 
+def _try_read_test_frame(upgrade, dataset, t, frame_cache):
+    if t < 0:
+        return None
+    try:
+        return read_test_frame(upgrade, dataset, int(t), frame_cache)
+    except Exception:
+        return None
+
+
+def _store_heatmap(upgrade, heatmap_cache, key, heatmap):
+    heatmap_cache[key] = heatmap.astype(np.float32, copy=False)
+    limit = max(1, upgrade.deepcenter_score_cache_max_frames)
+    while len(heatmap_cache) > limit:
+        heatmap_cache.pop(next(iter(heatmap_cache)))
+
+
 def _deepcenter_heatmap(upgrade, dataset, t, frame_cache, heatmap_cache):
     key = (dataset, int(t))
     if key in heatmap_cache:
@@ -47,18 +63,27 @@ def _deepcenter_heatmap(upgrade, dataset, t, frame_cache, heatmap_cache):
         return None
     cfg = bundle['cfg']
     pool_factor = int(getattr(cfg, 'pool_factor', 4))
-    volume = read_test_frame(upgrade, dataset, int(t), frame_cache)
-    image = _dc_normalize_dynamic_range(_dc_pool_frame_xy(volume, pool_factor), cfg)
+    requested = int(t)
+    volumes = [(requested, read_test_frame(upgrade, dataset, requested, frame_cache))]
+    for neighbor in (requested - 1, requested + 1, requested + 2):
+        neighbor_key = (dataset, neighbor)
+        if neighbor_key in heatmap_cache:
+            continue
+        extra = _try_read_test_frame(upgrade, dataset, neighbor, frame_cache)
+        if extra is not None:
+            volumes.append((neighbor, extra))
+    images = [
+        _dc_normalize_dynamic_range(_dc_pool_frame_xy(volume, pool_factor), cfg)
+        for _frame, volume in volumes
+    ]
     with torch.no_grad():
-        tensor = torch.from_numpy(image[None, None]).to(
+        tensor = torch.from_numpy(np.stack(images)[:, None]).to(
             device=bundle['device'], dtype=torch.float32
         )
-        heatmap = torch.sigmoid(bundle['model'](tensor))[0, 0].cpu().numpy()
-    heatmap = heatmap.astype(np.float32, copy=False)
-    heatmap_cache[key] = heatmap
-    while len(heatmap_cache) > max(1, upgrade.deepcenter_score_cache_max_frames):
-        heatmap_cache.pop(next(iter(heatmap_cache)))
-    return heatmap
+        heatmaps = torch.sigmoid(bundle['model'](tensor))[:, 0].cpu().numpy()
+    for (frame, _volume), heatmap in zip(volumes, heatmaps):
+        _store_heatmap(upgrade, heatmap_cache, (dataset, int(frame)), heatmap)
+    return heatmap_cache[key]
 
 
 def deepcenter_accept_gap(upgrade, dataset, t, point, frame_cache, heatmap_cache, stats):

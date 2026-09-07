@@ -32,6 +32,163 @@ def _on_alarm(signum, frame) -> None:
     raise UpgradeDeadline('upgrade reached the submission-safe deadline')
 
 
+def deepcenter_uses_cuda(device: str) -> bool:
+    return str(device).startswith('cuda')
+
+
+def assign_deepcenter_devices(
+    *,
+    n_workers: int,
+    graph_device: str,
+    gpu_workers: int,
+    explicit: tuple[str, ...] | list[str],
+    cuda_tokens: list[str],
+) -> list[str]:
+    if n_workers <= 0:
+        return []
+    if not deepcenter_uses_cuda(graph_device):
+        return ['cpu'] * n_workers
+    pool = [str(item) for item in explicit if str(item)]
+    if not pool:
+        if graph_device not in {'cuda', 'cpu'}:
+            pool = [graph_device]
+        else:
+            pool = [
+                token if str(token).startswith('cuda') else f'cuda:{token}' for token in cuda_tokens
+            ]
+    n_gpu = max(0, int(gpu_workers))
+    if n_gpu <= 0 or not pool:
+        return ['cpu'] * n_workers
+    pool = pool[:n_gpu]
+    return [pool[index % len(pool)] for index in range(n_workers)]
+
+
+def upgrade_worker_count(
+    *,
+    cpu_workers: int,
+    graph_device: str,
+    deepcenter_gpu_workers: int,
+) -> int:
+    wanted = max(1, int(cpu_workers))
+    if not deepcenter_uses_cuda(graph_device):
+        return wanted
+    return max(1, min(wanted, max(1, int(deepcenter_gpu_workers))))
+
+
+def stop_upgrade_workers(workers: list, task_queues: list, timeout: float = 5.0) -> None:
+    for worker_id, task_queue in enumerate(task_queues):
+        if worker_id < len(workers) and workers[worker_id].is_alive():
+            try:
+                task_queue.put_nowait(None)
+            except Exception:
+                pass
+    deadline = time.monotonic() + timeout
+    for process in workers:
+        remaining = max(0.0, deadline - time.monotonic())
+        process.join(timeout=remaining)
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=timeout)
+        if process.is_alive() and hasattr(process, 'kill'):
+            process.kill()
+            process.join(timeout=timeout)
+
+
+def _thread_budget(thread_boost: bool, cpu_total: int, active, live) -> int:
+    if not thread_boost:
+        return 1
+    active_count = max(1, int(active.value))
+    reserved = max(0, int(live.value))
+    return max(1, (cpu_total - reserved) // active_count)
+
+
+def _upgrade_worker_entry(
+    worker_id: int,
+    task_queue,
+    results,
+    active,
+    live,
+    tracking: TrackingConfig,
+    deepcenter_device: str,
+    deadline: float,
+    started: float,
+    thread_boost: bool,
+    cpu_total: int,
+) -> None:
+    signal.signal(signal.SIGALRM, _on_alarm)
+    worker_upgrade = GraphUpgrade(tracking)
+    worker_upgrade.deepcenter_device = deepcenter_device
+    run_upgrade(worker_upgrade)
+    worker_upgrade.set_thread_retune_hook(
+        lambda: worker_upgrade.set_thread_budget(
+            _thread_budget(thread_boost, cpu_total, active, live)
+        )
+    )
+    worker_upgrade.set_thread_budget(1)
+    while True:
+        task = task_queue.get()
+        if task is None:
+            return
+        dataset, graph_path, mode = task
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            results.put(
+                {
+                    'worker_id': worker_id,
+                    'dataset': dataset,
+                    'mode': mode,
+                    'status': 'deadline',
+                    'error': 'no time left',
+                }
+            )
+            continue
+        with active.get_lock():
+            active.value += 1
+        signal.setitimer(signal.ITIMER_REAL, max(remaining, 1.0))
+        try:
+            worker_upgrade.retune_threads()
+            if mode == 'emergency':
+                row = worker_upgrade.emergency_shard(Path(graph_path))
+            else:
+                row = worker_upgrade.process_graph(Path(graph_path), mode)
+            results.put(
+                {
+                    'worker_id': worker_id,
+                    'dataset': dataset,
+                    'mode': mode,
+                    'status': 'ok',
+                    'seconds': time.monotonic() - started,
+                    'row': row,
+                }
+            )
+        except UpgradeDeadline as error:
+            results.put(
+                {
+                    'worker_id': worker_id,
+                    'dataset': dataset,
+                    'mode': mode,
+                    'status': 'deadline',
+                    'error': str(error),
+                }
+            )
+        except BaseException as error:
+            results.put(
+                {
+                    'worker_id': worker_id,
+                    'dataset': dataset,
+                    'mode': mode,
+                    'status': 'error',
+                    'error': f'{type(error).__name__}: {error}',
+                    'traceback': traceback.format_exc(limit=12),
+                }
+            )
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0.0)
+            worker_upgrade.set_thread_budget(1)
+            with active.get_lock():
+                active.value -= 1
+
+
 def _video_cost(test_dir: Path, stem: str) -> float:
     for meta_path in (
         test_dir / f'{stem}.zarr' / '0' / 'zarr.json',
@@ -48,11 +205,45 @@ def _video_cost(test_dir: Path, stem: str) -> float:
     return 1.0
 
 
+def scheduler_should_stop(
+    *,
+    remaining: float,
+    producer_done: bool,
+    busy: bool,
+    pending: bool,
+    complete: bool,
+) -> bool:
+    if remaining <= 0:
+        return True
+    if complete and not busy and not pending:
+        return True
+    if producer_done and not busy and not pending:
+        return True
+    return False
+
+
+def reap_dead_workers(
+    workers: list,
+    worker_task: dict[int, tuple[str, str] | None],
+) -> list[tuple[int, str, str]]:
+    dead: list[tuple[int, str, str]] = []
+    for worker_id, task in list(worker_task.items()):
+        if task is None:
+            continue
+        process = workers[worker_id]
+        alive = process.is_alive() if hasattr(process, 'is_alive') else True
+        if not alive:
+            worker_task[worker_id] = None
+            dead.append((worker_id, task[0], task[1]))
+    return dead
+
+
 def assemble_submission(
     stems: list[str],
     shard_dir: Path,
     submission_path: Path,
     csv_columns: list[str],
+    missing_ok: bool = False,
 ) -> tuple[int, int]:
     row_id = node_rows = edge_rows = 0
     with submission_path.open('w', newline='') as output:
@@ -61,6 +252,8 @@ def assemble_submission(
         for dataset in sorted(stems):
             shard = shard_dir / f'{dataset}.csv'
             if not shard.exists():
+                if missing_ok:
+                    continue
                 raise FileNotFoundError(f'missing shard: {shard}')
             with shard.open(newline='') as handle:
                 for row in csv.DictReader(handle):
@@ -70,6 +263,8 @@ def assemble_submission(
                     node_rows += row['row_type'] == 'node'
                     edge_rows += row['row_type'] == 'edge'
     if node_rows <= 0 or row_id != node_rows + edge_rows:
+        if missing_ok and row_id == node_rows + edge_rows:
+            return node_rows, edge_rows
         raise AssertionError('submission assembly produced an empty or inconsistent csv')
     return node_rows, edge_rows
 
@@ -276,8 +471,6 @@ def run(
         test_dir=test_dir,
         work_dir=work_dir,
     )
-    upgrade = GraphUpgrade(tracking)
-    run_upgrade(upgrade)
 
     predictions_dir = work_dir / 'predictions'
     predictions_dir.mkdir(parents=True, exist_ok=True)
@@ -303,103 +496,51 @@ def run(
         longest_first=speed.longest_first,
         deadline=deadline,
     )
+    upgrade = GraphUpgrade(tracking)
+    run_upgrade(upgrade)
 
     cpu_total = int(speed.thread_pool_total or 0) or (os.cpu_count() or 4)
-    cpu_workers = max(1, int(runtime.cpu_workers or 0) or cpu_total)
+    cpu_workers = upgrade_worker_count(
+        cpu_workers=max(1, int(runtime.cpu_workers or 0) or cpu_total),
+        graph_device=str(tracking.graph.deepcenter_device),
+        deepcenter_gpu_workers=int(runtime.deepcenter_gpu_workers),
+    )
     while_predicting = int(runtime.cpu_workers_while_predicting or 0)
     cpu_workers_while_predicting = max(
         1,
         min(while_predicting or max(1, cpu_total - len(predict_processes)), cpu_workers),
     )
+    devices = assign_deepcenter_devices(
+        n_workers=cpu_workers,
+        graph_device=str(tracking.graph.deepcenter_device),
+        gpu_workers=int(runtime.deepcenter_gpu_workers),
+        explicit=tuple(runtime.deepcenter_devices),
+        cuda_tokens=cuda_tokens,
+    )
 
-    context = mp.get_context('fork')
+    context = mp.get_context('spawn')
     result_queue = context.Queue()
     task_queues = [context.Queue(maxsize=1) for _ in range(cpu_workers)]
     active_tasks = context.Value('i', 0)
     live_producers = context.Value('i', len(predict_processes))
 
-    def thread_budget(active, live) -> int:
-        if not speed.thread_boost:
-            return 1
-        active_count = max(1, int(active.value))
-        reserved = max(0, int(live.value))
-        return max(1, (cpu_total - reserved) // active_count)
-
-    def worker_main(worker_id, task_queue, results, active, live) -> None:
-        signal.signal(signal.SIGALRM, _on_alarm)
-        worker_upgrade = upgrade
-        worker_upgrade.set_thread_retune_hook(
-            lambda: worker_upgrade.set_thread_budget(thread_budget(active, live))
-        )
-        worker_upgrade.set_thread_budget(1)
-        while True:
-            task = task_queue.get()
-            if task is None:
-                return
-            dataset, graph_path, mode = task
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                results.put(
-                    {
-                        'worker_id': worker_id,
-                        'dataset': dataset,
-                        'mode': mode,
-                        'status': 'deadline',
-                        'error': 'no time left',
-                    }
-                )
-                continue
-            with active.get_lock():
-                active.value += 1
-            signal.setitimer(signal.ITIMER_REAL, max(remaining, 1.0))
-            try:
-                worker_upgrade.retune_threads()
-                if mode == 'emergency':
-                    row = worker_upgrade.emergency_shard(Path(graph_path))
-                else:
-                    row = worker_upgrade.process_graph(Path(graph_path), mode)
-                results.put(
-                    {
-                        'worker_id': worker_id,
-                        'dataset': dataset,
-                        'mode': mode,
-                        'status': 'ok',
-                        'seconds': time.monotonic() - started,
-                        'row': row,
-                    }
-                )
-            except UpgradeDeadline as error:
-                results.put(
-                    {
-                        'worker_id': worker_id,
-                        'dataset': dataset,
-                        'mode': mode,
-                        'status': 'deadline',
-                        'error': str(error),
-                    }
-                )
-            except BaseException as error:
-                results.put(
-                    {
-                        'worker_id': worker_id,
-                        'dataset': dataset,
-                        'mode': mode,
-                        'status': 'error',
-                        'error': f'{type(error).__name__}: {error}',
-                        'traceback': traceback.format_exc(limit=12),
-                    }
-                )
-            finally:
-                signal.setitimer(signal.ITIMER_REAL, 0.0)
-                worker_upgrade.set_thread_budget(1)
-                with active.get_lock():
-                    active.value -= 1
-
     workers = []
     for worker_id in range(cpu_workers):
         process = context.Process(
-            target=worker_main,
-            args=(worker_id, task_queues[worker_id], result_queue, active_tasks, live_producers),
+            target=_upgrade_worker_entry,
+            args=(
+                worker_id,
+                task_queues[worker_id],
+                result_queue,
+                active_tasks,
+                live_producers,
+                tracking,
+                devices[worker_id],
+                deadline,
+                started,
+                bool(speed.thread_boost),
+                cpu_total,
+            ),
             name=f'biohub-upgrade-{worker_id}',
             daemon=False,
         )
@@ -496,9 +637,19 @@ def run(
                 )
 
     producer_finished_at = None
+    deadline_hit = False
     while True:
         graph_by_dataset.update(ready_graphs())
         collect_results()
+        for worker_id, dataset, mode in reap_dead_workers(workers, worker_task):
+            log_event(
+                run_dir,
+                'upgrade_failed',
+                dataset=dataset,
+                mode=mode,
+                status='dead',
+                worker_id=worker_id,
+            )
         producer_done = all(process.poll() is not None for process in predict_processes.values())
         if producer_done and producer_finished_at is None:
             producer_finished_at = time.monotonic()
@@ -528,27 +679,30 @@ def run(
                 queue_task(dataset, mode, worker_id)
         busy = any(task is not None for task in worker_task.values())
         complete = producer_done and len(shard_done) == len(movie_ids)
-        if complete and not busy and not pending:
-            break
-        if remaining <= 0 and producer_done and not busy:
-            break
-        if producer_done and not busy and not pending and not complete:
+        if scheduler_should_stop(
+            remaining=remaining,
+            producer_done=producer_done,
+            busy=busy,
+            pending=bool(pending),
+            complete=complete,
+        ):
+            deadline_hit = remaining <= 0
             break
         time.sleep(2.0)
 
     collect_results()
-    for worker_id, task_queue in enumerate(task_queues):
-        if workers[worker_id].is_alive():
-            task_queue.put(None)
-    for process in workers:
-        process.join(timeout=10)
-        if process.is_alive():
-            process.terminate()
-            process.join(timeout=5)
+    stop_upgrade_workers(workers, task_queues, timeout=10.0)
 
+    for index, process in list(predict_processes.items()):
+        if process.poll() is None:
+            process.terminate()
     for index, process in predict_processes.items():
-        code = process.wait()
-        if code != 0:
+        try:
+            code = process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            code = process.wait(timeout=5)
+        if code != 0 and not deadline_hit:
             raise subprocess.CalledProcessError(code, predict_processes[index].args)
 
     upgrade.set_thread_budget(cpu_total)
@@ -558,6 +712,7 @@ def run(
         tracking.paths.shard_dir,
         submission_path,
         upgrade.csv_columns,
+        missing_ok=deadline_hit,
     )
     predict_hours = (
         (producer_finished_at or time.monotonic()) - (predict_started or started)
@@ -595,6 +750,7 @@ def run_inference(
     movies_dir: Path | None = None,
     movie_ids: list[str] | None = None,
     movie: str | None = None,
+    runs_root: Path | None = None,
 ) -> dict:
     config_path = Path(config) if config is not None else PROJECT_ROOT / 'configs' / 'infer.yaml'
     raw = load_yaml(config_path)
@@ -616,6 +772,7 @@ def run_inference(
         resolved_run_id,
         config=raw,
         extra={'panel': panel, 'command': 'infer', 'movies': movie_ids},
+        runs_root=runs_root,
     )
     setup_logging(run_path)
     work_dir = run_path / 'workdir'

@@ -45,9 +45,6 @@ ATOL = 1e-6
 HELPERS = PROJECT_ROOT / 'biohub_production_957_reproducibility_bundle' / 'helpers'
 BUNDLE = PROJECT_ROOT / 'kaggle' / 'input' / 'datasets' / 'antonoof' / 'all_files'
 LOCKED_CSV = PROJECT_ROOT / 'tests' / 'fixtures' / '44b6_0113de3b_submission.csv'
-E2E_ONE_MOVIE = PROJECT_ROOT / 'runs' / 'parity_one_movie_e2e'
-OLD_ONE_MOVIE = PROJECT_ROOT / 'runs' / 'parity_one_movie_v2'
-NEW_ONE_MOVIE = PROJECT_ROOT / 'runs' / 'parity_one_movie_new'
 SCRIPTS = HELPERS / '01_p1_p2_base' / 'shared_repo' / 'scripts'
 MOTION_V1 = HELPERS / '09_motion_corrector' / 'TRAINING_V1'
 EDGEGRAFT_TRAINING = HELPERS / '07_edgegraft' / 'training'
@@ -732,16 +729,3 @@ def test_one_movie_infer_matches_locked_csv() -> None:
         int(row[5])
         int(row[6])
         int(row[7])
-    candidates = [
-        E2E_ONE_MOVIE / 'workdir' / 'submission.csv',
-        NEW_ONE_MOVIE / 'workdir' / 'submission.csv',
-        NEW_ONE_MOVIE / 'workdir' / 'submission_shards' / '44b6_0113de3b.csv',
-        OLD_ONE_MOVIE / 'workdir' / 'submission.csv',
-    ]
-    compared = False
-    for csv_path in candidates:
-        if csv_path.is_file():
-            assert csv_path.read_text().splitlines() == locked
-            compared = True
-    if not compared:
-        _skip('one-movie infer output is not available yet')

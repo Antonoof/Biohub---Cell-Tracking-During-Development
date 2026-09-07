@@ -13,6 +13,7 @@ from sklearn.metrics import average_precision_score, roc_auc_score
 
 from biohub.train.tensorboard import log_scalars, open_writer
 from biohub.utils.cli import run_argparse_main
+from biohub.utils.seed import seed_everything
 
 BIO = Path('data')
 DIRECT_FEATURES = [
@@ -147,6 +148,7 @@ def crossfit(
 
 def main() -> None:
     args = parse_args()
+    seed_everything(int(args.seed), deterministic=bool(args.deterministic))
     if args.output.exists():
         raise RuntimeError(f'Refusing to overwrite: {args.output}')
     args.output.mkdir(parents=True)

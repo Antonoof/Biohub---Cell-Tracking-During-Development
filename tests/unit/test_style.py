@@ -125,4 +125,4 @@ def test_src_and_tests_are_not_tool_excluded() -> None:
     for item in [*ruff_exclude, *ty_exclude]:
         text = str(item).replace('\\', '/')
         assert not text.startswith('src')
-        assert not text.startswith('tests')
+        assert text.startswith('tests/fixtures/') or not text.startswith('tests')

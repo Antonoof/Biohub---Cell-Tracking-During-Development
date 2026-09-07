@@ -160,6 +160,7 @@ class FullFrameDataset(Dataset):
         self.cfg = cfg
         self.training = training
         self.items: list[tuple[int, int]] = []
+        self._norm_cache: dict[tuple[int, int], np.ndarray] = {}
         rng = np.random.default_rng(cfg.seed + (0 if training else 10_000))
         for sample_idx, sample in enumerate(samples):
             n_t = int(sample['shape'][0])
@@ -177,15 +178,20 @@ class FullFrameDataset(Dataset):
     def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         sample_idx, t = self.items[index]
         sample = self.samples[sample_idx]
-        frame = read_frame(sample['zarr'], t, sample['shape'], sample['dtype'])
-        pooled = block_mean_xy(frame, self.cfg.pool_factor)
-        image = normalize_dynamic_range(
-            pooled,
-            self.cfg.norm_lo_pct,
-            self.cfg.norm_hi_pct,
-            self.cfg.norm_clip_lo,
-            self.cfg.norm_clip_hi,
-        )
+        cache_key = (sample_idx, int(t))
+        image = self._norm_cache.get(cache_key)
+        if image is None:
+            frame = read_frame(sample['zarr'], t, sample['shape'], sample['dtype'])
+            pooled = block_mean_xy(frame, self.cfg.pool_factor)
+            image = normalize_dynamic_range(
+                pooled,
+                self.cfg.norm_lo_pct,
+                self.cfg.norm_hi_pct,
+                self.cfg.norm_clip_lo,
+                self.cfg.norm_clip_hi,
+            )
+            self._norm_cache[cache_key] = image
+        image = np.array(image, copy=True)
         target = make_heatmap(
             image.shape,
             sample['centers_by_t'].get(t, np.empty((0, 3), dtype=np.float32)),

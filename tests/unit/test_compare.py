@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -32,3 +33,34 @@ def test_compare_reports_per_movie_delta(tmp_path: Path) -> None:
     report = compare_runs(baseline, candidate)
     assert report['score_delta'] == pytest.approx(0.05)
     assert report['per_movie'][0]['adj_edge_jaccard_delta'] == pytest.approx(0.05)
+
+
+def test_compare_refuses_different_movies(tmp_path: Path) -> None:
+    baseline = tmp_path / 'base'
+    candidate = tmp_path / 'cand'
+    _write_run(baseline, level='legacy_parity', score=0.90, movie_id='a')
+    _write_run(candidate, level='legacy_parity', score=0.95, movie_id='b')
+    with pytest.raises(ValueError, match='different movie sets'):
+        compare_runs(baseline, candidate)
+
+
+def test_compare_refuses_incomplete_movies(tmp_path: Path) -> None:
+    baseline = tmp_path / 'base'
+    candidate = tmp_path / 'cand'
+    _write_run(baseline, level='legacy_parity', score=0.90)
+    _write_run(candidate, level='legacy_parity', score=0.95)
+    payload = json.loads((candidate / 'evaluation' / 'per_movie.json').read_text())
+    payload[0]['status'] = 'error'
+    (candidate / 'evaluation' / 'per_movie.json').write_text(json.dumps(payload) + '\n')
+    with pytest.raises(ValueError, match='incomplete movies'):
+        compare_runs(baseline, candidate)
+
+
+def test_compare_refuses_missing_evaluation_level(tmp_path: Path) -> None:
+    baseline = tmp_path / 'base'
+    candidate = tmp_path / 'cand'
+    _write_run(baseline, level='legacy_parity', score=0.90)
+    _write_run(candidate, level='legacy_parity', score=0.95)
+    (candidate / 'manifest.json').write_text('{}\n')
+    with pytest.raises(ValueError, match='evaluation_level'):
+        compare_runs(baseline, candidate)

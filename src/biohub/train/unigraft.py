@@ -12,10 +12,12 @@ from biohub.train.cardinality import (
 )
 from biohub.train.tensorboard import log_scalars, open_writer
 from biohub.utils.cli import run_argparse_main
+from biohub.utils.seed import seed_everything
 
 
 def main() -> None:
     args = parse_args()
+    seed_everything(int(args.seed), deterministic=bool(args.deterministic))
     args.output.mkdir(parents=True, exist_ok=True)
     writer = open_writer(args.output)
     trainer = trainer_mod

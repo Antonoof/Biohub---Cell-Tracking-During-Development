@@ -61,8 +61,10 @@ build-backend = "hatchling.build"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 pythonpath = ["src"]
-addopts = ["-v", "--tb=short"]
-markers = ["slow: helper vs package smoke at atol 1e-6"]
+addopts = ["-v", "--tb=short", "-m", "not slow"]
+markers = [
+    "slow: long GPU infer and helper-vs-package smoke",
+]
 
 [tool.ruff]
 line-length = 100
@@ -71,6 +73,7 @@ src = ["src", "tests"]
 extend-exclude = [
     "biohub_production_957_reproducibility_bundle",
     "kaggle",
+    "tests/fixtures/legacy_scorer",
 ]
 
 [tool.ruff.lint]

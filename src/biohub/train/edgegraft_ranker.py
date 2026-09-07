@@ -11,6 +11,7 @@ from sklearn.ensemble import HistGradientBoostingClassifier
 from biohub.train import edgegraft as base
 from biohub.train.tensorboard import log_scalars, open_writer
 from biohub.utils.cli import run_argparse_main
+from biohub.utils.seed import seed_everything
 
 
 def make_model(args, fold: int) -> HistGradientBoostingClassifier:
@@ -43,6 +44,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
+    seed_everything(int(args.seed), deterministic=bool(args.deterministic))
     if args.output.exists():
         raise RuntimeError(f'Refusing to overwrite: {args.output}')
     args.output.mkdir(parents=True)

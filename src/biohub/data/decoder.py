@@ -60,8 +60,15 @@ def load_graph_coordinates(path: Path) -> dict[int, tuple[int, np.ndarray]]:
     }
 
 
-def load_video(stem: str, args, evidence_root: Path | None) -> VideoRows:
-    cache = torch.load(args.event_cache / f'{stem}.pt', map_location='cpu', weights_only=False)
+def load_video(
+    stem: str,
+    args,
+    evidence_root: Path | None,
+    cache: dict | None = None,
+    graph_coordinates: dict[int, tuple[int, np.ndarray]] | None = None,
+) -> VideoRows:
+    if cache is None:
+        cache = torch.load(args.event_cache / f'{stem}.pt', map_location='cpu', weights_only=False)
     source_node = cache['source_node'].astype(np.int64)
     owner = cache['pair_source_idx'].astype(np.int32)
     needs_coordinates = (
@@ -69,9 +76,10 @@ def load_video(stem: str, args, evidence_root: Path | None) -> VideoRows:
         or args.public_primary_evidence is not None
         or args.public_secondary_evidence is not None
     )
-    graph_coordinates = (
-        load_graph_coordinates(args.graph_dir / f'{stem}.geff') if needs_coordinates else {}
-    )
+    if graph_coordinates is None:
+        graph_coordinates = (
+            load_graph_coordinates(args.graph_dir / f'{stem}.geff') if needs_coordinates else {}
+        )
     if evidence_root is None:
         c_pair_x = np.zeros((len(owner), 0), np.float32)
     else:

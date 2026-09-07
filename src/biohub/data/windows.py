@@ -35,15 +35,31 @@ class VideoMeta:
     q_high: float
 
 
+_ZARR_ARRAYS: dict[str, Any] = {}
+
+
+def _zarr_array(path: Path):
+    key = str(path)
+    array = _ZARR_ARRAYS.get(key)
+    if array is None:
+        array = zarr.open_group(key, mode='r')['0']
+        _ZARR_ARRAYS[key] = array
+    return array
+
+
 def get_window_data(
     gt_graph: td.graph.BaseGraph,
     image_shape: tuple[int, ...],
     t_start: int,
     window_size: int = 2,
     downsample: tuple[int, ...] = (1, 1, 1),
+    gt_attrs: pl.DataFrame | None = None,
+    edge_attrs: pl.DataFrame | None = None,
 ) -> FrameWindowData | None:
-    gt_attrs = gt_graph.node_attrs(attr_keys=['node_id', 't', 'z', 'y', 'x'])
-    edge_attrs = gt_graph.edge_attrs(attr_keys=['source_id', 'target_id'])
+    if gt_attrs is None:
+        gt_attrs = gt_graph.node_attrs(attr_keys=['node_id', 't', 'z', 'y', 'x'])
+    if edge_attrs is None:
+        edge_attrs = gt_graph.edge_attrs(attr_keys=['source_id', 'target_id'])
 
     ds = np.array(downsample, dtype=np.float32)
 
@@ -155,7 +171,7 @@ class FrameWindowDataset(Dataset):
         W = meta['n_frames']
         dz, dy, dx = vm.downsample
 
-        z: Any = zarr.open_group(str(vm.zarr_path), mode='r')['0']
+        z: Any = _zarr_array(vm.zarr_path)
         target_shape = list(vm.image_shape[1:])
 
         raw = z[t_start : t_start + W, ::dz, ::dy, ::dx].astype(np.float32)
@@ -221,8 +237,18 @@ def load_dataset_windows(
     )
 
     windows: list[FrameWindowData] = []
+    gt_attrs = tracks.node_attrs(attr_keys=['node_id', 't', 'z', 'y', 'x'])
+    edge_attrs = tracks.edge_attrs(attr_keys=['source_id', 'target_id'])
     for t in range(image_shape[0] - window_size + 1):
-        data = get_window_data(tracks, image_shape, t, window_size, downsample=downsample)
+        data = get_window_data(
+            tracks,
+            image_shape,
+            t,
+            window_size,
+            downsample=downsample,
+            gt_attrs=gt_attrs,
+            edge_attrs=edge_attrs,
+        )
         if data is not None:
             windows.append(data)
 

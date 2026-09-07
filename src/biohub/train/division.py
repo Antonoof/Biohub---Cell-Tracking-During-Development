@@ -2,7 +2,6 @@
 
 import argparse
 import json
-import random
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -35,6 +34,8 @@ from biohub.metrics.divisions import (
 from biohub.models.division import DivisionMLP
 from biohub.train.tensorboard import log_scalars, open_writer
 from biohub.utils.cli import run_argparse_main
+from biohub.utils.parallel import ordered_process_map
+from biohub.utils.seed import dataloader_generator, seed_everything
 from biohub.validation.cv import embryo_two_fold
 
 
@@ -186,6 +187,181 @@ def division_event_info(graph, gt_graph, comp_of):
     return events
 
 
+def _write_division_part(item) -> str:
+    stem, args = item
+    parts_dir = args.cache.parent / f'{args.cache.stem}_parts'
+    part_path = parts_dir / f'{stem}.pt'
+    if part_path.exists() and not args.rebuild_cache:
+        return stem
+    source_x, source_y, source_embryo, source_dataset, source_node, source_event = (
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+    )
+    pair_x, pair_y, pair_source_idx, pair_event = [], [], [], []
+    event_rows = []
+    event_counter = 0
+    source_start = pair_start = event_start = 0
+    graph = load_graph(args.division_audit / 'pre_safe_graphs' / f'{stem}.geff')
+    ds = open_dataset(args.data / stem, normalize=False, require_tracks=True, load_image=False)
+    spacing = np.asarray(ds.scale, np.float64)
+    nodes, ids_by_t, pos, outgoing, incoming, edge_info = graph_data(graph, spacing)
+    shifts = load_shifts(args.division_audit / 'registration_shifts' / f'{stem}.csv')
+    comp_of, members = weak_components(graph)
+    reader = VolumeReader(args.data / f'{stem}.zarr')
+    image_cache: dict[tuple[int, int], np.ndarray] = {}
+    child_cache: dict[int, np.ndarray] = {}
+
+    matched_full = match_full(graph, ds.tracks, scale=ds.scale, max_distance=7.0)
+    match_attrs = matched_full.node_attrs(
+        attr_keys=[td.DEFAULT_ATTR_KEYS.NODE_ID, td.DEFAULT_ATTR_KEYS.MATCHED_NODE_ID]
+    )
+    gt_to_pred = {
+        int(r[td.DEFAULT_ATTR_KEYS.MATCHED_NODE_ID]): int(r[td.DEFAULT_ATTR_KEYS.NODE_ID])
+        for r in match_attrs.to_dicts()
+        if r[td.DEFAULT_ATTR_KEYS.MATCHED_NODE_ID] is not None
+        and int(r[td.DEFAULT_ATTR_KEYS.MATCHED_NODE_ID]) != -1
+    }
+    events = division_event_info(graph, ds.tracks, comp_of)
+    for event in events:
+        event['event_id'] = event_counter
+        event_rows.append(
+            {
+                'event_id': event_counter,
+                'dataset': stem,
+                'embryo': stem.split('_', 1)[0],
+                'gt_id': event['gt_id'],
+            }
+        )
+        event_counter += 1
+
+    source_events: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for event in events:
+        for root in event['parent_roots']:
+            for source in members[root]:
+                if abs(int(nodes[source]['t']) - event['divider_t']) > args.temporal_radius:
+                    continue
+                pairs = candidate_pairs(source, nodes, ids_by_t, pos, outgoing, incoming, shifts)
+                for _, a, b, *_ in pairs:
+                    mask = event['comp_lineages'].get(comp_of[a], 0) | event['comp_lineages'].get(
+                        comp_of[b], 0
+                    )
+                    if mask.bit_count() >= 2:
+                        source_events[source].append(event)
+                        break
+
+    labels: dict[int, int] = {}
+    gt_attrs = ds.tracks.node_attrs(attr_keys=[td.DEFAULT_ATTR_KEYS.NODE_ID])
+    for gt_id in gt_attrs[td.DEFAULT_ATTR_KEYS.NODE_ID].to_list():
+        gt_id = int(gt_id)
+        degree = ds.tracks.out_degree(gt_id)
+        if degree not in (1, 2) or gt_id not in gt_to_pred:
+            continue
+        pred = gt_to_pred[gt_id]
+        labels[pred] = max(labels.get(pred, 0), int(degree >= 2))
+    for source in source_events:
+        labels[source] = 1
+
+    for source, label in labels.items():
+        sf = source_features(
+            source,
+            nodes,
+            ids_by_t,
+            pos,
+            outgoing,
+            incoming,
+            edge_info,
+            shifts,
+            reader,
+            spacing,
+            image_cache,
+        )
+        idx = len(source_x)
+        events_here = source_events.get(source, [])
+        source_x.append(sf)
+        source_y.append(label)
+        source_embryo.append(stem.split('_', 1)[0])
+        source_dataset.append(stem)
+        source_node.append(source)
+        source_event.append(events_here[0]['event_id'] if events_here else -1)
+
+        if label and not events_here:
+            continue
+        candidates = candidate_pairs(source, nodes, ids_by_t, pos, outgoing, incoming, shifts)
+        pair_rows = []
+        for score, a, b, da, db, sister in candidates:
+            enabled = []
+            for event in events_here:
+                mask = event['comp_lineages'].get(comp_of[a], 0) | event['comp_lineages'].get(
+                    comp_of[b], 0
+                )
+                if mask.bit_count() >= 2:
+                    enabled.append(event['event_id'])
+            y = int(bool(enabled))
+            event_id = enabled[0] if enabled else -1
+            pair_rows.append((score, y, event_id, a, b, da, db, sister))
+        positives = [r for r in pair_rows if r[1]]
+        negatives = [r for r in pair_rows if not r[1]]
+        cap = args.max_pairs_positive_source if label else args.max_pairs_negative_source
+        keep = positives + negatives[: max(0, cap - len(positives))]
+        for _, y, event_id, a, b, da, db, sister in keep:
+            pair_x.append(
+                pair_features(
+                    source,
+                    a,
+                    b,
+                    da,
+                    db,
+                    sister,
+                    sf,
+                    nodes,
+                    pos,
+                    outgoing,
+                    incoming,
+                    shifts,
+                    comp_of,
+                    reader,
+                    spacing,
+                    child_cache,
+                )
+            )
+            pair_y.append(y)
+            pair_source_idx.append(idx)
+            pair_event.append(event_id)
+
+    part = {
+        'source_x': np.asarray(source_x[source_start:], np.float32),
+        'source_y': np.asarray(source_y[source_start:], np.uint8),
+        'source_embryo': list(source_embryo[source_start:]),
+        'source_dataset': list(source_dataset[source_start:]),
+        'source_node': np.asarray(source_node[source_start:], np.int64),
+        'source_event': np.asarray(
+            [int(e) - event_start if int(e) >= 0 else -1 for e in source_event[source_start:]],
+            np.int32,
+        ),
+        'pair_x': np.asarray(pair_x[pair_start:], np.float32),
+        'pair_y': np.asarray(pair_y[pair_start:], np.uint8),
+        'pair_source_idx': np.asarray(
+            [int(i) - source_start for i in pair_source_idx[pair_start:]], np.int32
+        ),
+        'pair_event': np.asarray(
+            [int(e) - event_start if int(e) >= 0 else -1 for e in pair_event[pair_start:]],
+            np.int32,
+        ),
+        'event_rows': [
+            {**row, 'event_id': int(row['event_id']) - event_start}
+            for row in event_rows[event_start:]
+        ],
+    }
+    tmp_path = part_path.with_suffix('.pt.tmp')
+    torch.save(part, tmp_path)
+    tmp_path.replace(part_path)
+    return stem
+
+
 def build_cache(args) -> None:
     metrics = pd.read_csv(args.division_audit.parent / 'audit_907_v1' / 'metrics_all.csv')
     stems = metrics.dataset.sort_values().tolist()
@@ -209,189 +385,29 @@ def build_cache(args) -> None:
     parts_dir = args.cache.parent / f'{args.cache.stem}_parts'
     parts_dir.mkdir(parents=True, exist_ok=True)
 
+    jobs = [(stem, args) for stem in stems]
+    ordered_process_map(_write_division_part, jobs)
     for stem in tqdm(stems, desc='division feature cache'):
         part_path = parts_dir / f'{stem}.pt'
-        if part_path.exists() and not args.rebuild_cache:
-            part = torch.load(part_path, map_location='cpu', weights_only=False)
-            source_base, event_base = len(source_x), event_counter
-            source_x.extend(part['source_x'])
-            source_y.extend(part['source_y'])
-            source_embryo.extend(part['source_embryo'])
-            source_dataset.extend(part['source_dataset'])
-            source_node.extend(part['source_node'])
-            source_event.extend(
-                [event_base + int(e) if int(e) >= 0 else -1 for e in part['source_event']]
-            )
-            pair_x.extend(part['pair_x'])
-            pair_y.extend(part['pair_y'])
-            pair_source_idx.extend([source_base + int(i) for i in part['pair_source_idx']])
-            pair_event.extend(
-                [event_base + int(e) if int(e) >= 0 else -1 for e in part['pair_event']]
-            )
-            for row in part['event_rows']:
-                item = dict(row)
-                item['event_id'] = event_base + int(item['event_id'])
-                event_rows.append(item)
-            event_counter += len(part['event_rows'])
-            continue
-
-        source_start, pair_start, event_start = len(source_x), len(pair_x), event_counter
-        graph = load_graph(args.division_audit / 'pre_safe_graphs' / f'{stem}.geff')
-        ds = open_dataset(args.data / stem, normalize=False, require_tracks=True, load_image=False)
-        spacing = np.asarray(ds.scale, np.float64)
-        nodes, ids_by_t, pos, outgoing, incoming, edge_info = graph_data(graph, spacing)
-        shifts = load_shifts(args.division_audit / 'registration_shifts' / f'{stem}.csv')
-        comp_of, members = weak_components(graph)
-        reader = VolumeReader(args.data / f'{stem}.zarr')
-        image_cache: dict[tuple[int, int], np.ndarray] = {}
-        child_cache: dict[int, np.ndarray] = {}
-
-        matched_full = match_full(graph, ds.tracks, scale=ds.scale, max_distance=7.0)
-        match_attrs = matched_full.node_attrs(
-            attr_keys=[td.DEFAULT_ATTR_KEYS.NODE_ID, td.DEFAULT_ATTR_KEYS.MATCHED_NODE_ID]
+        part = torch.load(part_path, map_location='cpu', weights_only=False)
+        source_base, event_base = len(source_x), event_counter
+        source_x.extend(part['source_x'])
+        source_y.extend(part['source_y'])
+        source_embryo.extend(part['source_embryo'])
+        source_dataset.extend(part['source_dataset'])
+        source_node.extend(part['source_node'])
+        source_event.extend(
+            [event_base + int(e) if int(e) >= 0 else -1 for e in part['source_event']]
         )
-        gt_to_pred = {
-            int(r[td.DEFAULT_ATTR_KEYS.MATCHED_NODE_ID]): int(r[td.DEFAULT_ATTR_KEYS.NODE_ID])
-            for r in match_attrs.to_dicts()
-            if r[td.DEFAULT_ATTR_KEYS.MATCHED_NODE_ID] is not None
-            and int(r[td.DEFAULT_ATTR_KEYS.MATCHED_NODE_ID]) != -1
-        }
-        events = division_event_info(graph, ds.tracks, comp_of)
-        for event in events:
-            event['event_id'] = event_counter
-            event_rows.append(
-                {
-                    'event_id': event_counter,
-                    'dataset': stem,
-                    'embryo': stem.split('_', 1)[0],
-                    'gt_id': event['gt_id'],
-                }
-            )
-            event_counter += 1
-
-        source_events: dict[int, list[dict[str, Any]]] = defaultdict(list)
-        for event in events:
-            for root in event['parent_roots']:
-                for source in members[root]:
-                    if abs(int(nodes[source]['t']) - event['divider_t']) > args.temporal_radius:
-                        continue
-                    pairs = candidate_pairs(
-                        source, nodes, ids_by_t, pos, outgoing, incoming, shifts
-                    )
-                    for _, a, b, *_ in pairs:
-                        mask = event['comp_lineages'].get(comp_of[a], 0) | event[
-                            'comp_lineages'
-                        ].get(comp_of[b], 0)
-                        if mask.bit_count() >= 2:
-                            source_events[source].append(event)
-                            break
-
-        labels: dict[int, int] = {}
-        gt_attrs = ds.tracks.node_attrs(attr_keys=[td.DEFAULT_ATTR_KEYS.NODE_ID])
-        for gt_id in gt_attrs[td.DEFAULT_ATTR_KEYS.NODE_ID].to_list():
-            gt_id = int(gt_id)
-            degree = ds.tracks.out_degree(gt_id)
-            if degree not in (1, 2) or gt_id not in gt_to_pred:
-                continue
-            pred = gt_to_pred[gt_id]
-            labels[pred] = max(labels.get(pred, 0), int(degree >= 2))
-        for source in source_events:
-            labels[source] = 1
-
-        for source, label in labels.items():
-            sf = source_features(
-                source,
-                nodes,
-                ids_by_t,
-                pos,
-                outgoing,
-                incoming,
-                edge_info,
-                shifts,
-                reader,
-                spacing,
-                image_cache,
-            )
-            idx = len(source_x)
-            events_here = source_events.get(source, [])
-            source_x.append(sf)
-            source_y.append(label)
-            source_embryo.append(stem.split('_', 1)[0])
-            source_dataset.append(stem)
-            source_node.append(source)
-            source_event.append(events_here[0]['event_id'] if events_here else -1)
-
-            if label and not events_here:
-                continue
-            candidates = candidate_pairs(source, nodes, ids_by_t, pos, outgoing, incoming, shifts)
-            pair_rows = []
-            for score, a, b, da, db, sister in candidates:
-                enabled = []
-                for event in events_here:
-                    mask = event['comp_lineages'].get(comp_of[a], 0) | event['comp_lineages'].get(
-                        comp_of[b], 0
-                    )
-                    if mask.bit_count() >= 2:
-                        enabled.append(event['event_id'])
-                y = int(bool(enabled))
-                event_id = enabled[0] if enabled else -1
-                pair_rows.append((score, y, event_id, a, b, da, db, sister))
-            positives = [r for r in pair_rows if r[1]]
-            negatives = [r for r in pair_rows if not r[1]]
-            cap = args.max_pairs_positive_source if label else args.max_pairs_negative_source
-            keep = positives + negatives[: max(0, cap - len(positives))]
-            for _, y, event_id, a, b, da, db, sister in keep:
-                pair_x.append(
-                    pair_features(
-                        source,
-                        a,
-                        b,
-                        da,
-                        db,
-                        sister,
-                        sf,
-                        nodes,
-                        pos,
-                        outgoing,
-                        incoming,
-                        shifts,
-                        comp_of,
-                        reader,
-                        spacing,
-                        child_cache,
-                    )
-                )
-                pair_y.append(y)
-                pair_source_idx.append(idx)
-                pair_event.append(event_id)
-
-        part = {
-            'source_x': np.asarray(source_x[source_start:], np.float32),
-            'source_y': np.asarray(source_y[source_start:], np.uint8),
-            'source_embryo': list(source_embryo[source_start:]),
-            'source_dataset': list(source_dataset[source_start:]),
-            'source_node': np.asarray(source_node[source_start:], np.int64),
-            'source_event': np.asarray(
-                [int(e) - event_start if int(e) >= 0 else -1 for e in source_event[source_start:]],
-                np.int32,
-            ),
-            'pair_x': np.asarray(pair_x[pair_start:], np.float32),
-            'pair_y': np.asarray(pair_y[pair_start:], np.uint8),
-            'pair_source_idx': np.asarray(
-                [int(i) - source_start for i in pair_source_idx[pair_start:]], np.int32
-            ),
-            'pair_event': np.asarray(
-                [int(e) - event_start if int(e) >= 0 else -1 for e in pair_event[pair_start:]],
-                np.int32,
-            ),
-            'event_rows': [
-                {**row, 'event_id': int(row['event_id']) - event_start}
-                for row in event_rows[event_start:]
-            ],
-        }
-        tmp_path = part_path.with_suffix('.pt.tmp')
-        torch.save(part, tmp_path)
-        tmp_path.replace(part_path)
+        pair_x.extend(part['pair_x'])
+        pair_y.extend(part['pair_y'])
+        pair_source_idx.extend([source_base + int(i) for i in part['pair_source_idx']])
+        pair_event.extend([event_base + int(e) if int(e) >= 0 else -1 for e in part['pair_event']])
+        for row in part['event_rows']:
+            item = dict(row)
+            item['event_id'] = event_base + int(item['event_id'])
+            event_rows.append(item)
+        event_counter += len(part['event_rows'])
 
     if not source_x or not pair_x:
         raise RuntimeError(
@@ -508,8 +524,14 @@ def train_fold(data, train_embryo: str, val_embryo: str, args, device):
     )
     sm, ss = sx[source_train].mean(0), sx[source_train].std(0).clip(1e-4)
     pm, ps = px[pair_train].mean(0), px[pair_train].std(0).clip(1e-4)
-    source_model = DivisionMLP(sx.shape[1], _hidden_tuple(args.source_hidden, (96, 48))).to(device)
-    pair_model = DivisionMLP(px.shape[1], _hidden_tuple(args.pair_hidden, (128, 64))).to(device)
+    source_hidden = _hidden_tuple(args.source_hidden, (96, 48))
+    pair_hidden = _hidden_tuple(args.pair_hidden, (128, 64))
+    source_model = DivisionMLP(
+        sx.shape[1], source_hidden, args.dropout_1, args.dropout_2
+    ).to(device)
+    pair_model = DivisionMLP(
+        px.shape[1], pair_hidden, args.dropout_1, args.dropout_2
+    ).to(device)
     opt = torch.optim.AdamW(
         list(source_model.parameters()) + list(pair_model.parameters()),
         lr=args.lr,
@@ -522,6 +544,7 @@ def train_fold(data, train_embryo: str, val_embryo: str, args, device):
         ),
         batch_size=min(args.batch_size, int(source_train.sum())),
         shuffle=True,
+        generator=dataloader_generator(args.seed),
     )
     ploader = DataLoader(
         TensorDataset(
@@ -530,6 +553,7 @@ def train_fold(data, train_embryo: str, val_embryo: str, args, device):
         ),
         batch_size=min(args.batch_size, int(pair_train.sum())),
         shuffle=True,
+        generator=dataloader_generator(args.seed),
     )
     best, best_state, stale, history = -1.0, None, 0, []
     writer = open_writer(args.output)
@@ -611,8 +635,14 @@ def train_full(data, epochs: int, threshold: float, args, device):
     px, py = data['pair_x'].astype(np.float32), data['pair_y'].astype(np.float32)
     sm, ss = sx.mean(0), sx.std(0).clip(1e-4)
     pm, ps = px.mean(0), px.std(0).clip(1e-4)
-    source_model = DivisionMLP(sx.shape[1], _hidden_tuple(args.source_hidden, (96, 48))).to(device)
-    pair_model = DivisionMLP(px.shape[1], _hidden_tuple(args.pair_hidden, (128, 64))).to(device)
+    source_hidden = _hidden_tuple(args.source_hidden, (96, 48))
+    pair_hidden = _hidden_tuple(args.pair_hidden, (128, 64))
+    source_model = DivisionMLP(
+        sx.shape[1], source_hidden, args.dropout_1, args.dropout_2
+    ).to(device)
+    pair_model = DivisionMLP(
+        px.shape[1], pair_hidden, args.dropout_1, args.dropout_2
+    ).to(device)
     opt = torch.optim.AdamW(
         list(source_model.parameters()) + list(pair_model.parameters()),
         lr=args.lr,
@@ -622,11 +652,13 @@ def train_full(data, epochs: int, threshold: float, args, device):
         TensorDataset(torch.from_numpy((sx - sm) / ss), torch.from_numpy(sy)),
         batch_size=args.batch_size,
         shuffle=True,
+        generator=dataloader_generator(args.seed),
     )
     ploader = DataLoader(
         TensorDataset(torch.from_numpy((px - pm) / ps), torch.from_numpy(py)),
         batch_size=args.batch_size,
         shuffle=True,
+        generator=dataloader_generator(args.seed),
     )
     writer = open_writer(args.output)
     for epoch in range(epochs):
@@ -674,16 +706,16 @@ def train_full(data, epochs: int, threshold: float, args, device):
         'rescue_parent_um': 14.0,
         'rescue_sister_um': 20.0,
         'temporal_radius': args.temporal_radius,
-        'source_hidden': [96, 48],
-        'pair_hidden': [128, 64],
+        'source_hidden': list(source_hidden),
+        'pair_hidden': list(pair_hidden),
+        'dropout_1': float(args.dropout_1),
+        'dropout_2': float(args.dropout_2),
     }
 
 
 def main():
     args = argspec()
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
+    seed_everything(int(args.seed), deterministic=bool(args.deterministic))
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
     if args.rebuild_cache or not args.cache.exists():
         build_cache(args)

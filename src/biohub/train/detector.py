@@ -4,7 +4,6 @@ import time
 from itertools import cycle
 from pathlib import Path
 
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -26,15 +25,12 @@ from biohub.losses.association import (
 from biohub.losses.detection import compute_detection_loss
 from biohub.models import TemporalUNet3D, UNetNodeTransformer
 from biohub.train.tensorboard import log_scalars, open_writer
-from biohub.utils.seed import seed_everything
+from biohub.utils.parallel import ordered_thread_map
+from biohub.utils.seed import dataloader_generator, seed_everything, seed_worker
+from biohub.validation.splits import detector_fold_names
 
 DEFAULT_METHOD = 'unet_transformer'
 DEFAULT_AUGMENTATIONS = [brightness_augment, flip_augment]
-
-
-def _cuda_sync() -> None:
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
 
 
 def detect_and_match(
@@ -197,7 +193,6 @@ def train_epoch(
         voxel_size = tuple(batch['voxel_size'][0].tolist())
         ds_scale = batch['downsample'][0].to(device)
 
-        _cuda_sync()
         t1 = time.perf_counter()
         t_data += t1 - t0
 
@@ -270,7 +265,6 @@ def train_epoch(
 
         loss = edge_loss + det_loss_weight * det_loss
 
-        _cuda_sync()
         t2 = time.perf_counter()
         t_forward += t2 - t1
 
@@ -279,7 +273,6 @@ def train_epoch(
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
 
-        _cuda_sync()
         t3 = time.perf_counter()
         t_backward += t3 - t2
 
@@ -427,39 +420,31 @@ def train(
         train_files = test_files = [debug_video]
         print(f'Debug mode: using single video {debug_video.name}', flush=True)
     else:
-        folds = json.loads(splits_file.read_text())
-        fold_data = folds[fold]
-        train_files = [data_dir / name for name in fold_data['train']]
-        test_files = [data_dir / name for name in fold_data['test']]
+        payload = json.loads(splits_file.read_text())
+        train_names, test_names = detector_fold_names(payload, fold)
+        train_files = [data_dir / name for name in train_names]
+        test_files = [data_dir / name for name in test_names]
         print(f'Fold {fold}: {len(train_files)} train, {len(test_files)} test', flush=True)
 
     output_dir = weights_dir / method / f'split_{fold}'
     output_dir.mkdir(parents=True, exist_ok=True)
     writer = open_writer(output_dir)
 
-    model_config = {
-        'unet_out_channels': unet_out_channels,
-        'unet_layers': unet_layers,
-        'downsample': list(downsample),
-        'window_size': window_size,
-        'pool_kernel_um': pool_kernel_um,
-    }
-    (output_dir / 'config.json').write_text(json.dumps(model_config, indent=2))
-
     def _load(
         files: list[Path],
         desc: str,
     ) -> list[tuple[VideoMeta, list[FrameWindowData]]]:
         print(f'Loading {desc} ({len(files)} datasets)...', flush=True)
-        data: list[tuple[VideoMeta, list[FrameWindowData]]] = []
-        for f in tqdm(files, desc=desc, disable=False):
-            video_meta, windows = load_dataset_windows(
-                f,
+
+        def _load_one(path: Path) -> tuple[VideoMeta, list[FrameWindowData]]:
+            return load_dataset_windows(
+                path,
                 window_size=window_size,
                 max_frames=max_frames,
                 downsample=downsample,
             )
-            data.append((video_meta, windows))
+
+        data = ordered_thread_map(_load_one, files)
         n_windows = sum(len(w) for _, w in data)
         print(f'  {desc} done: {n_windows} windows total', flush=True)
         return data
@@ -473,6 +458,20 @@ def train(
 
     pos_feat_dim = 4 * POS_EMBED_DIM
 
+    model_config = {
+        'unet_out_channels': unet_out_channels,
+        'unet_layers': unet_layers,
+        'downsample': list(downsample),
+        'window_size': window_size,
+        'pool_kernel_um': pool_kernel_um,
+        'hidden_dim': hidden_dim,
+        'n_heads': n_heads,
+        'n_blocks': n_blocks,
+        'dropout': dropout,
+        'pos_feat_dim': pos_feat_dim,
+    }
+    (output_dir / 'config.json').write_text(json.dumps(model_config, indent=2) + '\n')
+
     train_ds = FrameWindowDataset(
         train_video_data, max_nodes=max_nodes, augmentations=augmentations
     )
@@ -480,12 +479,8 @@ def train(
     g = None
     worker_init_fn = None
     if seed is not None:
-        g = torch.Generator()
-        g.manual_seed(seed)
-
-        def worker_init_fn(worker_id: int) -> None:
-            worker_seed = torch.initial_seed() % 2**32
-            np.random.seed(worker_seed)
+        g = dataloader_generator(seed)
+        worker_init_fn = seed_worker
 
     train_loader = DataLoader(
         train_ds,
@@ -494,7 +489,7 @@ def train(
         num_workers=num_workers,
         prefetch_factor=2 if num_workers > 0 else None,
         persistent_workers=num_workers > 0,
-        pin_memory=False,
+        pin_memory=True,
         generator=g,
         worker_init_fn=worker_init_fn,
     )
@@ -505,7 +500,7 @@ def train(
         num_workers=num_workers,
         prefetch_factor=2 if num_workers > 0 else None,
         persistent_workers=num_workers > 0,
-        pin_memory=False,
+        pin_memory=True,
         generator=g,
         worker_init_fn=worker_init_fn,
     )

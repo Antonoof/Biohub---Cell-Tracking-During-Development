@@ -98,7 +98,7 @@ graph:
   deepcenter_gap_confirm_min_span_um: 8.5
   deepcenter_score_win_z: 1
   deepcenter_score_win_yx: 2
-  deepcenter_score_cache_max_frames: 256
+  deepcenter_score_cache_max_frames: 8
   deepcenter_device: cuda
   safe_divisions: true
   safe_div_max_um: 9.0
@@ -127,7 +127,7 @@ graph:
   node_budget_dense_min_detected: 40000
   node_budget_dense_ratio: 0.98
   node_budget_dense_max_drop_frac: 0.04
-  frame_cache_max_frames: 256
+  frame_cache_max_frames: 8
 division:
   combined_decoder: true
   model_c_threshold: 0.96
@@ -160,7 +160,7 @@ speed:
   thread_pool_total: 0
 runtime:
   gpu_workers: 2
-  cpu_workers: 64
+  cpu_workers: 2
   cpu_workers_while_predicting: 0
   deepcenter_gpu_workers: 1
   deepcenter_devices: []

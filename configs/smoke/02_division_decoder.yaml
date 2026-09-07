@@ -4,7 +4,7 @@ graph_dir: data/division_candidate_audit_v1/pre_safe_graphs
 train_evidence: data/model_c_native_division_evidence_train175_bestpair
 held_evidence: data/model_c_native_division_evidence_held20_bestpair
 practice_evidence: data/model_c_native_division_evidence_practice4_bestpair
-split: biohub_production_957_reproducibility_bundle/helpers/02_model_c/division_balanced_175_20_split.json
+split: configs/splits/division_balanced_175_20.json
 output: runs/smoke/02_division_decoder
 folds: 2
 seed: 2029

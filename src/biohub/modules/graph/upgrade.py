@@ -312,8 +312,6 @@ class GraphUpgrade:
         if not checkpoint_path.is_file():
             raise FileNotFoundError(f'DeepCenter checkpoint is missing: {checkpoint_path}')
         device = torch.device(self.deepcenter_device)
-        if device.type == 'cpu':
-            torch.set_num_threads(1)
         checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
         expected = int(self.deepcenter_model_cfg['expected_epoch'])
         if int(checkpoint.get('epoch', -1)) != expected:

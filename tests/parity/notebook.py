@@ -3,10 +3,7 @@ import json
 from biohub.paths import PROJECT_ROOT
 
 PRODUCTION_NOTEBOOK = (
-    PROJECT_ROOT
-    / 'biohub_production_957_reproducibility_bundle'
-    / 'production'
-    / 'fork-of-fork-of-division-focused.ipynb'
+    PROJECT_ROOT / 'tests' / 'fixtures' / 'legacy_scorer' / 'production_notebook.ipynb'
 )
 PRODUCTION_NOTEBOOK_SHA256 = '0c141c83ce67fb24a4c30fcc65b06856331f2aa17119bac8f36502fb337f7ec2'
 

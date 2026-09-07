@@ -16,6 +16,8 @@ from biohub.train import edgegraft_oracle as edgebase
 from biohub.train.edgegraft import FEATURES as SUMMARY_FEATURES
 from biohub.train.tensorboard import log_scalars, open_writer
 from biohub.utils.cli import run_argparse_main
+from biohub.utils.parallel import ordered_process_map
+from biohub.utils.seed import seed_everything
 
 
 def parse_args() -> argparse.Namespace:
@@ -75,67 +77,69 @@ def edge_valid(
     )
 
 
-def label_transactions(args: argparse.Namespace) -> pd.DataFrame:
+def _label_transaction_path(item) -> pd.DataFrame | None:
+    path, args = item
     exact = pd.read_csv(args.baseline_exact).set_index('dataset')
-    frames = []
+    stem = path.stem
+    frame = pd.read_parquet(path)
+    if frame.empty:
+        return None
+    graph = edgebase.load_graph(args.baseline / f'{stem}.geff')
+    gt = edgebase.load_graph(args.data / f'{stem}.geff')
+    dataset = open_dataset(
+        args.data / f'{stem}.zarr', require_tracks=False, load_image=False, device='cpu'
+    )
+    scale = np.asarray(dataset.scale, np.float64)
+    matched = match_full(graph, gt, scale, args.match_distance)
+    pred_to_gt = {
+        int(row['node_id']): int(row['match_node_id'])
+        for row in matched.node_attrs().to_dicts()
+        if int(row['match_node_id']) >= 0
+    }
+    gt_out = {int(node): int(gt.out_degree(int(node))) for node in gt.node_ids()}
+    gt_in = {int(node): int(gt.in_degree(int(node))) for node in gt.node_ids()}
+    truth = edgebase.matched_truth(graph, gt, scale, args.match_distance)
+    base_tp = int(exact.loc[stem, 'edge_tp'])
+    denominator = int(
+        exact.loc[stem, 'edge_tp'] + exact.loc[stem, 'edge_fp'] + exact.loc[stem, 'edge_fn']
+    )
+    delta_tp = []
+    delta_valid = []
+    delta_fp = []
+    utility = []
+    metric_delta = []
+    rows: Any = frame.itertuples(index=False)
+    for row in rows:
+        add = (int(row.source), int(row.target))
+        remove = {(int(row.current_source), int(row.target))}
+        if int(row.source_current_target) >= 0:
+            remove.add((int(row.source), int(row.source_current_target)))
+        dtp = int(add in truth) - sum(int(edge in truth) for edge in remove)
+        dvalid = edge_valid(add, pred_to_gt, gt_out, gt_in) - sum(
+            edge_valid(edge, pred_to_gt, gt_out, gt_in) for edge in remove
+        )
+        dfp = dvalid - dtp
+        util = int(dtp * denominator - base_tp * dfp)
+        before = base_tp / denominator if denominator else 0.0
+        after_denom = denominator + dfp
+        after = (base_tp + dtp) / after_denom if after_denom > 0 else 0.0
+        delta_tp.append(dtp)
+        delta_valid.append(dvalid)
+        delta_fp.append(dfp)
+        utility.append(util)
+        metric_delta.append(after - before)
+    frame['metric_delta_tp'] = delta_tp
+    frame['metric_delta_valid'] = delta_valid
+    frame['metric_delta_fp'] = delta_fp
+    frame['metric_utility'] = utility
+    frame['metric_delta'] = metric_delta
+    return frame
+
+
+def label_transactions(args: argparse.Namespace) -> pd.DataFrame:
     paths = sorted(args.decisions.glob('*.parquet'))
-    for index, path in enumerate(paths, 1):
-        stem = path.stem
-        frame = pd.read_parquet(path)
-        if frame.empty:
-            continue
-        graph = edgebase.load_graph(args.baseline / f'{stem}.geff')
-        gt = edgebase.load_graph(args.data / f'{stem}.geff')
-        dataset = open_dataset(
-            args.data / f'{stem}.zarr', require_tracks=False, load_image=False, device='cpu'
-        )
-        scale = np.asarray(dataset.scale, np.float64)
-        matched = match_full(graph, gt, scale, args.match_distance)
-        pred_to_gt = {
-            int(row['node_id']): int(row['match_node_id'])
-            for row in matched.node_attrs().to_dicts()
-            if int(row['match_node_id']) >= 0
-        }
-        gt_out = {int(node): int(gt.out_degree(int(node))) for node in gt.node_ids()}
-        gt_in = {int(node): int(gt.in_degree(int(node))) for node in gt.node_ids()}
-        truth = edgebase.matched_truth(graph, gt, scale, args.match_distance)
-        base_tp = int(exact.loc[stem, 'edge_tp'])
-        denominator = int(
-            exact.loc[stem, 'edge_tp'] + exact.loc[stem, 'edge_fp'] + exact.loc[stem, 'edge_fn']
-        )
-        delta_tp = []
-        delta_valid = []
-        delta_fp = []
-        utility = []
-        metric_delta = []
-        rows: Any = frame.itertuples(index=False)
-        for row in rows:
-            add = (int(row.source), int(row.target))
-            remove = {(int(row.current_source), int(row.target))}
-            if int(row.source_current_target) >= 0:
-                remove.add((int(row.source), int(row.source_current_target)))
-            dtp = int(add in truth) - sum(int(edge in truth) for edge in remove)
-            dvalid = edge_valid(add, pred_to_gt, gt_out, gt_in) - sum(
-                edge_valid(edge, pred_to_gt, gt_out, gt_in) for edge in remove
-            )
-            dfp = dvalid - dtp
-            util = int(dtp * denominator - base_tp * dfp)
-            before = base_tp / denominator if denominator else 0.0
-            after_denom = denominator + dfp
-            after = (base_tp + dtp) / after_denom if after_denom > 0 else 0.0
-            delta_tp.append(dtp)
-            delta_valid.append(dvalid)
-            delta_fp.append(dfp)
-            utility.append(util)
-            metric_delta.append(after - before)
-        frame['metric_delta_tp'] = delta_tp
-        frame['metric_delta_valid'] = delta_valid
-        frame['metric_delta_fp'] = delta_fp
-        frame['metric_utility'] = utility
-        frame['metric_delta'] = metric_delta
-        frames.append(frame)
-        if index % 25 == 0 or index == len(paths):
-            print(f'labeled {index}/{len(paths)}', flush=True)
+    labeled = ordered_process_map(_label_transaction_path, [(path, args) for path in paths])
+    frames = [frame for frame in labeled if frame is not None]
     return pd.concat(frames, ignore_index=True)
 
 
@@ -249,6 +253,7 @@ def train_family(frame: pd.DataFrame, features: list[str], args: argparse.Namesp
 
 def main() -> None:
     args = parse_args()
+    seed_everything(int(args.seed), deterministic=bool(args.deterministic))
     if args.output.exists():
         raise RuntimeError(f'Refusing to overwrite: {args.output}')
     args.output.mkdir(parents=True)

@@ -11,6 +11,8 @@ import tracksdata as td
 from biohub.data.volume import open_dataset, save_graph
 from biohub.metrics.divisions import match_full
 from biohub.utils.cli import run_argparse_main
+from biohub.utils.parallel import ordered_process_map
+from biohub.utils.seed import seed_everything
 
 DEFAULT_ROOT = Path('data/public914_backbone_matched_v1')
 DEFAULT_FINAL = Path('data/ug23_boundary_oof_exact_v1/final_candidate')
@@ -311,8 +313,45 @@ def apply_component_oracle(graph, candidates, truth) -> Counter:
     return counters
 
 
+def _oracle_stem(item) -> tuple[dict, Counter]:
+    stem, args, raw_dir, graph_dir = item
+    final = load_graph(args.final / f'{stem}.geff')
+    raw = load_graph(raw_dir / f'{stem}.geff')
+    gt = load_graph(args.data / f'{stem}.geff')
+    dataset = open_dataset(
+        args.data / f'{stem}.zarr',
+        require_tracks=False,
+        load_image=False,
+        device='cpu',
+    )
+    candidates = broad_final_candidates(
+        args.root,
+        stem,
+        raw,
+        final,
+        args.candidate_threshold,
+        args.max_distance,
+    )
+    truth = matched_truth(
+        final,
+        gt,
+        np.asarray(dataset.scale, np.float64),
+        args.match_distance,
+    )
+    before = edge_set(final)
+    counts = apply_component_oracle(final, candidates, truth)
+    after = edge_set(final)
+    counts['candidate_edges'] = len(candidates)
+    counts['truth_edges'] = len(truth)
+    counts['final_edge_delta'] = len(after) - len(before)
+    record = {'dataset': stem, **{key: int(value) for key, value in counts.items()}}
+    save_graph(final, graph_dir / f'{stem}.geff')
+    return record, counts
+
+
 def main() -> None:
     args = parse_args()
+    seed_everything(int(args.seed), deterministic=bool(args.deterministic))
     np.random.seed(args.seed)
     if args.output.exists():
         raise RuntimeError(f'Refusing to overwrite: {args.output}')
@@ -326,42 +365,13 @@ def main() -> None:
 
     records = []
     aggregate: Counter = Counter()
-    for index, stem in enumerate(stems, 1):
-        final = load_graph(args.final / f'{stem}.geff')
-        raw = load_graph(raw_dir / f'{stem}.geff')
-        gt = load_graph(args.data / f'{stem}.geff')
-        dataset = open_dataset(
-            args.data / f'{stem}.zarr',
-            require_tracks=False,
-            load_image=False,
-            device='cpu',
-        )
-        candidates = broad_final_candidates(
-            args.root,
-            stem,
-            raw,
-            final,
-            args.candidate_threshold,
-            args.max_distance,
-        )
-        truth = matched_truth(
-            final,
-            gt,
-            np.asarray(dataset.scale, np.float64),
-            args.match_distance,
-        )
-        before = edge_set(final)
-        counts = apply_component_oracle(final, candidates, truth)
-        after = edge_set(final)
-        counts['candidate_edges'] = len(candidates)
-        counts['truth_edges'] = len(truth)
-        counts['final_edge_delta'] = len(after) - len(before)
-        record = {'dataset': stem, **{key: int(value) for key, value in counts.items()}}
+    jobs = [(stem, args, raw_dir, graph_dir) for stem in stems]
+    results = ordered_process_map(_oracle_stem, jobs)
+    for index, (record, counts) in enumerate(results, 1):
         records.append(record)
         aggregate.update(counts)
-        save_graph(final, graph_dir / f'{stem}.geff')
         print(
-            f'[{index:03d}/{len(stems)}] {stem}: '
+            f'[{index:03d}/{len(stems)}] {record["dataset"]}: '
             f'components={counts["components"]} applied={counts["applied_components"]} '
             f'recoverable={counts["recoverable_truth_edges"]} '
             f'-{counts["edges_removed"]} +{counts["edges_added"]}',

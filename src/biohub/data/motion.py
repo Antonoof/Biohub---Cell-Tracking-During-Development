@@ -12,6 +12,18 @@ from scipy.optimize import linear_sum_assignment
 from torch.utils.data import Dataset
 
 from biohub.data.volume import open_dataset
+from biohub.utils.seed import SharedEpoch, sample_rng
+
+_ZARR_ARRAYS: dict[str, Any] = {}
+
+
+def _zarr_array(path: Path):
+    key = str(path)
+    array = _ZARR_ARRAYS.get(key)
+    if array is None:
+        array = zarr.open_group(key, mode='r')['0']
+        _ZARR_ARRAYS[key] = array
+    return array
 
 
 @dataclass
@@ -179,6 +191,7 @@ class ProposalWindowDataset(Dataset):
         self.max_nodes = max_nodes
         self.train = train
         self.seed = seed
+        self.epoch = SharedEpoch(0)
         self.windows: list[WindowRef] = []
         self.by_embryo: dict[str, list[int]] = {'44b6': [], '6bba': []}
         for vi, video in enumerate(videos):
@@ -204,15 +217,19 @@ class ProposalWindowDataset(Dataset):
     def __len__(self):
         return self.virtual_len
 
-    def _choose(self, idx: int) -> WindowRef:
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch.set(epoch)
+
+    def _choose(self, idx: int, rng: random.Random) -> WindowRef:
         if not self.train:
             return self.windows[idx]
         groups = [v for v in self.by_embryo.values() if v]
-        group = random.choice(groups)
-        return self.windows[random.choice(group)]
+        group = groups[rng.randrange(len(groups))]
+        return self.windows[group[rng.randrange(len(group))]]
 
     def __getitem__(self, index: Any) -> Any:
-        ref = self._choose(index)
+        rng = sample_rng(self.seed, self.epoch.get(), index)
+        ref = self._choose(index, rng)
         v = self.videos[ref.video]
         t = ref.t
         ranges = [
@@ -244,7 +261,7 @@ class ProposalWindowDataset(Dataset):
                 if dst in right:
                     target[i, right[dst]] = 1.0
 
-        root: Any = zarr.open_group(str(v.zarr_path), mode='r')['0']
+        root: Any = _zarr_array(v.zarr_path)
         dz, dy, dx = v.downsample
         raw = root[t : t + 2, ::dz, ::dy, ::dx].astype(np.float32)
         imgs = torch.from_numpy((raw - v.q_low) / (v.q_high - v.q_low + 1e-6)).clamp(0.0)
@@ -253,15 +270,15 @@ class ProposalWindowDataset(Dataset):
             torch.from_numpy(c / np.asarray(v.downsample, np.float32)) for c in proposal_coords
         ]
         if self.train:
-            if random.random() < 0.5:
+            if rng.random() < 0.5:
                 imgs = imgs.flip(-1)
                 for c in coords:
                     c[:, 2] = (v.image_shape_ds[3] - 1) - c[:, 2]
-            if random.random() < 0.5:
+            if rng.random() < 0.5:
                 imgs = imgs.flip(-2)
                 for c in coords:
                     c[:, 1] = (v.image_shape_ds[2] - 1) - c[:, 1]
-            imgs = (imgs * random.uniform(0.9, 1.1) + random.uniform(-0.03, 0.03)).clamp(0.0)
+            imgs = (imgs * rng.uniform(0.9, 1.1) + rng.uniform(-0.03, 0.03)).clamp(0.0)
         return {
             'imgs': imgs.half(),
             'coords0': coords[0],

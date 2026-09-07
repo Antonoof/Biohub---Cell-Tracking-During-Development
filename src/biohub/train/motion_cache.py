@@ -1,23 +1,23 @@
 import argparse
 import json
 import math
-import random
 import time
 from pathlib import Path
 
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
-from tqdm import tqdm
 
 from biohub.data.motion import (
     ProposalWindowDataset,
     load_proposal_video,
 )
-from biohub.models.temporal_unet import TemporalUNet3D
+from biohub.modules.detect.model import load_model
 from biohub.train import detector as base
 from biohub.train.tensorboard import log_scalars, open_writer
 from biohub.utils.cli import run_argparse_main
+from biohub.utils.parallel import ordered_process_map
+from biohub.utils.seed import dataloader_generator, seed_everything, seed_worker
 
 
 def parse_args():
@@ -56,7 +56,7 @@ def parse_args():
     p.add_argument('--disagreement-weight', type=float, default=1.0)
     p.add_argument('--patience', type=int, default=5)
     p.add_argument('--max-nodes', type=int, default=2800)
-    p.add_argument('--num-workers', type=int, default=0)
+    p.add_argument('--num-workers', type=int, default=8)
     p.add_argument('--seed', type=int, default=1337)
     p.add_argument('--deterministic', action='store_true')
     p.add_argument('--device', default='cuda:0')
@@ -66,11 +66,8 @@ def parse_args():
     return p.parse_args()
 
 
-def seed_all(seed: int):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
+def seed_all(seed: int, deterministic: bool = False):
+    seed_everything(seed, deterministic=deterministic)
 
 
 def load_split(path: Path, fold: int):
@@ -262,35 +259,33 @@ def evaluate(anchor, model, loader, device, amp_dtype, args):
     }
 
 
-def build_model(config, weights, device):
-    unet = TemporalUNet3D(
-        in_channels=1, out_channels=config['unet_out_channels'], layers=config['unet_layers']
-    )
-    model = base.UNetNodeTransformer(unet, config['unet_out_channels'], 4 * base.POS_EMBED_DIM).to(
-        device
-    )
-    state = torch.load(weights, map_location=device, weights_only=True)
-    model.load_state_dict(state)
-    for p in model.unet.parameters():
-        p.requires_grad = False
-    for p in model.detect_head.parameters():
-        p.requires_grad = False
+def build_model(weights, device):
+    model, _window, _downsample = load_model(Path(weights), torch.device(device))
+    for parameter in model.unet.parameters():
+        parameter.requires_grad = False
+    for parameter in model.detect_head.parameters():
+        parameter.requires_grad = False
     return model
+
+
+def _load_proposal_video_job(item):
+    data, proposals, stem, match_um = item
+    return load_proposal_video(data, proposals, stem, match_um)
 
 
 def main():
     args = parse_args()
-    seed_all(args.seed)
+    seed_all(args.seed, bool(args.deterministic))
     train_stems, val_stems = load_split(args.splits, args.fold)
     print(f'Loading proposals: {len(train_stems)} train / {len(val_stems)} val')
-    train_v = [
-        load_proposal_video(args.data, args.proposals, s, args.match_um)
-        for s in tqdm(train_stems, desc='train metadata')
-    ]
-    val_v = [
-        load_proposal_video(args.data, args.proposals, s, args.match_um)
-        for s in tqdm(val_stems, desc='val metadata')
-    ]
+    train_v = ordered_process_map(
+        _load_proposal_video_job,
+        [(args.data, args.proposals, stem, args.match_um) for stem in train_stems],
+    )
+    val_v = ordered_process_map(
+        _load_proposal_video_job,
+        [(args.data, args.proposals, stem, args.match_um) for stem in val_stems],
+    )
     train_ds = ProposalWindowDataset(
         train_v, args.max_nodes, True, args.steps_per_epoch, args.batch_size, args.seed
     )
@@ -306,6 +301,8 @@ def main():
         collate_fn=collate,
         pin_memory=True,
         persistent_workers=args.num_workers > 0,
+        generator=dataloader_generator(args.seed),
+        worker_init_fn=seed_worker if args.num_workers else None,
     )
     val_loader = DataLoader(
         val_ds,
@@ -316,6 +313,8 @@ def main():
         collate_fn=collate,
         pin_memory=True,
         persistent_workers=args.num_workers > 0,
+        generator=dataloader_generator(args.seed + 1),
+        worker_init_fn=seed_worker if args.num_workers else None,
     )
     default = {
         'unet_out_channels': 32,
@@ -337,11 +336,11 @@ def main():
     ):
         raise ValueError('Anchor A and trainable B architectures/configs must match')
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
-    anchor = build_model(anchor_config, args.anchor_weights, device)
+    anchor = build_model(args.anchor_weights, device)
     for p in anchor.parameters():
         p.requires_grad = False
     anchor.eval()
-    model = build_model(config, args.init_weights, device)
+    model = build_model(args.init_weights, device)
     params = [p for p in model.transformer.parameters() if p.requires_grad]
     print(
         f'Frozen anchor A + trainable B transformer parameters: {sum(p.numel() for p in params):,}'
@@ -428,6 +427,7 @@ def main():
         )
         for g in opt.param_groups:
             g['lr'] = args.lr * factor
+        train_ds.set_epoch(epoch)
         model.train()
         model.unet.eval()
         model.detect_head.eval()

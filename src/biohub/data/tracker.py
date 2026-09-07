@@ -8,6 +8,8 @@ import numpy as np
 import zarr
 from torch.utils.data import Dataset
 
+from biohub.utils.seed import SharedEpoch, sample_rng
+
 PRACTICE_STEMS = {
     '44b6_0113de3b',
     '44b6_0b24845f',
@@ -416,6 +418,7 @@ class TrackerEWindowDataset(Dataset):
         self.division_sample_probability = float(division_sample_probability)
         self.train = bool(train)
         self.seed = int(seed)
+        self.epoch = SharedEpoch(0)
         self.refs: list[WindowRef] = []
         self.division_refs: list[int] = []
         for video_index, video in enumerate(videos):
@@ -434,10 +437,13 @@ class TrackerEWindowDataset(Dataset):
     def __len__(self) -> int:
         return self.virtual_length
 
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch.set(epoch)
+
     def _choose_ref(self, index: int) -> WindowRef:
         if not self.train:
             return self.refs[index % len(self.refs)]
-        rng = random.Random(self.seed + index + random.randrange(1 << 20))
+        rng = sample_rng(self.seed, self.epoch.get(), index)
         if self.division_refs and rng.random() < self.division_sample_probability:
             return self.refs[rng.choice(self.division_refs)]
         return self.refs[rng.randrange(len(self.refs))]
@@ -498,6 +504,7 @@ class RawUnlabeledWindowDataset(Dataset):
         self.window = int(window)
         self.train = bool(train)
         self.seed = int(seed)
+        self.epoch = SharedEpoch(0)
         self.refs: list[tuple[int, int]] = []
         for video_index, video in enumerate(videos):
             for start in range(max(1, video.shape_tzyx[0] - self.window + 1)):
@@ -510,6 +517,9 @@ class RawUnlabeledWindowDataset(Dataset):
     def __len__(self) -> int:
         return self.virtual_length
 
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch.set(epoch)
+
     def _array(self, video_index: int):
         if video_index not in self._arrays:
             self._arrays[video_index] = zarr.open_group(
@@ -519,7 +529,7 @@ class RawUnlabeledWindowDataset(Dataset):
 
     def __getitem__(self, index: int) -> dict[str, object]:
         if self.train:
-            rng = random.Random(self.seed + index * 104729)
+            rng = sample_rng(self.seed, self.epoch.get(), index)
             video_index, start = self.refs[rng.randrange(len(self.refs))]
         else:
             video_index, start = self.refs[index % len(self.refs)]
@@ -558,6 +568,7 @@ class SparseDetectorWindowDataset(Dataset):
         self.reliable_bg_threshold = float(reliable_bg_threshold)
         self.train = bool(train)
         self.seed = int(seed)
+        self.epoch = SharedEpoch(0)
         self.refs: list[tuple[int, int]] = []
         self.refs_by_embryo: dict[str, list[int]] = defaultdict(list)
         for video_index, video in enumerate(videos):
@@ -573,6 +584,9 @@ class SparseDetectorWindowDataset(Dataset):
     def __len__(self) -> int:
         return self.virtual_length
 
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch.set(epoch)
+
     def _array(self, video_index: int):
         if video_index not in self._arrays:
             self._arrays[video_index] = zarr.open_group(
@@ -583,7 +597,7 @@ class SparseDetectorWindowDataset(Dataset):
     def _reference(self, index: int) -> tuple[int, int]:
         if not self.train:
             return self.refs[index % len(self.refs)]
-        rng = random.Random(self.seed + index * 130363)
+        rng = sample_rng(self.seed, self.epoch.get(), index)
         embryos = sorted(key for key, values in self.refs_by_embryo.items() if values)
         embryo = embryos[rng.randrange(len(embryos))]
         return self.refs[rng.choice(self.refs_by_embryo[embryo])]

@@ -17,6 +17,7 @@ from biohub.features.decoder import (
 )
 from biohub.train.tensorboard import log_scalars, open_writer
 from biohub.utils.cli import run_argparse_main
+from biohub.utils.seed import seed_everything
 from biohub.validation.cv import EMBRYOS, movie_group_kfold
 
 
@@ -56,7 +57,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         '--split',
         type=Path,
-        default=Path('data/division_balanced_175_20_split.json'),
+        default=Path('configs/splits/division_balanced_175_20.json'),
     )
     p.add_argument(
         '--v2-artifact',
@@ -881,6 +882,7 @@ def run_public_evidence_comparison(args, split: dict) -> None:
 
 def main() -> None:
     args = parse_args()
+    seed_everything(int(args.seed), deterministic=bool(args.deterministic))
     split = json.loads(args.split.read_text())
     args.output.mkdir(parents=True, exist_ok=True)
     if args.public_primary_evidence is not None or args.public_secondary_evidence is not None:

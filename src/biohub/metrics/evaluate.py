@@ -80,9 +80,11 @@ def run_evaluate(
     require_complete: bool,
     n_workers: int | None,
     run_id: str | None,
+    runs_root: Path | None = None,
+    movie_ids: list[str] | None = None,
 ) -> dict:
     raw = load_yaml(config)
-    movie_ids = panel_movie_ids(panel)
+    movie_ids = list(movie_ids) if movie_ids is not None else panel_movie_ids(panel)
     catalog_file = raw.get('movie_catalog')
     catalog = {
         item['movie_id']: item
@@ -93,6 +95,7 @@ def run_evaluate(
         resolved_run_id,
         config=raw,
         extra={'panel': panel, 'pred_source': pred_source, 'command': 'evaluate'},
+        runs_root=runs_root,
     )
     setup_logging(run_path)
     if pred_source == 'csv':
@@ -140,7 +143,15 @@ def run_evaluate(
     (run_path / 'evaluation' / 'completeness.json').write_text(
         json.dumps(completeness_payload, indent=2) + '\n'
     )
-    finish_run(run_path, 'ok' if report.complete else 'incomplete', extra={'summary': summary})
+    finish_run(
+        run_path,
+        'ok' if report.complete else 'incomplete',
+        extra={
+            'summary': summary,
+            'evaluation_level': report.evaluation_level.value,
+            'completeness': completeness_payload,
+        },
+    )
     return {'run': str(run_path), 'summary': summary, 'completeness': completeness_payload}
 
 

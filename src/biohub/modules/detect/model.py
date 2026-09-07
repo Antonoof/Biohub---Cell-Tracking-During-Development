@@ -17,6 +17,11 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     'unet_layers': [32, 64, 128],
     'downsample': [1, 4, 4],
     'window_size': 2,
+    'hidden_dim': 128,
+    'n_heads': 4,
+    'n_blocks': 4,
+    'dropout': 0.3,
+    'pos_feat_dim': 4 * POS_EMBED_DIM,
 }
 
 
@@ -69,6 +74,11 @@ def load_model(
     downsample = tuple(int(v) for v in config['downsample'])
     out_channels = int(config['unet_out_channels'])
     layers = tuple(int(v) for v in config['unet_layers'])
+    hidden_dim = int(config.get('hidden_dim', 128))
+    n_heads = int(config.get('n_heads', 4))
+    n_blocks = int(config.get('n_blocks', 4))
+    dropout = float(config.get('dropout', 0.3))
+    pos_feat_dim = int(config.get('pos_feat_dim', 4 * POS_EMBED_DIM))
 
     unet = TemporalUNet3D(
         in_channels=1,
@@ -78,10 +88,29 @@ def load_model(
     model = UNetNodeTransformer(
         unet=unet,
         unet_out_channels=out_channels,
-        pos_feat_dim=4 * POS_EMBED_DIM,
+        pos_feat_dim=pos_feat_dim,
+        hidden_dim=hidden_dim,
+        n_heads=n_heads,
+        n_blocks=n_blocks,
+        dropout=dropout,
     )
     state = torch.load(weights_path, map_location=device, weights_only=True)
-    model.load_state_dict(state)
+    saved_arch = state.get('_arch')
+    if saved_arch is not None:
+        saved = [int(value) for value in saved_arch.detach().cpu().tolist()]
+        constructed = [hidden_dim, n_heads, n_blocks]
+        if saved != constructed:
+            raise RuntimeError(
+                'Detector architecture mismatch: '
+                f'checkpoint {saved} vs config {constructed}'
+            )
+    missing, unexpected = model.load_state_dict(state, strict=False)
+    allowed_missing = {'_arch'}
+    bad_missing = [key for key in missing if key not in allowed_missing]
+    if bad_missing or unexpected:
+        raise RuntimeError(
+            f'Detector state_dict mismatch missing={bad_missing} unexpected={list(unexpected)}'
+        )
     model.to(device)
     model.eval()
     return model, int(config['window_size']), downsample

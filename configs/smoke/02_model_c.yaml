@@ -18,10 +18,10 @@ downsample:
 det_loss_weight: 1.0
 det_neg_weight: 0.01
 window_size: 2
-pool_kernel_um: 5.0
+pool_kernel_um: 3.0
 data_parallel: false
 seed: 0
-splits: kaggle/input/competitions/biohub-cell-tracking-during-development/train/dataset_splits.json
+splits: configs/splits/division_balanced_175_20.json
 deterministic: true
 hidden_dim: 128
 n_heads: 4

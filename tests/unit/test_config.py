@@ -7,7 +7,7 @@ import yaml
 from pydantic import ValidationError
 
 from biohub.config import FrozenModel
-from biohub.infer.config import load_tracking_config
+from biohub.infer.config import RuntimeConfig, load_tracking_config
 from biohub.paths import PROJECT_ROOT
 
 
@@ -250,3 +250,31 @@ def test_infer_yaml_has_every_tracking_field() -> None:
         assert key in TrackingConfig.model_fields
     for name, model in sections.items():
         assert set(payload[name]) == set(model.model_fields), name
+    speed = payload['speed']
+    assert 'vectorized_candidates' not in speed
+    assert 'function_profile' not in speed
+    assert 'runtime_accel' not in speed
+    assert payload['runtime']['cpu_workers'] == 64
+    assert payload['detection']['unet_batch_size'] == 32
+    assert payload['detection']['det_tta'] is True
+    assert payload['graph']['deepcenter_device'] == 'cuda'
+
+
+def test_kaggle_infer_uses_smaller_resource_pools() -> None:
+    payload = yaml.safe_load((PROJECT_ROOT / 'configs/infer_kaggle.yaml').read_text())
+    assert set(payload['runtime']) == set(RuntimeConfig.model_fields)
+    assert payload['runtime']['cpu_workers'] == 2
+    assert payload['runtime']['deepcenter_gpu_workers'] == 1
+    assert payload['graph']['deepcenter_score_cache_max_frames'] == 8
+    assert payload['graph']['frame_cache_max_frames'] == 8
+
+
+def test_run_starts_detect_before_graph_upgrade() -> None:
+    source = (PROJECT_ROOT / 'src/biohub/infer/run.py').read_text()
+    start = source.index('\ndef run(')
+    nxt = source.find('\ndef ', start + 1)
+    body = source[start:] if nxt < 0 else source[start:nxt]
+    detect_at = body.index('run_detect_jobs(')
+    upgrade_at = body.index('run_upgrade(upgrade)')
+    graph_at = body.index('upgrade = GraphUpgrade(tracking)')
+    assert detect_at < graph_at < upgrade_at

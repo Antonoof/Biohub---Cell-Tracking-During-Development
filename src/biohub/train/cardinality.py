@@ -20,6 +20,7 @@ from biohub.models.option_head import OptionHead
 from biohub.train import decoder as trainer_mod
 from biohub.train.tensorboard import log_scalars, open_writer
 from biohub.utils.cli import run_argparse_main
+from biohub.utils.seed import seed_everything
 from biohub.validation.cv import EMBRYOS, movie_group_kfold
 
 
@@ -121,8 +122,14 @@ def load_partition(names: list[str], args, trainer, raw_loader) -> list[VideoRow
     exact_rows = original_rows = events = exact_missing = 0
     for index, stem in enumerate(names, 1):
         cache = torch.load(event_cache / f'{stem}.pt', map_location='cpu', weights_only=False)
-        video = load_decoder_video(stem, load_args, evidence_root(stem, c_roots))
         graph_coordinates = load_graph_coordinates(graph_dir / f'{stem}.geff')
+        video = load_decoder_video(
+            stem,
+            load_args,
+            evidence_root(stem, c_roots),
+            cache=cache,
+            graph_coordinates=graph_coordinates,
+        )
         truth = raw_loader(args.raw_data, stem).graph
         labels = exact_source_labels(video, cache, graph_coordinates, truth)
         original_rows += int(np.count_nonzero(video.source_y == 1))
@@ -298,6 +305,7 @@ def fit_model(videos: list[PreparedVideo], args, seed: int) -> tuple[OptionHead,
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
+    seed_everything(int(seed))
     positive, negative = source_refs(videos)
     if not positive or not negative:
         raise RuntimeError(
@@ -487,6 +495,7 @@ def deployed_baseline(raw_held: list[VideoRows], args, trainer) -> dict:
 
 def main() -> None:
     args = parse_args()
+    seed_everything(int(args.seed), deterministic=bool(args.deterministic))
     args.output.mkdir(parents=True, exist_ok=True)
     trainer = trainer_mod
     split = json.loads(args.split.read_text())

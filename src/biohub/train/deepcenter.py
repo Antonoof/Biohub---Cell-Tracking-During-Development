@@ -28,6 +28,7 @@ from biohub.losses.deepcenter import weighted_bce_loss
 from biohub.models.deepcenter import DeepCenterUNet3D
 from biohub.train.tensorboard import log_scalars, open_writer
 from biohub.utils.cli import run_argparse_main
+from biohub.utils.seed import dataloader_generator, seed_everything, seed_worker
 
 VOXEL_SCALE_UM = (1.625, 0.40625, 0.40625)
 
@@ -334,89 +335,100 @@ def evaluate_gate_metrics(
     frame_rows: list[dict[str, Any]] = []
     peak_rows: list[dict[str, Any]] = []
 
-    for eval_idx, dataset_idx in enumerate(indices, start=1):
-        sample_idx, t = dataset.items[int(dataset_idx)]
-        sample = dataset.samples[sample_idx]
-        image, _, _ = dataset[int(dataset_idx)]
-        logits = model(image[None].to(device=device, dtype=torch.float32))
-        heatmap = torch.sigmoid(logits[0, 0]).detach().cpu().numpy().astype(np.float32)
-        gt_zyx = sample['centers_by_t'].get(t, np.empty((0, 3), dtype=np.float32))
-
-        base_peaks, base_scores = find_heatmap_peaks(heatmap, min_threshold, peak_min_distance)
-        base_match_count, base_nearest, base_matched = greedy_match_peaks(
-            base_peaks,
-            base_scores,
-            gt_zyx,
-            cfg.pool_factor,
-            match_radius_um,
-        )
-        if len(peak_rows) < peak_sample_limit:
-            remaining = peak_sample_limit - len(peak_rows)
-            for peak, score, nearest, matched in zip(
-                base_peaks[:remaining],
-                base_scores[:remaining],
-                base_nearest[:remaining],
-                base_matched[:remaining],
-            ):
-                peak_rows.append(
-                    {
-                        'dataset': sample['name'],
-                        't': int(t),
-                        'z': float(peak[0]),
-                        'y': float(peak[1]),
-                        'x': float(peak[2]),
-                        'z_orig': float(peak[0]),
-                        'y_orig': float(peak[1] * cfg.pool_factor + xy_offset),
-                        'x_orig': float(peak[2] * cfg.pool_factor + xy_offset),
-                        'score': float(score),
-                        'nearest_label_um': nearest,
-                        'matched_within_radius': int(matched),
-                    }
-                )
-
-        for threshold in thresholds:
-            keep = base_scores >= float(threshold)
-            peaks = base_peaks[keep]
-            scores = base_scores[keep]
-            matched_count, nearest_distances, matched_flags = greedy_match_peaks(
-                peaks,
-                scores,
+    batch_size = max(1, int(cfg.batch_size))
+    eval_idx = 0
+    for start in range(0, len(indices), batch_size):
+        chunk = indices[start : start + batch_size]
+        images = []
+        metas = []
+        for dataset_idx in chunk:
+            sample_idx, t = dataset.items[int(dataset_idx)]
+            sample = dataset.samples[sample_idx]
+            image, _, _ = dataset[int(dataset_idx)]
+            images.append(image)
+            metas.append((sample, int(t)))
+        logits = model(torch.stack(images).to(device=device, dtype=torch.float32))
+        heatmaps = torch.sigmoid(logits[:, 0]).detach().cpu().numpy().astype(np.float32)
+        for heatmap, (sample, t) in zip(heatmaps, metas):
+            eval_idx += 1
+            gt_zyx = sample['centers_by_t'].get(t, np.empty((0, 3), dtype=np.float32))
+            base_peaks, base_scores = find_heatmap_peaks(heatmap, min_threshold, peak_min_distance)
+            base_match_count, base_nearest, base_matched = greedy_match_peaks(
+                base_peaks,
+                base_scores,
                 gt_zyx,
                 cfg.pool_factor,
                 match_radius_um,
             )
-            n_gt = int(len(gt_zyx))
-            n_pred = int(len(peaks))
-            precision = matched_count / n_pred if n_pred else float('nan')
-            recall = matched_count / n_gt if n_gt else float('nan')
-            nearest_arr = np.asarray(
-                [v for v in nearest_distances if np.isfinite(v)],
-                dtype=np.float32,
-            )
-            frame_rows.append(
-                {
-                    'dataset': sample['name'],
-                    't': int(t),
-                    'threshold': float(threshold),
-                    'n_gt_sparse': n_gt,
-                    'n_pred': n_pred,
-                    'n_matched': int(matched_count),
-                    'precision_sparse': precision,
-                    'recall_sparse': recall,
-                    'score_mean': float(np.mean(scores)) if len(scores) else float('nan'),
-                    'score_p90': float(np.percentile(scores, 90)) if len(scores) else float('nan'),
-                    'nearest_um_median': float(np.median(nearest_arr))
-                    if nearest_arr.size
-                    else float('nan'),
-                }
-            )
-            accum[threshold]['frames'] += 1
-            accum[threshold]['gt'] += n_gt
-            accum[threshold]['pred'] += n_pred
-            accum[threshold]['matched'] += int(matched_count)
+            if len(peak_rows) < peak_sample_limit:
+                remaining = peak_sample_limit - len(peak_rows)
+                for peak, score, nearest, matched in zip(
+                    base_peaks[:remaining],
+                    base_scores[:remaining],
+                    base_nearest[:remaining],
+                    base_matched[:remaining],
+                ):
+                    peak_rows.append(
+                        {
+                            'dataset': sample['name'],
+                            't': int(t),
+                            'z': float(peak[0]),
+                            'y': float(peak[1]),
+                            'x': float(peak[2]),
+                            'z_orig': float(peak[0]),
+                            'y_orig': float(peak[1] * cfg.pool_factor + xy_offset),
+                            'x_orig': float(peak[2] * cfg.pool_factor + xy_offset),
+                            'score': float(score),
+                            'nearest_label_um': nearest,
+                            'matched_within_radius': int(matched),
+                        }
+                    )
 
-        if eval_idx == 1 or eval_idx % 25 == 0 or eval_idx == n_eval:
-            print(f'gate-eval frame={eval_idx}/{n_eval}', flush=True)
+            for threshold in thresholds:
+                keep = base_scores >= float(threshold)
+                peaks = base_peaks[keep]
+                scores = base_scores[keep]
+                matched_count, nearest_distances, matched_flags = greedy_match_peaks(
+                    peaks,
+                    scores,
+                    gt_zyx,
+                    cfg.pool_factor,
+                    match_radius_um,
+                )
+                n_gt = int(len(gt_zyx))
+                n_pred = int(len(peaks))
+                precision = matched_count / n_pred if n_pred else float('nan')
+                recall = matched_count / n_gt if n_gt else float('nan')
+                nearest_arr = np.asarray(
+                    [v for v in nearest_distances if np.isfinite(v)],
+                    dtype=np.float32,
+                )
+                frame_rows.append(
+                    {
+                        'dataset': sample['name'],
+                        't': int(t),
+                        'threshold': float(threshold),
+                        'n_gt_sparse': n_gt,
+                        'n_pred': n_pred,
+                        'n_matched': int(matched_count),
+                        'precision_sparse': precision,
+                        'recall_sparse': recall,
+                        'score_mean': float(np.mean(scores)) if len(scores) else float('nan'),
+                        'score_p90': float(np.percentile(scores, 90))
+                        if len(scores)
+                        else float('nan'),
+                        'nearest_um_median': float(np.median(nearest_arr))
+                        if nearest_arr.size
+                        else float('nan'),
+                    }
+                )
+                accum[threshold]['frames'] += 1
+                accum[threshold]['gt'] += n_gt
+                accum[threshold]['pred'] += n_pred
+                accum[threshold]['matched'] += int(matched_count)
+
+            if eval_idx == 1 or eval_idx % 25 == 0 or eval_idx == n_eval:
+                print(f'gate-eval frame={eval_idx}/{n_eval}', flush=True)
 
     threshold_rows: list[dict[str, Any]] = []
     for threshold in thresholds:
@@ -616,9 +628,7 @@ def train(args: argparse.Namespace) -> None:
     else:
         cfg = config_from_args(args)
 
-    torch.manual_seed(cfg.seed)
-    np.random.seed(cfg.seed)
-    random.seed(cfg.seed)
+    seed_everything(int(cfg.seed), deterministic=bool(getattr(args, 'deterministic', False)))
 
     data_dir = args.data_dir.expanduser().resolve()
     if not args.resume and output_dir.exists() and any(output_dir.iterdir()) and not args.overwrite:
@@ -661,7 +671,10 @@ def train(args: argparse.Namespace) -> None:
         shuffle=True,
         num_workers=cfg.num_workers,
         pin_memory=torch.cuda.is_available(),
+        persistent_workers=cfg.num_workers > 0,
         drop_last=False,
+        generator=dataloader_generator(cfg.seed),
+        worker_init_fn=seed_worker if cfg.num_workers else None,
     )
     val_loader = DataLoader(
         val_ds,
@@ -669,7 +682,10 @@ def train(args: argparse.Namespace) -> None:
         shuffle=False,
         num_workers=max(0, min(cfg.num_workers, 2)),
         pin_memory=torch.cuda.is_available(),
+        persistent_workers=max(0, min(cfg.num_workers, 2)) > 0,
         drop_last=False,
+        generator=dataloader_generator(cfg.seed + 1),
+        worker_init_fn=seed_worker if max(0, min(cfg.num_workers, 2)) else None,
     )
 
     device = torch.device('cuda' if torch.cuda.is_available() and not args.cpu else 'cpu')

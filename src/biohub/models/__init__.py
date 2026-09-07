@@ -1,6 +1,6 @@
 from biohub.models.deepcenter import DeepCenterUNet3D
 from biohub.models.detector import UNetNodeTransformer
-from biohub.models.division import DivisionMLP
+from biohub.models.division import DivisionMLP, load_division_checkpoint
 from biohub.models.motion import MOTION_FEATURES, MotionResidual
 from biohub.models.node_transformer import SimpleNodeTransformer
 from biohub.models.option_head import OptionHead
@@ -11,6 +11,7 @@ __all__ = [
     'ConvBlock3d',
     'DeepCenterUNet3D',
     'DivisionMLP',
+    'load_division_checkpoint',
     'MOTION_FEATURES',
     'MotionResidual',
     'OptionHead',

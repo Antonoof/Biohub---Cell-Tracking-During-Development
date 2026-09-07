@@ -250,3 +250,18 @@ def load_split(name: str) -> dict:
 
 def catalog_path():
     return PROJECT_ROOT / 'src' / 'biohub' / 'validation' / 'train_movies.json'
+
+
+def detector_fold_names(payload: dict | list, fold: int | str) -> tuple[list[str], list[str]]:
+    if isinstance(payload, list):
+        fold_data = payload[int(fold)]
+        return list(fold_data['train']), list(fold_data['test'])
+    key = str(fold)
+    nested = payload.get(key)
+    if isinstance(nested, dict) and 'train' in nested:
+        test = nested.get('test', nested.get('held', []))
+        return list(nested['train']), list(test)
+    if 'train' in payload:
+        test = payload.get('test', payload.get('held', []))
+        return list(payload['train']), list(test)
+    raise KeyError(f'No detector fold {fold!r} in split payload')

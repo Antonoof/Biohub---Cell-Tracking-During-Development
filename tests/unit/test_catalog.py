@@ -54,3 +54,16 @@ def test_index_tmp_dataset(tmp_path) -> None:
     assert rows[0]['embryo'] == '44b6'
     assert rows[0]['estimated_number_of_nodes'] == 12
     assert rows[0]['image_shape_tzyx'] == [8, 4, 16, 16]
+
+
+def test_detector_fold_names_reads_panel_and_fold_payloads() -> None:
+    from biohub.validation.splits import detector_fold_names
+
+    fold_payload = {'0': {'train': ['a.zarr'], 'test': ['b.zarr']}}
+    train, test = detector_fold_names(fold_payload, 0)
+    assert train == ['a.zarr']
+    assert test == ['b.zarr']
+    panel = {'train': ['t1', 't2'], 'held': ['h1'], 'practice': ['p1']}
+    train, test = detector_fold_names(panel, 0)
+    assert train == ['t1', 't2']
+    assert test == ['h1']
