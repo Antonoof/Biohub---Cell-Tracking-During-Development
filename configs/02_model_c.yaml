@@ -28,6 +28,7 @@ n_heads: 4
 n_blocks: 4
 dropout: 0.3
 weight_decay: 0.01
+overwrite: false
 brightness_aug: true
 flip_aug: true
 max_iters: null

@@ -27,10 +27,27 @@ from biohub.models import TemporalUNet3D, UNetNodeTransformer
 from biohub.train.tensorboard import log_scalars, open_writer
 from biohub.utils.parallel import ordered_thread_map
 from biohub.utils.seed import dataloader_generator, seed_everything, seed_worker
-from biohub.validation.splits import detector_fold_names
+from biohub.validation.splits import detector_fold_names, detector_validation_role
 
 DEFAULT_METHOD = 'unet_transformer'
 DEFAULT_AUGMENTATIONS = [brightness_augment, flip_augment]
+
+
+def require_finite(tensor: torch.Tensor, what: str) -> None:
+    if not torch.isfinite(tensor).all():
+        raise RuntimeError(f'{what} is not finite')
+
+
+def require_finite_grads(model: nn.Module) -> None:
+    for name, param in model.named_parameters():
+        if param.grad is not None:
+            require_finite(param.grad, f'Detector gradient {name}')
+
+
+def prepare_detector_output(output_dir: Path, *, overwrite: bool) -> None:
+    if output_dir.exists() and any(output_dir.iterdir()) and not overwrite:
+        raise RuntimeError(f'Refusing to overwrite: {output_dir}')
+    output_dir.mkdir(parents=True, exist_ok=True)
 
 
 def detect_and_match(
@@ -264,12 +281,14 @@ def train_epoch(
         edge_loss = sum(block_losses) / len(block_losses)
 
         loss = edge_loss + det_loss_weight * det_loss
+        require_finite(loss, 'Detector training loss')
 
         t2 = time.perf_counter()
         t_forward += t2 - t1
 
         optimizer.zero_grad()
         loss.backward()
+        require_finite_grads(model)
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
 
@@ -412,11 +431,13 @@ def train(
     n_blocks: int = 4,
     dropout: float = 0.3,
     weight_decay: float = 0.01,
+    overwrite: bool = False,
 ) -> UNetNodeTransformer:
     if unet_layers is None:
         unet_layers = [32, 64, 128]
 
     if debug_video is not None:
+        train_names = test_names = [debug_video.name]
         train_files = test_files = [debug_video]
         print(f'Debug mode: using single video {debug_video.name}', flush=True)
     else:
@@ -424,10 +445,20 @@ def train(
         train_names, test_names = detector_fold_names(payload, fold)
         train_files = [data_dir / name for name in train_names]
         test_files = [data_dir / name for name in test_names]
-        print(f'Fold {fold}: {len(train_files)} train, {len(test_files)} test', flush=True)
+        print(f'Fold {fold}: {len(train_files)} train, {len(test_files)} val', flush=True)
+    validation_role = detector_validation_role(
+        [str(name) for name in train_names],
+        [str(name) for name in test_names],
+    )
+    if validation_role == 'in_sample_production_fit':
+        print(
+            f'Validation role {validation_role}: overlapping train/val movies; '
+            'acc*recall is diagnostic, not a holdout',
+            flush=True,
+        )
 
     output_dir = weights_dir / method / f'split_{fold}'
-    output_dir.mkdir(parents=True, exist_ok=True)
+    prepare_detector_output(output_dir, overwrite=overwrite)
     writer = open_writer(output_dir)
 
     def _load(
@@ -469,13 +500,20 @@ def train(
         'n_blocks': n_blocks,
         'dropout': dropout,
         'pos_feat_dim': pos_feat_dim,
+        'checkpoint_selection': 'acc_times_recall_diagnostic',
+        'promotion_requires': 'official_evaluate',
+        'validation_role': validation_role,
     }
     (output_dir / 'config.json').write_text(json.dumps(model_config, indent=2) + '\n')
 
+    dataset_seed = int(seed) if seed is not None else 0
     train_ds = FrameWindowDataset(
-        train_video_data, max_nodes=max_nodes, augmentations=augmentations
+        train_video_data,
+        max_nodes=max_nodes,
+        augmentations=augmentations,
+        seed=dataset_seed,
     )
-    test_ds = FrameWindowDataset(test_video_data, max_nodes=max_nodes)
+    test_ds = FrameWindowDataset(test_video_data, max_nodes=max_nodes, seed=dataset_seed)
     g = None
     worker_init_fn = None
     if seed is not None:
@@ -555,6 +593,7 @@ def train(
     print(f'Detection loss: weight={det_loss_weight}, neg_weight={det_neg_weight}', flush=True)
 
     for epoch in pbar:
+        train_ds.set_epoch(epoch)
         t0 = time.monotonic()
         edge_loss, det_loss = train_epoch(
             model,
@@ -607,7 +646,11 @@ def train(
             flush=True,
         )
 
-    print(f'\nBest score (acc*recall): {best_score:.4f}, saved to {save_path}', flush=True)
+    print(
+        f'\nBest diagnostic score (acc*recall): {best_score:.4f}, saved to {save_path}. '
+        'Promotion requires official evaluate on a disjoint panel.',
+        flush=True,
+    )
     writer.close()
     if save_path.exists():
         state = torch.load(save_path, map_location=device, weights_only=True)
@@ -679,6 +722,7 @@ def train_from_config(cfg: dict) -> None:
             dropout=float(cfg.get('dropout', 0.3)),
             weight_decay=float(cfg.get('weight_decay', 0.01)),
             augmentations=_augmentations_from_cfg(cfg),
+            overwrite=bool(cfg.get('overwrite', False)),
         )
 
 
@@ -726,6 +770,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument('--no-brightness-aug', dest='brightness_aug', action='store_false')
     parser.add_argument('--flip-aug', action='store_true', default=True)
     parser.add_argument('--no-flip-aug', dest='flip_aug', action='store_false')
+    parser.add_argument('--overwrite', action='store_true')
     return parser.parse_args(argv)
 
 
@@ -774,6 +819,7 @@ def main(argv: list[str] | None = None) -> None:
             augmentations=_augmentations_from_cfg(
                 {'brightness_aug': args.brightness_aug, 'flip_aug': args.flip_aug}
             ),
+            overwrite=bool(args.overwrite),
         )
 
 

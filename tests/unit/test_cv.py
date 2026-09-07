@@ -2,6 +2,7 @@ import numpy as np
 from sklearn.model_selection import GroupKFold
 
 from biohub.validation.cv import EMBRYOS, embryo_two_fold, movie_group_kfold
+from biohub.validation.splits import detector_validation_role
 
 
 def test_movie_group_kfold_is_five_fold_by_movie() -> None:
@@ -21,3 +22,8 @@ def test_embryo_two_fold_swaps_44b6_and_6bba() -> None:
         (EMBRYOS[1], EMBRYOS[0]),
     ]
     assert embryo_two_fold() == [('44b6', '6bba'), ('6bba', '44b6')]
+
+
+def test_detector_validation_role_flags_train_test_overlap() -> None:
+    assert detector_validation_role(['a', 'b'], ['b']) == 'in_sample_production_fit'
+    assert detector_validation_role(['a', 'b'], ['c']) == 'held_split'

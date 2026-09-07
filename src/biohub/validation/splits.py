@@ -265,3 +265,9 @@ def detector_fold_names(payload: dict | list, fold: int | str) -> tuple[list[str
         test = payload.get('test', payload.get('held', []))
         return list(payload['train']), list(test)
     raise KeyError(f'No detector fold {fold!r} in split payload')
+
+
+def detector_validation_role(train_names: list[str], test_names: list[str]) -> str:
+    if set(train_names) & set(test_names):
+        return 'in_sample_production_fit'
+    return 'held_split'

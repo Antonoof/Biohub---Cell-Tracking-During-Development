@@ -13,6 +13,7 @@ from torch.utils.data import Dataset
 from biohub.data.volume import invert_time_graph, open_dataset
 from biohub.features.position import extract_pos_features
 from biohub.losses.association import compute_gt_transition_matrix
+from biohub.utils.seed import SharedEpoch, sample_numpy_rng
 
 
 @dataclass(frozen=True)
@@ -148,6 +149,7 @@ class FrameWindowDataset(Dataset):
         video_data: list[tuple[VideoMeta, list[FrameWindowData]]],
         max_nodes: int | None = None,
         augmentations: list | None = None,
+        seed: int = 0,
     ):
         all_windows = [w for _, windows in video_data for w in windows]
         if max_nodes is None:
@@ -155,6 +157,8 @@ class FrameWindowDataset(Dataset):
 
         self.max_nodes = max_nodes
         self.augmentations = augmentations or []
+        self.seed = int(seed)
+        self.epoch = SharedEpoch(0)
 
         self._data: list[tuple[dict, VideoMeta]] = []
         for video_meta, windows in video_data:
@@ -164,6 +168,9 @@ class FrameWindowDataset(Dataset):
 
     def __len__(self) -> int:
         return len(self._data)
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch.set(epoch)
 
     def __getitem__(self, index):
         meta, vm = self._data[index]
@@ -186,7 +193,7 @@ class FrameWindowDataset(Dataset):
             )[:, 0]
 
         if self.augmentations:
-            rng = np.random.default_rng()
+            rng = sample_numpy_rng(self.seed, self.epoch.get(), index)
             c, m = meta['coords'], meta['masks']
             for aug in self.augmentations:
                 imgs, c, m = aug(imgs, c, m, rng=rng)

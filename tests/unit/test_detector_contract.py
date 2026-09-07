@@ -4,10 +4,16 @@ from pathlib import Path
 import pytest
 import torch
 
+from biohub.losses.association import compute_batch_loss
 from biohub.models.detector import UNetNodeTransformer
 from biohub.models.division import DivisionMLP, load_division_checkpoint
 from biohub.models.temporal_unet import TemporalUNet3D
 from biohub.modules.detect.model import load_model
+from biohub.train.detector import (
+    build_matched_edge_targets,
+    detect_and_match,
+    prepare_detector_output,
+)
 from biohub.train.motion_cache import build_model
 
 
@@ -221,3 +227,83 @@ def test_motion_cache_build_model_allows_missing_arch(tmp_path: Path) -> None:
     loaded = build_model(weights, 'cpu')
     imgs = torch.rand(1, 2, 4, 8, 8)
     _edge_logits(loaded, imgs)
+
+
+def test_empty_target_frame_train_step_has_finite_grads() -> None:
+    torch.manual_seed(7)
+    unet = TemporalUNet3D(
+        in_channels=1,
+        out_channels=4,
+        layers=(8, 16),
+        gradient_checkpointing=False,
+    )
+    model = UNetNodeTransformer(
+        unet=unet,
+        unet_out_channels=4,
+        pos_feat_dim=32,
+        hidden_dim=32,
+        n_heads=4,
+        n_blocks=1,
+        dropout=0.0,
+    )
+    model.train()
+    imgs = torch.rand(2, 2, 4, 8, 8)
+    unet_out, det_logits = model.encode(imgs)
+    gt_coords = torch.zeros(2, 1, 3)
+    gt_mask = torch.ones(2, 1, dtype=torch.bool)
+    image_shape = (2, 4, 8, 8)
+    voxel = (1.0, 1.0, 1.0)
+    src = detect_and_match(
+        det_logits[0],
+        gt_coords,
+        gt_mask,
+        image_shape,
+        voxel_size=voxel,
+        frame_index=0,
+        window_size=2,
+    )
+    empty_logits = torch.full_like(det_logits[1], -10.0)
+    tgt = detect_and_match(
+        empty_logits,
+        gt_coords,
+        gt_mask,
+        image_shape,
+        voxel_size=voxel,
+        frame_index=1,
+        window_size=2,
+    )
+    feat_src = model.index_features(unet_out[:, 0], src[0], src[2])
+    feat_tgt = model.index_features(unet_out[:, 1], tgt[0], tgt[2])
+    edge_logits = model.predict_edges(
+        feat_src,
+        feat_tgt,
+        src[0],
+        tgt[0],
+        src[1],
+        tgt[1],
+        src[2],
+        tgt[2],
+    )
+    assert torch.isfinite(edge_logits).all()
+    targets = torch.zeros(2, 1, 1)
+    pair_target = build_matched_edge_targets(
+        src[3], tgt[3], targets, src[0].shape[1], tgt[0].shape[1]
+    )
+    loss = compute_batch_loss(edge_logits, pair_target, src[2], tgt[2])
+    assert torch.isfinite(loss).all()
+    loss.backward()
+    for param in model.parameters():
+        if param.grad is not None:
+            assert torch.isfinite(param.grad).all()
+
+
+def test_prepare_detector_output_refuses_nonempty_without_overwrite(tmp_path: Path) -> None:
+    occupied = tmp_path / 'split_0'
+    occupied.mkdir()
+    (occupied / 'edge_predictor_best.pth').write_bytes(b'x')
+    with pytest.raises(RuntimeError, match='Refusing to overwrite'):
+        prepare_detector_output(occupied, overwrite=False)
+    prepare_detector_output(occupied, overwrite=True)
+    empty = tmp_path / 'split_1'
+    prepare_detector_output(empty, overwrite=False)
+    assert empty.is_dir()

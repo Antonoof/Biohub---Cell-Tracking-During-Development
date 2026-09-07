@@ -25,7 +25,7 @@ def compute_loss(logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     active_cols = target.sum(dim=0) > 0
     mask = active_rows.unsqueeze(1) | active_cols.unsqueeze(0)
     if not mask.any():
-        return torch.tensor(0.0, requires_grad=True, device=logits.device)
+        return logits.sum() * 0
 
     probs = torch.softmax(logits, dim=0)
     bce = F.binary_cross_entropy(probs, target, reduction='none')

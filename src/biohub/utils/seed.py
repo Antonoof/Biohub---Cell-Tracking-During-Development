@@ -18,7 +18,15 @@ class SharedEpoch:
 
 
 def sample_rng(seed: int, epoch: int, index: int) -> random.Random:
-    return random.Random((int(seed) + 1) * 1_000_003 + int(epoch) * 1_000_033 + int(index))
+    return random.Random(_sample_seed(seed, epoch, index))
+
+
+def sample_numpy_rng(seed: int, epoch: int, index: int) -> np.random.Generator:
+    return np.random.default_rng(_sample_seed(seed, epoch, index))
+
+
+def _sample_seed(seed: int, epoch: int, index: int) -> int:
+    return (int(seed) + 1) * 1_000_003 + int(epoch) * 1_000_033 + int(index)
 
 
 def seed_everything(seed: int, *, deterministic: bool = False) -> None:

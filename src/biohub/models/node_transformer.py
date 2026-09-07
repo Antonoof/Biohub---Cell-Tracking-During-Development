@@ -33,13 +33,26 @@ class CrossAttentionBlock(nn.Module):
         kv: torch.Tensor,
         kv_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        key_padding_mask = ~kv_mask if kv_mask is not None else None
+        if q.shape[1] == 0:
+            return q
+        if kv.shape[1] == 0:
+            return q + self.mlp(self.norm2(q))
+        key_padding_mask = None
+        blocked = None
+        if kv_mask is not None:
+            key_padding_mask = ~kv_mask
+            blocked = key_padding_mask.all(dim=-1)
+            if blocked.any():
+                key_padding_mask = key_padding_mask.clone()
+                key_padding_mask[blocked, 0] = False
         attn_out, _ = self.cross_attn(
             self.norm1(q),
             self.norm1(kv),
             self.norm1(kv),
             key_padding_mask=key_padding_mask,
         )
+        if blocked is not None and blocked.any():
+            attn_out = attn_out.masked_fill(blocked[:, None, None], 0)
         q = q + attn_out
         q = q + self.mlp(self.norm2(q))
         return q

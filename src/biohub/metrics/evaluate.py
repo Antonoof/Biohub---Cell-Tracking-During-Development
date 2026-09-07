@@ -82,6 +82,7 @@ def run_evaluate(
     run_id: str | None,
     runs_root: Path | None = None,
     movie_ids: list[str] | None = None,
+    evaluation_level: EvaluationLevel | str = EvaluationLevel.LEGACY_PARITY,
 ) -> dict:
     raw = load_yaml(config)
     movie_ids = list(movie_ids) if movie_ids is not None else panel_movie_ids(panel)
@@ -127,7 +128,7 @@ def run_evaluate(
             _evaluate_one(status, movie_id, catalog_row, payload)
             for status, movie_id, catalog_row in jobs
         ]
-    level = EvaluationLevel('legacy_parity')
+    level = EvaluationLevel(evaluation_level)
     report = completeness(
         rows, movie_ids, evaluation_level=level, require_complete=require_complete
     )
@@ -164,6 +165,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--require-complete', action='store_true')
     parser.add_argument('--run-id', default=None)
     parser.add_argument('--n-workers', type=int, default=None)
+    parser.add_argument(
+        '--evaluation-level',
+        choices=[item.value for item in EvaluationLevel],
+        default=EvaluationLevel.LEGACY_PARITY.value,
+    )
     args = parser.parse_args(argv)
     if args.pred_source in {'dir', 'csv'} and args.pred_dir is None:
         raise SystemExit('evaluate --pred-source dir/csv requires --pred-dir')
@@ -175,6 +181,7 @@ def main(argv: list[str] | None = None) -> int:
         require_complete=args.require_complete,
         n_workers=args.n_workers,
         run_id=args.run_id,
+        evaluation_level=args.evaluation_level,
     )
     print(json.dumps(result, indent=2, default=str))
     return 0 if result['completeness']['complete'] else 1

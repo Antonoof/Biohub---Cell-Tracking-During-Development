@@ -108,3 +108,30 @@ def test_compare_reads_completeness_when_manifest_omits_level(tmp_path: Path) ->
     (run_path / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
     report = compare_runs(run_path, run_path)
     assert report['evaluation_level'] == 'legacy_parity'
+
+
+def test_evaluate_records_requested_evaluation_level(tmp_path: Path) -> None:
+    train_dir = tmp_path / 'train'
+    train_dir.mkdir()
+    movie_id = _write_gt(train_dir)
+    catalog = tmp_path / 'catalog.json'
+    catalog.write_text(
+        json.dumps({'movies': [{'movie_id': movie_id, 'estimated_number_of_nodes': 3}]}) + '\n'
+    )
+    config = _eval_config(tmp_path, train_dir, catalog)
+    payload = run_evaluate(
+        config=config,
+        pred_dir=None,
+        pred_source='gt',
+        panel='smoke',
+        require_complete=True,
+        n_workers=1,
+        run_id='eval_nested',
+        runs_root=tmp_path / 'runs',
+        movie_ids=[movie_id],
+        evaluation_level='strict_nested',
+    )
+    assert payload['completeness']['evaluation_level'] == 'strict_nested'
+    run_path = Path(payload['run'])
+    manifest = json.loads((run_path / 'manifest.json').read_text())
+    assert manifest['evaluation_level'] == 'strict_nested'
