@@ -40,8 +40,7 @@ from biohub.features.position import POS_EMBED_DIM, pos_embed_torch
 from biohub.losses.association import (
     EDGE_LOSSES,
     compute_batch_loss,
-    evaluate_pair,
-    pair_event_counts,
+    evaluate_pairs_batched,
 )
 from biohub.losses.aux import contrastive_aux_loss, division_aux_loss, offset_aux_loss
 from biohub.losses.detection import DET_LOSSES, detection_loss
@@ -49,6 +48,7 @@ from biohub.metrics.aggregation import competition_score
 from biohub.models import TemporalUNet3D, UNetNodeTransformer
 from biohub.models.temporal_unet import unet_in_channels
 from biohub.train.assign import greedy_assign_batched, hard_coupling, match_peaks
+from biohub.train.detector_config import validate_detector_config
 from biohub.train.schedule import (
     ModelEma,
     amp_dtype,
@@ -58,7 +58,12 @@ from biohub.train.schedule import (
 )
 from biohub.train.tensorboard import log_scalars, open_writer
 from biohub.utils.parallel import ordered_thread_map
-from biohub.utils.seed import dataloader_generator, seed_everything, seed_worker
+from biohub.utils.seed import (
+    configure_determinism,
+    dataloader_generator,
+    seed_everything,
+    seed_worker,
+)
 from biohub.validation.cv import movie_group_fold_names, payload_movie_names
 from biohub.validation.splits import detector_fold_names, detector_validation_role
 
@@ -121,8 +126,10 @@ def detector_optimizer_step(
         updated = scaler.get_scale() >= old_scale
     else:
         if grad_clip_norm > 0:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_norm)
-        if check_finite:
+            torch.nn.utils.clip_grad_norm_(
+                model.parameters(), grad_clip_norm, error_if_nonfinite=True
+            )
+        else:
             require_finite_grads(model)
         optimizer.step()
     optimizer.zero_grad(set_to_none=True)
@@ -140,15 +147,22 @@ def resolve_train_device(spec: str) -> torch.device:
     text = str(spec).strip()
     lowered = text.lower()
     if lowered in {'auto', ''}:
-        return torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        return torch.device(
+            f'cuda:{torch.cuda.current_device()}' if torch.cuda.is_available() else 'cpu'
+        )
     if lowered == 'cuda':
         if not torch.cuda.is_available():
             raise RuntimeError('device=cuda but CUDA is not available')
-        return torch.device('cuda')
+        return torch.device(f'cuda:{torch.cuda.current_device()}')
     if lowered == 'cpu':
         return torch.device('cpu')
     if lowered.startswith('cuda:'):
-        return torch.device(text)
+        resolved = torch.device(lowered)
+        if not torch.cuda.is_available():
+            raise RuntimeError(f'device={lowered} but CUDA is not available')
+        if resolved.index is None or resolved.index >= torch.cuda.device_count():
+            raise ValueError(f'{lowered} is outside the visible logical CUDA devices')
+        return resolved
     raise ValueError(f'Unknown device {spec!r}')
 
 
@@ -263,7 +277,8 @@ def detect_and_match(
         pooled = F.max_pool3d(det_logits, pool_kernel, stride=1, padding=pad)
         probs = torch.sigmoid(det_logits[:, 0])
         is_peak = (det_logits[:, 0] == pooled[:, 0]) & (probs > det_threshold)
-        cap = max(512, max_gt_n * 4, int(train_peak_topk))
+        # Prediction budget must not depend on GT count/padding or batch composition.
+        cap = max(512, int(train_peak_topk))
         peak_coords, peak_keep = _topk_coords_padded(probs.masked_fill(~is_peak, -1.0), cap, 0.0)
         if train_peak_topk > 0:
             extra_c, extra_k = _topk_coords_padded(
@@ -290,7 +305,7 @@ def detect_and_match(
         right = gt_coords[:, :max_gt] if vs is None else gt_coords[:, :max_gt] * vs
         dists = torch.cdist(left, right)
         far = (~det_valid).unsqueeze(-1) | (~gt_valid).unsqueeze(1)
-        dists = dists.masked_fill(far, 1e6)
+        dists = dists.masked_fill(far, float('inf'))
         matched_pad = greedy_assign_batched(dists, max_match_distance)
         matched_pad = matched_pad.masked_fill(~det_valid, -1)
         if return_couplings:
@@ -347,6 +362,8 @@ def _as_coupling(matched: torch.Tensor, n_gt: int) -> torch.Tensor:
     if matched.ndim == 2:
         return matched
     coupling = torch.zeros(matched.shape[0], n_gt, device=matched.device, dtype=torch.float32)
+    if n_gt == 0:
+        return coupling
     valid = matched >= 0
     coupling[
         torch.arange(matched.shape[0], device=matched.device),
@@ -694,8 +711,6 @@ def train_epoch(
                     edge_logits, query, key = model.predict_edges_embeddings(
                         src_feat, tgt_feat, src_c, tgt_c, src_p, tgt_p, src_m, tgt_m
                     )
-                    query = query.view(B, pairs, nodes, query.shape[-1])
-                    key = key.view(B, pairs, nodes, key.shape[-1])
                 else:
                     edge_logits = model.predict_edges(
                         src_feat, tgt_feat, src_c, tgt_c, src_p, tgt_p, src_m, tgt_m
@@ -721,34 +736,14 @@ def train_epoch(
                     coords_tgt=tgt_c,
                     gate_distance=edge_gate_distance,
                 )
-                if aux_division_weight > 0 or aux_contrastive_weight > 0:
-                    edge_w = edge_logits.view(B, pairs, nodes, nodes)
-                    target_w = pair_target.view(B, pairs, nodes, nodes)
-                    for i in range(pairs):
-                        src_counts = det_m[:, i].sum(dim=1).tolist()
-                        tgt_counts = det_m[:, i + 1].sum(dim=1).tolist()
-                        if aux_division_weight > 0:
-                            for b in range(B):
-                                ns_b = int(src_counts[b])
-                                nt_b = int(tgt_counts[b])
-                                aux_div.append(
-                                    division_aux_loss(
-                                        edge_w[b, i, :ns_b, :nt_b],
-                                        target_w[b, i, :ns_b, :nt_b],
-                                    )
-                                )
-                        if aux_contrastive_weight > 0 and query is not None and key is not None:
-                            for b in range(B):
-                                ns_b = int(src_counts[b])
-                                nt_b = int(tgt_counts[b])
-                                aux_con.append(
-                                    contrastive_aux_loss(
-                                        query[b, i, :ns_b],
-                                        key[b, i, :nt_b],
-                                        target_w[b, i, :ns_b, :nt_b],
-                                        temperature=aux_contrastive_temp,
-                                    )
-                                )
+                if aux_division_weight > 0:
+                    aux_div.append(division_aux_loss(edge_logits, pair_target, src_m, tgt_m))
+                if aux_contrastive_weight > 0 and query is not None and key is not None:
+                    aux_con.append(
+                        contrastive_aux_loss(
+                            query, key, pair_target, src_m, tgt_m, temperature=aux_contrastive_temp
+                        )
+                    )
             else:
                 edge_loss_val = torch.zeros((), device=device)
             loss = edge_loss_val + det_loss_weight * det_loss
@@ -774,9 +769,7 @@ def train_epoch(
             group_size = min(accum, n_steps - (step_i // accum) * accum)
             loss = loss / group_size
 
-        check_finite = step_i == 0 or (step_i + 1) % 32 == 0
-        if check_finite:
-            require_finite(loss, 'Detector training loss')
+        require_finite(loss, 'Detector training loss')
 
         t2 = time.perf_counter()
         t_forward += t2 - t1
@@ -792,7 +785,7 @@ def train_epoch(
                 scaler,
                 grad_clip_norm,
                 ema,
-                check_finite=check_finite and scaler is None,
+                check_finite=scaler is None,
             )
 
         t3 = time.perf_counter()
@@ -836,7 +829,8 @@ def evaluate(
     amp_kind: str = 'off',
 ) -> dict[str, float]:
     model.eval()
-    total_loss, correct, total, n_pairs = 0.0, 0, 0, 0
+    n_pairs = 0
+    pair_stats = torch.zeros(9, device=device, dtype=torch.float64)
     gt_total_t = torch.zeros((), device=device, dtype=torch.long)
     gt_matched_t = torch.zeros((), device=device, dtype=torch.long)
     num_pred_t = torch.zeros((), device=device, dtype=torch.long)
@@ -903,32 +897,26 @@ def evaluate(
                 nodes=nodes,
                 couplings_w=couplings_w,
             )
-            src_counts = det_m[:, :-1].reshape(pair_batch, nodes).sum(dim=1).cpu()
-            tgt_counts = det_m[:, 1:].reshape(pair_batch, nodes).sum(dim=1).cpu()
-            pair_logits_cpu = pair_logits_all.detach().float().cpu()
-            pair_target_cpu = pair_target.detach().float().cpu()
-            for i in range(pair_batch):
-                ns_b = int(src_counts[i])
-                nt_b = int(tgt_counts[i])
-                logits_b = pair_logits_cpu[i, :ns_b, :nt_b]
-                target_b = pair_target_cpu[i, :ns_b, :nt_b]
-                pair_loss, pair_correct, pair_total = evaluate_pair(
-                    logits_b,
-                    target_b,
-                    edge_threshold=edge_threshold,
-                )
-                total_loss += pair_loss
-                correct += pair_correct
-                total += pair_total
-                n_pairs += 1
-                counts = pair_event_counts(logits_b, target_b, edge_threshold=edge_threshold)
-                edge_tp += counts[0]
-                edge_fp += counts[1]
-                edge_fn += counts[2]
-                division_tp += counts[3]
-                division_fp += counts[4]
-                division_fn += counts[5]
+            pair_stats += evaluate_pairs_batched(
+                pair_logits_all,
+                pair_target,
+                det_m[:, :-1].reshape(pair_batch, nodes),
+                det_m[:, 1:].reshape(pair_batch, nodes),
+                edge_threshold,
+            )
+            n_pairs += pair_batch
 
+    (
+        total_loss,
+        correct,
+        total,
+        edge_tp,
+        edge_fp,
+        edge_fn,
+        division_tp,
+        division_fp,
+        division_fn,
+    ) = pair_stats.tolist()
     gt_total = int(gt_total_t.item())
     gt_matched = int(gt_matched_t.item())
     num_pred_nodes = int(num_pred_t.item())
@@ -1072,6 +1060,23 @@ def train(
     frame_cache_mb: float = 0.0,
     epoch_callback: Callable[[int, dict[str, float]], bool | None] | None = None,
 ) -> UNetNodeTransformer:
+    # Validate direct Python calls as well as YAML/CLI before touching data or output.
+    call_config = dict(locals())
+    for old, new in (
+        ('fold', 'split'),
+        ('splits_file', 'splits'),
+        ('n_epochs', 'epochs'),
+        ('optimizer_name', 'optimizer'),
+    ):
+        call_config[new] = call_config.pop(old)
+    call_config.pop('augmentations')
+    call_config.pop('epoch_callback')
+    validate_config(call_config)
+    train_device = resolve_train_device(device)
+    if train_device.type == 'cuda':
+        torch.cuda.set_device(train_device)
+        if normalize_amp(amp) == 'bf16' and not torch.cuda.is_bf16_supported():
+            raise ValueError(f'amp=bf16 is unsupported on {train_device}')
     if seed is not None:
         seed_everything(int(seed), deterministic=torch.are_deterministic_algorithms_enabled())
     if unet_layers is None:
@@ -1095,6 +1100,8 @@ def train(
             movies = payload_movie_names(payload)
             if not movies:
                 movies = [path.name for path in sorted(data_dir.glob('*.zarr'))]
+            if n_folds > len(movies):
+                raise ValueError('n_folds exceeds available movies; refusing repeated/empty folds')
             train_names, test_names = movie_group_fold_names(movies, fold, n_folds)
         else:
             train_names, test_names = detector_fold_names(payload, fold)
@@ -1113,8 +1120,6 @@ def train(
         )
 
     output_dir = weights_dir / method / f'split_{fold}'
-    prepare_detector_output(output_dir, overwrite=overwrite)
-    writer = open_writer(output_dir)
 
     def _load(
         files: list[Path],
@@ -1137,6 +1142,15 @@ def train(
 
     train_video_data = _load(train_files, 'train')
     test_video_data = _load(test_files, 'test')
+    for name, videos in (('train', train_video_data), ('validation', test_video_data)):
+        if not any(windows for _, windows in videos):
+            raise ValueError(f'No supervised {name} windows for window_size={window_size}')
+        for vm, windows in videos:
+            if windows and min(vm.image_shape[1:]) < 2 ** (len(unet_layers) - 1):
+                raise ValueError(
+                    f'{vm.zarr_path.name}: downsample/UNet depth leaves an empty spatial axis'
+                )
+    prepare_detector_output(output_dir, overwrite=overwrite)
 
     all_windows = [w for _, ws in train_video_data + test_video_data for w in ws]
     max_nodes = max(max(w.node_counts) for w in all_windows)
@@ -1144,375 +1158,387 @@ def train(
 
     pos_feat_dim = 4 * POS_EMBED_DIM
 
-    model_config = {
-        'unet_out_channels': unet_out_channels,
-        'unet_layers': unet_layers,
-        'downsample': list(downsample),
-        'window_size': window_size,
-        'pool_kernel_um': pool_kernel_um,
-        'hidden_dim': hidden_dim,
-        'n_heads': n_heads,
-        'n_blocks': n_blocks,
-        'dropout': dropout,
-        'pos_feat_dim': pos_feat_dim,
-        'mlp_ratio': mlp_ratio,
-        'pair_chunk_size': pair_chunk_size,
-        'skip_fullres_temporal': skip_fullres_temporal,
-        'unet_n_heads': unet_n_heads,
-        'checkpoint_metric': checkpoint_metric,
-        'checkpoint_selection': checkpoint_metric,
-        'promotion_requires': 'official_evaluate',
-        'validation_role': validation_role,
-        'det_threshold': det_threshold,
-        'max_match_distance': max_match_distance,
-        'edge_threshold': edge_threshold,
-        'grad_clip_norm': grad_clip_norm,
-        'patience': patience,
-        'drop_path': drop_path,
-        'use_self_attn': use_self_attn,
-        'norm': norm,
-        'rel_coord_scale': rel_coord_scale,
-        'pair_head': pair_head,
-        'layer_scale_init': layer_scale_init,
-        'ffn_act': ffn_act,
-        'attn_dropout': attn_dropout,
-        'drop_path_decay': drop_path_decay,
-        'pair_geom': pair_geom,
-        'se_ratio': se_ratio,
-        'unet_block': unet_block,
-        'unet_norm': unet_norm,
-        'unet_gn_groups': unet_gn_groups,
-        'unet_deform': unet_deform,
-        'temporal_mix': temporal_mix,
-        'coord_kind': coord_kind,
-        'fourier_bands': fourier_bands,
-        'flow_input': flow_input,
-        'extra_encoder': extra_encoder,
-        'extra_encoder_channels': extra_encoder_channels,
-        'extra_encoder_freeze': extra_encoder_freeze,
-        'extra_encoder_weights': extra_encoder_weights,
-        'feature_sample': feature_sample,
-        'match_assign': match_assign,
-        'match_soft': match_soft,
-        'sinkhorn_tau': sinkhorn_tau,
-        'sinkhorn_iters': sinkhorn_iters,
-        'train_peak_topk': train_peak_topk,
-        'edge_gate_distance': edge_gate_distance,
-        'offset_target': offset_target,
-        'cv_mode': cv_mode,
-        'n_folds': n_folds,
-        'edge_loss': edge_loss,
-        'det_loss': det_loss,
-        'target_mode': target_mode,
-        'validation_match_distance': VALIDATION_MATCH_DISTANCE,
-        'validation_match_assign': VALIDATION_MATCH_ASSIGN,
-        'validation_match_soft': False,
-        'validation_peak_topk': 0,
-        'batch_padding': batch_padding,
-        'frame_cache_mb': frame_cache_mb,
-    }
-    (output_dir / 'config.json').write_text(json.dumps(model_config, indent=2) + '\n')
+    writer = open_writer(output_dir)
+    train_loader = test_loader = None
+    try:
+        model_config = {
+            'unet_out_channels': unet_out_channels,
+            'unet_layers': unet_layers,
+            'downsample': list(downsample),
+            'window_size': window_size,
+            'pool_kernel_um': pool_kernel_um,
+            'hidden_dim': hidden_dim,
+            'n_heads': n_heads,
+            'n_blocks': n_blocks,
+            'dropout': dropout,
+            'pos_feat_dim': pos_feat_dim,
+            'mlp_ratio': mlp_ratio,
+            'pair_chunk_size': pair_chunk_size,
+            'skip_fullres_temporal': skip_fullres_temporal,
+            'unet_n_heads': unet_n_heads,
+            'checkpoint_metric': checkpoint_metric,
+            'checkpoint_selection': checkpoint_metric,
+            'promotion_requires': 'official_evaluate',
+            'validation_role': validation_role,
+            'det_threshold': det_threshold,
+            'max_match_distance': max_match_distance,
+            'edge_threshold': edge_threshold,
+            'grad_clip_norm': grad_clip_norm,
+            'patience': patience,
+            'drop_path': drop_path,
+            'use_self_attn': use_self_attn,
+            'norm': norm,
+            'rel_coord_scale': rel_coord_scale,
+            'pair_head': pair_head,
+            'layer_scale_init': layer_scale_init,
+            'ffn_act': ffn_act,
+            'attn_dropout': attn_dropout,
+            'drop_path_decay': drop_path_decay,
+            'pair_geom': pair_geom,
+            'se_ratio': se_ratio,
+            'unet_block': unet_block,
+            'unet_norm': unet_norm,
+            'unet_gn_groups': unet_gn_groups,
+            'unet_deform': unet_deform,
+            'temporal_mix': temporal_mix,
+            'coord_kind': coord_kind,
+            'fourier_bands': fourier_bands,
+            'flow_input': flow_input,
+            'extra_encoder': extra_encoder,
+            'extra_encoder_channels': extra_encoder_channels,
+            'extra_encoder_freeze': extra_encoder_freeze,
+            'extra_encoder_weights': extra_encoder_weights,
+            'feature_sample': feature_sample,
+            'match_assign': match_assign,
+            'match_soft': match_soft,
+            'sinkhorn_tau': sinkhorn_tau,
+            'sinkhorn_iters': sinkhorn_iters,
+            'train_peak_topk': train_peak_topk,
+            'edge_gate_distance': edge_gate_distance,
+            'offset_target': offset_target,
+            'cv_mode': cv_mode,
+            'n_folds': n_folds,
+            'edge_loss': edge_loss,
+            'det_loss': det_loss,
+            'target_mode': target_mode,
+            'validation_match_distance': VALIDATION_MATCH_DISTANCE,
+            'validation_match_assign': VALIDATION_MATCH_ASSIGN,
+            'validation_match_soft': False,
+            'validation_peak_topk': 0,
+            'batch_padding': batch_padding,
+            'frame_cache_mb': frame_cache_mb,
+        }
+        (output_dir / 'config.json').write_text(json.dumps(model_config, indent=2) + '\n')
 
-    dataset_seed = int(seed) if seed is not None else 0
-    train_ds = FrameWindowDataset(
-        train_video_data,
-        max_nodes=max_nodes,
-        augmentations=augmentations,
-        seed=dataset_seed,
-        batch_padding=batch_padding,
-        frame_cache_mb=frame_cache_mb,
-    )
-    test_ds = FrameWindowDataset(
-        test_video_data,
-        max_nodes=max_nodes,
-        seed=dataset_seed,
-        batch_padding=batch_padding,
-        frame_cache_mb=frame_cache_mb,
-    )
-    g = dataloader_generator(seed)
-    worker_init_fn = seed_worker if num_workers > 0 else None
+        dataset_seed = int(seed) if seed is not None else 0
+        train_ds = FrameWindowDataset(
+            train_video_data,
+            max_nodes=max_nodes,
+            augmentations=augmentations,
+            seed=dataset_seed,
+            batch_padding=batch_padding,
+            frame_cache_mb=frame_cache_mb,
+        )
+        test_ds = FrameWindowDataset(
+            test_video_data,
+            max_nodes=max_nodes,
+            seed=dataset_seed,
+            batch_padding=batch_padding,
+            frame_cache_mb=frame_cache_mb,
+        )
+        g = dataloader_generator(seed)
+        worker_init_fn = seed_worker if num_workers > 0 else None
 
-    train_device = resolve_train_device(device)
-    if train_device.type == 'cuda':
-        configure_cuda_backends()
-    n_visible = torch.cuda.device_count() if train_device.type == 'cuda' else 0
-    print(f'Using device: {train_device} | visible CUDA GPUs: {n_visible}', flush=True)
-    prefetch = 4 if num_workers > 0 else None
-    pin_memory = train_device.type == 'cuda'
+        if train_device.type == 'cuda':
+            configure_cuda_backends()
+        n_visible = torch.cuda.device_count() if train_device.type == 'cuda' else 0
+        print(f'Using device: {train_device} | visible CUDA GPUs: {n_visible}', flush=True)
+        prefetch = 4 if num_workers > 0 else None
+        pin_memory = train_device.type == 'cuda'
 
-    train_loader = DataLoader(
-        train_ds,
-        batch_size=batch_size,
-        sampler=VideoGroupedSampler(train_ds, generator=g, num_workers=num_workers),
-        num_workers=num_workers,
-        prefetch_factor=prefetch,
-        persistent_workers=num_workers > 0,
-        pin_memory=pin_memory,
-        generator=g,
-        worker_init_fn=worker_init_fn,
-        collate_fn=collate_windows if batch_padding else None,
-    )
-    test_loader = DataLoader(
-        test_ds,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        prefetch_factor=prefetch,
-        persistent_workers=num_workers > 0,
-        pin_memory=pin_memory,
-        generator=g,
-        worker_init_fn=worker_init_fn,
-        collate_fn=collate_windows if batch_padding else None,
-    )
+        train_loader = DataLoader(
+            train_ds,
+            batch_size=batch_size,
+            sampler=VideoGroupedSampler(train_ds, generator=g, num_workers=num_workers),
+            num_workers=num_workers,
+            prefetch_factor=prefetch,
+            persistent_workers=num_workers > 0,
+            pin_memory=pin_memory,
+            generator=g,
+            worker_init_fn=worker_init_fn,
+            collate_fn=collate_windows if batch_padding else None,
+        )
+        test_loader = DataLoader(
+            test_ds,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            prefetch_factor=prefetch,
+            persistent_workers=num_workers > 0,
+            pin_memory=pin_memory,
+            generator=g,
+            worker_init_fn=worker_init_fn,
+            collate_fn=collate_windows if batch_padding else None,
+        )
 
-    unet = TemporalUNet3D(
-        in_channels=unet_in_channels(
+        unet = TemporalUNet3D(
+            in_channels=unet_in_channels(
+                coord_kind=coord_kind,
+                fourier_bands=fourier_bands,
+                flow_input=flow_input,
+                extra_encoder=extra_encoder,
+                extra_encoder_channels=extra_encoder_channels,
+            ),
+            out_channels=unet_out_channels,
+            layers=unet_layers,
+            gradient_checkpointing=gradient_checkpointing,
+            skip_fullres_temporal=skip_fullres_temporal,
+            temporal_n_heads=unet_n_heads,
+            se_ratio=se_ratio,
+            unet_block=unet_block,
+            unet_norm=unet_norm,
+            unet_gn_groups=unet_gn_groups,
+            unet_deform=unet_deform,
+            temporal_mix=temporal_mix,
+        )
+        if unet_weights is not None:
+            state = torch.load(unet_weights, map_location='cpu', weights_only=True)
+            missing, unexpected = unet.load_state_dict(state, strict=False)
+            print(
+                f'  UNet weights: {len(missing)} missing, {len(unexpected)} unexpected', flush=True
+            )
+
+        model = UNetNodeTransformer(
+            unet=unet,
+            unet_out_channels=unet_out_channels,
+            pos_feat_dim=pos_feat_dim,
+            hidden_dim=hidden_dim,
+            n_heads=n_heads,
+            n_blocks=n_blocks,
+            dropout=dropout,
+            mlp_ratio=mlp_ratio,
+            pair_chunk_size=pair_chunk_size,
+            drop_path=drop_path,
+            use_self_attn=use_self_attn,
+            norm=norm,
+            rel_coord_scale=rel_coord_scale,
+            pair_head=pair_head,
+            layer_scale_init=layer_scale_init,
+            gradient_checkpointing=gradient_checkpointing,
+            ffn_act=ffn_act,
+            attn_dropout=attn_dropout,
+            drop_path_decay=drop_path_decay,
+            pair_geom=pair_geom,
+            feature_sample=feature_sample,
             coord_kind=coord_kind,
             fourier_bands=fourier_bands,
             flow_input=flow_input,
             extra_encoder=extra_encoder,
             extra_encoder_channels=extra_encoder_channels,
-        ),
-        out_channels=unet_out_channels,
-        layers=unet_layers,
-        gradient_checkpointing=gradient_checkpointing,
-        skip_fullres_temporal=skip_fullres_temporal,
-        temporal_n_heads=unet_n_heads,
-        se_ratio=se_ratio,
-        unet_block=unet_block,
-        unet_norm=unet_norm,
-        unet_gn_groups=unet_gn_groups,
-        unet_deform=unet_deform,
-        temporal_mix=temporal_mix,
-    )
-    if unet_weights is not None:
-        state = torch.load(unet_weights, map_location='cpu', weights_only=True)
-        missing, unexpected = unet.load_state_dict(state, strict=False)
-        print(f'  UNet weights: {len(missing)} missing, {len(unexpected)} unexpected', flush=True)
+            extra_encoder_freeze=extra_encoder_freeze,
+            extra_encoder_weights=extra_encoder_weights,
+        ).to(train_device)
 
-    model = UNetNodeTransformer(
-        unet=unet,
-        unet_out_channels=unet_out_channels,
-        pos_feat_dim=pos_feat_dim,
-        hidden_dim=hidden_dim,
-        n_heads=n_heads,
-        n_blocks=n_blocks,
-        dropout=dropout,
-        mlp_ratio=mlp_ratio,
-        pair_chunk_size=pair_chunk_size,
-        drop_path=drop_path,
-        use_self_attn=use_self_attn,
-        norm=norm,
-        rel_coord_scale=rel_coord_scale,
-        pair_head=pair_head,
-        layer_scale_init=layer_scale_init,
-        gradient_checkpointing=gradient_checkpointing,
-        ffn_act=ffn_act,
-        attn_dropout=attn_dropout,
-        drop_path_decay=drop_path_decay,
-        pair_geom=pair_geom,
-        feature_sample=feature_sample,
-        coord_kind=coord_kind,
-        fourier_bands=fourier_bands,
-        flow_input=flow_input,
-        extra_encoder=extra_encoder,
-        extra_encoder_channels=extra_encoder_channels,
-        extra_encoder_freeze=extra_encoder_freeze,
-        extra_encoder_weights=extra_encoder_weights,
-    ).to(train_device)
-
-    if data_parallel and train_device.type == 'cuda' and n_visible > 1:
-        model.unet = nn.DataParallel(model.unet)
-        print(
-            f'DataParallel: UNet split across {n_visible} GPUs '
-            f'(effective per-GPU batch {max(1, batch_size // n_visible)})',
-            flush=True,
-        )
-    elif train_device.type == 'cuda':
-        reason = '--single-gpu set' if not data_parallel else f'only {n_visible} GPU visible'
-        print(
-            f'Single-GPU training ({reason}). For 2 GPUs set the Kaggle accelerator to GPU T4 x2.',
-            flush=True,
-        )
-
-    n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f'Model parameters: {n_params:,}', flush=True)
-
-    optimizer = build_optimizer(model, name=optimizer_name, lr=lr, weight_decay=weight_decay)
-    lr_sched = build_scheduler(
-        optimizer,
-        name=scheduler,
-        n_epochs=n_epochs,
-        warmup_epochs=warmup_epochs,
-        min_lr=min_lr,
-        base_lr=lr,
-    )
-    ema: ModelEma[UNetNodeTransformer] | None = (
-        ModelEma(model, ema_decay) if ema_decay > 0 else None
-    )
-    scaler = (
-        torch.amp.GradScaler('cuda', enabled=True)
-        if amp == 'fp16' and train_device.type == 'cuda'
-        else None
-    )
-    print(f'Starting training for {n_epochs} epochs (batch_size={batch_size})...', flush=True)
-
-    best_score = float('-inf')
-    best_metrics: dict[str, float] | None = None
-    stale = 0
-    save_path = output_dir / 'edge_predictor_best.pth'
-    pbar = tqdm(range(n_epochs), desc='Training', disable=False)
-    print(f'Detection loss: weight={det_loss_weight}, neg_weight={det_neg_weight}', flush=True)
-    print(
-        f'Checkpoint metric: {checkpoint_metric}; patience={patience}; '
-        'promotion requires official evaluate',
-        flush=True,
-    )
-
-    for epoch in pbar:
-        train_ds.set_epoch(epoch)
-        t0 = time.monotonic()
-        train_edge_loss, train_det_loss = train_epoch(
-            model,
-            train_loader,
-            optimizer,
-            train_device,
-            det_loss_weight,
-            det_neg_weight,
-            max_iters=max_iters,
-            pool_kernel_um=pool_kernel_um,
-            det_threshold=det_threshold,
-            max_match_distance=max_match_distance,
-            grad_clip_norm=grad_clip_norm,
-            edge_loss=edge_loss,
-            edge_focal_gamma=edge_focal_gamma,
-            edge_div_weight=edge_div_weight,
-            det_loss_kind=det_loss,
-            det_heatmap_sigma=det_heatmap_sigma,
-            target_mode=target_mode,
-            target_gt_frac=target_gt_frac,
-            aux_division_weight=aux_division_weight,
-            aux_contrastive_weight=aux_contrastive_weight,
-            aux_contrastive_temp=aux_contrastive_temp,
-            aux_offset_weight=aux_offset_weight,
-            accum_steps=accum_steps,
-            amp_kind=amp,
-            scaler=scaler,
-            ema=ema,
-            match_assign=match_assign,
-            match_soft=match_soft,
-            sinkhorn_tau=sinkhorn_tau,
-            sinkhorn_iters=sinkhorn_iters,
-            train_peak_topk=train_peak_topk,
-            edge_gate_distance=edge_gate_distance,
-            offset_target=offset_target,
-        )
-        train_time = time.monotonic() - t0
-
-        eval_model = ema.shadow if ema is not None else model
-        t0 = time.monotonic()
-        metrics = evaluate(
-            eval_model,
-            test_loader,
-            train_device,
-            pool_kernel_um=pool_kernel_um,
-            det_threshold=det_threshold,
-            max_match_distance=VALIDATION_MATCH_DISTANCE,
-            edge_threshold=edge_threshold,
-            match_assign=VALIDATION_MATCH_ASSIGN,
-            match_soft=False,
-            sinkhorn_tau=sinkhorn_tau,
-            sinkhorn_iters=sinkhorn_iters,
-            train_peak_topk=0,
-            amp_kind=amp,
-        )
-        test_time = time.monotonic() - t0
-
-        score = checkpoint_score(checkpoint_metric, metrics)
-        is_best = score >= best_score
-
-        if is_best:
-            best_score = score
-            best_metrics = {key: float(value) for key, value in metrics.items()}
-            stale = 0
-            (output_dir / 'metrics.json').write_text(json.dumps(best_metrics, indent=2) + '\n')
-            torch.save(
-                {
-                    k.replace('unet.module.', 'unet.', 1): v
-                    for k, v in (
-                        ema.state_dict() if ema is not None else model.state_dict()
-                    ).items()
-                },
-                save_path,
+        if data_parallel and train_device.type == 'cuda' and n_visible > 1:
+            primary = (
+                train_device.index
+                if train_device.index is not None
+                else torch.cuda.current_device()
             )
-        else:
-            stale += 1
-
-        marker = '*' if is_best else ' '
-        tb_values = {
-            'train/edge_loss': train_edge_loss,
-            'train/det_loss': train_det_loss,
-            'train/lr': optimizer.param_groups[0]['lr'],
-            'val/score': score,
-            'val/best_score': best_score,
-        }
-        for key, value in metrics.items():
-            tb_values[f'val/{key}'] = value
-        log_scalars(writer, epoch, tb_values)
-        pbar.set_postfix(
-            edge=f'{train_edge_loss:.4f}',
-            det=f'{train_det_loss:.4f}',
-            acc=f'{metrics["acc"]:.4f}',
-            comp=f'{metrics["competition_metric"]:.4f}',
-        )
-        print(
-            f'  Epoch {epoch:3d}/{n_epochs} | edge={train_edge_loss:.4f} | '
-            f'det={train_det_loss:.4f} | '
-            f'test_loss={metrics["loss"]:.4f} | acc={metrics["acc"]:.4f} | '
-            f'recall={metrics["recall"]:.4f} | '
-            f'competition={metrics["competition_metric"]:.4f} | '
-            f'{checkpoint_metric}={score:.4f} | best={best_score:.4f} {marker} | '
-            f'train={train_time:.1f}s test={test_time:.1f}s',
-            flush=True,
-        )
-        if lr_sched is not None:
-            lr_sched.step()
-        if epoch_callback is not None:
-            try:
-                keep_training = epoch_callback(epoch, dict(metrics))
-            except BaseException:
-                writer.close()
-                del train_loader, test_loader
-                raise
-            if keep_training is False:
-                print(f'Stopped by epoch callback at epoch {epoch}', flush=True)
-                break
-        if patience > 0 and stale >= patience:
+            device_ids = [primary, *[i for i in range(n_visible) if i != primary]]
+            model.unet = nn.DataParallel(model.unet, device_ids=device_ids, output_device=primary)
             print(
-                f'Early stopping at epoch {epoch} ({patience} epochs without '
-                f'{checkpoint_metric} improvement)',
+                f'DataParallel: UNet split across {n_visible} GPUs '
+                f'(effective per-GPU batch {max(1, batch_size // n_visible)})',
                 flush=True,
             )
-            break
+        elif train_device.type == 'cuda':
+            reason = '--single-gpu set' if not data_parallel else f'only {n_visible} GPU visible'
+            print(
+                f'Single-GPU training ({reason}). '
+                'For 2 GPUs set the Kaggle accelerator to GPU T4 x2.',
+                flush=True,
+            )
 
-    if best_metrics is not None:
-        (output_dir / 'metrics.json').write_text(json.dumps(best_metrics, indent=2) + '\n')
-    print(
-        f'\nBest {checkpoint_metric}: {best_score:.4f}, saved to {save_path}. '
-        'Window competition_metric is a proxy; promotion requires official evaluate '
-        'on a disjoint panel.',
-        flush=True,
-    )
-    writer.close()
-    if save_path.exists():
-        state = torch.load(save_path, map_location=train_device, weights_only=True)
-        if isinstance(model.unet, nn.DataParallel):
-            state = {
-                (k.replace('unet.', 'unet.module.', 1) if k.startswith('unet.') else k): v
-                for k, v in state.items()
+        n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print(f'Model parameters: {n_params:,}', flush=True)
+
+        optimizer = build_optimizer(model, name=optimizer_name, lr=lr, weight_decay=weight_decay)
+        lr_sched = build_scheduler(
+            optimizer,
+            name=scheduler,
+            n_epochs=n_epochs,
+            warmup_epochs=warmup_epochs,
+            min_lr=min_lr,
+            base_lr=lr,
+        )
+        ema: ModelEma[UNetNodeTransformer] | None = (
+            ModelEma(model, ema_decay) if ema_decay > 0 else None
+        )
+        scaler = (
+            torch.amp.GradScaler('cuda', enabled=True)
+            if amp == 'fp16' and train_device.type == 'cuda'
+            else None
+        )
+        print(f'Starting training for {n_epochs} epochs (batch_size={batch_size})...', flush=True)
+
+        best_score = float('-inf')
+        best_metrics: dict[str, float] | None = None
+        stale = 0
+        save_path = output_dir / 'edge_predictor_best.pth'
+        pbar = tqdm(range(n_epochs), desc='Training', disable=False)
+        print(f'Detection loss: weight={det_loss_weight}, neg_weight={det_neg_weight}', flush=True)
+        print(
+            f'Checkpoint metric: {checkpoint_metric}; patience={patience}; '
+            'promotion requires official evaluate',
+            flush=True,
+        )
+
+        for epoch in pbar:
+            train_ds.set_epoch(epoch)
+            t0 = time.monotonic()
+            train_edge_loss, train_det_loss = train_epoch(
+                model,
+                train_loader,
+                optimizer,
+                train_device,
+                det_loss_weight,
+                det_neg_weight,
+                max_iters=max_iters,
+                pool_kernel_um=pool_kernel_um,
+                det_threshold=det_threshold,
+                max_match_distance=max_match_distance,
+                grad_clip_norm=grad_clip_norm,
+                edge_loss=edge_loss,
+                edge_focal_gamma=edge_focal_gamma,
+                edge_div_weight=edge_div_weight,
+                det_loss_kind=det_loss,
+                det_heatmap_sigma=det_heatmap_sigma,
+                target_mode=target_mode,
+                target_gt_frac=target_gt_frac,
+                aux_division_weight=aux_division_weight,
+                aux_contrastive_weight=aux_contrastive_weight,
+                aux_contrastive_temp=aux_contrastive_temp,
+                aux_offset_weight=aux_offset_weight,
+                accum_steps=accum_steps,
+                amp_kind=amp,
+                scaler=scaler,
+                ema=ema,
+                match_assign=match_assign,
+                match_soft=match_soft,
+                sinkhorn_tau=sinkhorn_tau,
+                sinkhorn_iters=sinkhorn_iters,
+                train_peak_topk=train_peak_topk,
+                edge_gate_distance=edge_gate_distance,
+                offset_target=offset_target,
+            )
+            train_time = time.monotonic() - t0
+
+            eval_model = ema.shadow if ema is not None else model
+            t0 = time.monotonic()
+            metrics = evaluate(
+                eval_model,
+                test_loader,
+                train_device,
+                pool_kernel_um=pool_kernel_um,
+                det_threshold=det_threshold,
+                max_match_distance=VALIDATION_MATCH_DISTANCE,
+                edge_threshold=edge_threshold,
+                match_assign=VALIDATION_MATCH_ASSIGN,
+                match_soft=False,
+                sinkhorn_tau=sinkhorn_tau,
+                sinkhorn_iters=sinkhorn_iters,
+                train_peak_topk=0,
+                amp_kind=amp,
+            )
+            test_time = time.monotonic() - t0
+
+            score = checkpoint_score(checkpoint_metric, metrics)
+            is_best = score >= best_score
+
+            if is_best:
+                best_score = score
+                best_metrics = {key: float(value) for key, value in metrics.items()}
+                stale = 0
+                (output_dir / 'metrics.json').write_text(json.dumps(best_metrics, indent=2) + '\n')
+                torch.save(
+                    {
+                        k.replace('unet.module.', 'unet.', 1): v
+                        for k, v in (
+                            ema.state_dict() if ema is not None else model.state_dict()
+                        ).items()
+                    },
+                    save_path,
+                )
+            else:
+                stale += 1
+
+            marker = '*' if is_best else ' '
+            tb_values = {
+                'train/edge_loss': train_edge_loss,
+                'train/det_loss': train_det_loss,
+                'train/lr': optimizer.param_groups[0]['lr'],
+                'val/score': score,
+                'val/best_score': best_score,
             }
-        model.load_state_dict(state)
-    return model
+            for key, value in metrics.items():
+                tb_values[f'val/{key}'] = value
+            log_scalars(writer, epoch, tb_values)
+            pbar.set_postfix(
+                edge=f'{train_edge_loss:.4f}',
+                det=f'{train_det_loss:.4f}',
+                acc=f'{metrics["acc"]:.4f}',
+                comp=f'{metrics["competition_metric"]:.4f}',
+            )
+            print(
+                f'  Epoch {epoch:3d}/{n_epochs} | edge={train_edge_loss:.4f} | '
+                f'det={train_det_loss:.4f} | '
+                f'test_loss={metrics["loss"]:.4f} | acc={metrics["acc"]:.4f} | '
+                f'recall={metrics["recall"]:.4f} | '
+                f'competition={metrics["competition_metric"]:.4f} | '
+                f'{checkpoint_metric}={score:.4f} | best={best_score:.4f} {marker} | '
+                f'train={train_time:.1f}s test={test_time:.1f}s',
+                flush=True,
+            )
+            if lr_sched is not None:
+                lr_sched.step()
+            if epoch_callback is not None:
+                keep_training = epoch_callback(epoch, dict(metrics))
+                if keep_training is False:
+                    print(f'Stopped by epoch callback at epoch {epoch}', flush=True)
+                    break
+            if patience > 0 and stale >= patience:
+                print(
+                    f'Early stopping at epoch {epoch} ({patience} epochs without '
+                    f'{checkpoint_metric} improvement)',
+                    flush=True,
+                )
+                break
+
+        if best_metrics is not None:
+            (output_dir / 'metrics.json').write_text(json.dumps(best_metrics, indent=2) + '\n')
+        print(
+            f'\nBest {checkpoint_metric}: {best_score:.4f}, saved to {save_path}. '
+            'Window competition_metric is a proxy; promotion requires official evaluate '
+            'on a disjoint panel.',
+            flush=True,
+        )
+        writer.close()
+        if save_path.exists():
+            state = torch.load(save_path, map_location=train_device, weights_only=True)
+            if isinstance(model.unet, nn.DataParallel):
+                state = {
+                    (k.replace('unet.', 'unet.module.', 1) if k.startswith('unet.') else k): v
+                    for k, v in state.items()
+                }
+            model.load_state_dict(state)
+        return model
+    finally:
+        for loader in (train_loader, test_loader):
+            iterator = getattr(loader, '_iterator', None)
+            if iterator is not None:
+                iterator._shutdown_workers()
+        writer.close()
 
 
 def _as_int_tuple(value, default: tuple[int, ...]) -> tuple[int, ...]:
@@ -1524,7 +1550,10 @@ def _as_int_tuple(value, default: tuple[int, ...]) -> tuple[int, ...]:
 
 
 def _augmentations_from_cfg(cfg: dict) -> list:
-    if any(cfg.get(key, False) for key in ('time_stretch_aug', 'time_warp_aug')):
+    if any(
+        cfg.get(key, False) and float(cfg.get(f'{key}_proba', 0.5)) > 0
+        for key in ('time_stretch_aug', 'time_warp_aug')
+    ):
         raise ValueError(
             'Temporal resampling changes images without resampling GT tracks; '
             'disable time_stretch_aug and time_warp_aug for detector training'
@@ -1722,6 +1751,8 @@ def train_from_config(
     *,
     epoch_callback: Callable[[int, dict[str, float]], bool | None] | None = None,
 ) -> None:
+    cfg = validate_config(cfg)
+    configure_determinism(cfg['deterministic'])
     if cfg.get('seed') is not None:
         seed_everything(int(cfg['seed']), deterministic=bool(cfg.get('deterministic', False)))
     data_dir = Path(cfg['data_dir'])
@@ -1973,8 +2004,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def validate_config(cfg: dict) -> dict:
+    return validate_detector_config(
+        cfg, vars(parse_args(['--weights-dir', 'unused'])), CHECKPOINT_METRICS
+    )
+
+
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
+    validate_config(vars(args))
+    configure_determinism(args.deterministic)
     if args.seed is not None:
         seed_everything(int(args.seed), deterministic=bool(args.deterministic))
     data_dir = _resolve_data_dir(args.data_dir)

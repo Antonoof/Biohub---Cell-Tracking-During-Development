@@ -80,10 +80,15 @@ class DeformConv3d(nn.Module):
         grid = self._grid
         scale = self._scale
         if grid is None or scale is None or self._grid_key != key:
-            grid = _identity_grid(x)
-            scale = x.new_tensor(
-                [max(width - 1, 1) / 2.0, max(height - 1, 1) / 2.0, max(depth - 1, 1) / 2.0]
-            ).view(1, 3, 1, 1, 1)
+            # Cache may first be populated by validation/EMA. Training must be able
+            # to save scale for division backward after leaving inference_mode.
+            with torch.inference_mode(False):
+                grid = _identity_grid(x)
+                scale = torch.tensor(
+                    [max(width - 1, 1) / 2.0, max(height - 1, 1) / 2.0, max(depth - 1, 1) / 2.0],
+                    device=x.device,
+                    dtype=x.dtype,
+                ).view(1, 3, 1, 1, 1)
             self._grid = grid
             self._scale = scale
             self._grid_key = key

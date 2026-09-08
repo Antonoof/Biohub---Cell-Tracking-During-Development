@@ -3,6 +3,7 @@ import torch
 from biohub.losses.association import association_loss, compute_batch_loss, compute_loss
 from biohub.losses.aux import contrastive_aux_loss, division_aux_loss, offset_aux_loss
 from biohub.losses.detection import detection_loss
+from biohub.modules.detect.peaks import subvoxel_offsets
 
 
 def test_empty_association_is_zero_and_finite() -> None:
@@ -86,6 +87,32 @@ def test_offset_aux_empty_sample_is_zero() -> None:
     assert torch.isfinite(loss).all()
     only = offset_aux_loss(pred[:1], coords[:1], mask[:1])
     torch.testing.assert_close(loss, only / 2)
+
+
+def test_offset_parabolic_matches_masked_points() -> None:
+    torch.manual_seed(0)
+    pred = torch.randn(3, 3, 5, 6, 7)
+    det = torch.randn(3, 1, 5, 6, 7)
+    coords = torch.rand(3, 4, 3) * torch.tensor([4.0, 5.0, 6.0])
+    mask = torch.tensor(
+        [[True, False, True, False], [False, False, False, False], [True, True, True, True]]
+    )
+    actual = offset_aux_loss(pred, coords, mask, target='parabolic', det_logits=det)
+    spatial = pred.shape[2:]
+    losses = []
+    for b in range(3):
+        idx = mask[b].nonzero(as_tuple=False)[:, 0]
+        if idx.numel() == 0:
+            losses.append(pred.new_zeros(()))
+            continue
+        gt = coords[b, idx]
+        zi = gt[:, 0].long().clamp(0, spatial[0] - 1)
+        yi = gt[:, 1].long().clamp(0, spatial[1] - 1)
+        xi = gt[:, 2].long().clamp(0, spatial[2] - 1)
+        frac = subvoxel_offsets(det[b, 0], torch.stack((zi, yi, xi), dim=-1))
+        sample_pred = pred[b, :, zi, yi, xi].T
+        losses.append((sample_pred - frac).abs().mean())
+    torch.testing.assert_close(actual, torch.stack(losses).mean())
 
 
 def _gate_pair(logits, coords_src, coords_tgt, gate_distance):

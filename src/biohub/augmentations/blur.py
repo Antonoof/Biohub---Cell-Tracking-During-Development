@@ -2,6 +2,7 @@ import math
 
 import torch
 import torch.nn.functional as F
+from scipy.ndimage import convolve1d
 
 from biohub.augmentations.proba import AugmentRng, skip_augment
 
@@ -21,6 +22,10 @@ def blur_augment(
     x = torch.arange(-radius, radius + 1, dtype=imgs.dtype, device=imgs.device)
     kernel_1d = torch.exp(-0.5 * (x / sigma) ** 2)
     kernel_1d = kernel_1d / kernel_1d.sum()
+    if imgs.device.type == 'cpu' and imgs.dtype == torch.float32 and not imgs.requires_grad:
+        blurred_np = convolve1d(imgs.numpy(), kernel_1d.numpy(), axis=-1, mode='nearest')
+        convolve1d(blurred_np, kernel_1d.numpy(), axis=-2, mode='nearest', output=blurred_np)
+        return torch.from_numpy(blurred_np), coords, masks
     spatial = imgs.reshape(-1, 1, imgs.shape[-2], imgs.shape[-1])
 
     horizontal = F.conv2d(

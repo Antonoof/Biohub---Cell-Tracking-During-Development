@@ -148,7 +148,7 @@ FIXED_TRAIN_KEYS = {
     'unet_gn_groups': 8,
     'extra_encoder_freeze': False,
     'extra_encoder_weights': None,
-    'pair_chunk_size': 256,
+    'pair_chunk_size': 512,
     'gradient_checkpointing': False,
     'downsample': [1, 4, 4],
     'det_threshold': 0.5,
@@ -241,7 +241,7 @@ def sample_search_params(trial: TrialLike) -> dict[str, Any]:
     drop_path = trial.suggest_float('drop_path', 0.0, 0.2)
     warmup_epochs = trial.suggest_int('warmup_epochs', 2, 5)
     params: dict[str, Any] = {
-        'epochs': trial.suggest_int('epochs', 10, 100),
+        'epochs': trial.suggest_int('epochs', 10, 50),
         'optimizer': optimizer,
         'lr': _suggest_lr(trial, optimizer),
         'weight_decay': _suggest_weight_decay(trial, optimizer),
@@ -285,7 +285,7 @@ def sample_search_params(trial: TrialLike) -> dict[str, Any]:
         'feature_sample': str(
             trial.suggest_categorical('feature_sample', ['nearest', 'trilinear'])
         ),
-        'window_size': trial.suggest_int('window_size', 2, 5),
+        'window_size': trial.suggest_int('window_size', 2, 4),
         'pool_kernel_um': trial.suggest_float('pool_kernel_um', 3.0, 7.0),
         'max_match_distance': trial.suggest_float('max_match_distance', 3.0, 8.0),
         'det_loss_weight': trial.suggest_float('det_loss_weight', 0.5, 2.0),
@@ -372,7 +372,7 @@ def apply_search_params(params: dict[str, Any]) -> dict[str, Any]:
 
 def params_from_config(cfg: dict[str, Any]) -> dict[str, Any]:
     params: dict[str, Any] = {
-        'epochs': int(cfg.get('epochs', 50)),
+        'epochs': min(50, max(10, int(cfg.get('epochs', 50)))),
         'optimizer': str(cfg.get('optimizer', 'adamw')),
         'lr': float(cfg.get('lr', 1e-4)),
         'weight_decay': float(cfg.get('weight_decay', 0.01)),
@@ -408,7 +408,7 @@ def params_from_config(cfg: dict[str, Any]) -> dict[str, Any]:
         'extra_encoder': str(cfg.get('extra_encoder', 'none')),
         'extra_encoder_channels': int(cfg.get('extra_encoder_channels', 8)),
         'feature_sample': str(cfg.get('feature_sample', 'nearest')),
-        'window_size': int(cfg.get('window_size', 2)),
+        'window_size': min(4, max(2, int(cfg.get('window_size', 2)))),
         'pool_kernel_um': float(cfg.get('pool_kernel_um', 5.0)),
         'max_match_distance': float(cfg.get('max_match_distance', 5.0)),
         'det_loss_weight': float(cfg.get('det_loss_weight', 1.0)),

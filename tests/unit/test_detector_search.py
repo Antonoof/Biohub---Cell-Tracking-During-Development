@@ -77,7 +77,7 @@ def test_apply_search_params_derives_conditionals() -> None:
     assert overlay['batch_size'] == 16
     assert overlay['frame_cache_mb'] == 256.0
     assert overlay['batch_padding'] is True
-    assert overlay['pair_chunk_size'] == 256
+    assert overlay['pair_chunk_size'] == 512
     assert overlay['amp'] == 'bf16'
     assert overlay['seed'] == 42
     assert overlay['unet_layers'] == [32, 64, 128]
@@ -521,6 +521,21 @@ class _LastTrial(_FixedTrial):
 
     def suggest_int(self, name: str, low: int, high: int) -> int:
         return int(high)
+
+
+def test_search_window_and_epoch_bounds() -> None:
+    low = sample_search_params(_FixedTrial())
+    high = sample_search_params(_LastTrial())
+    assert low['window_size'] == 2
+    assert high['window_size'] == 4
+    assert low['epochs'] == 10
+    assert high['epochs'] == 50
+    p1 = params_from_config(load_base_config())
+    assert p1['window_size'] == 2
+    assert p1['epochs'] == 50
+    overlay = apply_search_params(high)
+    assert overlay['window_size'] == 4
+    assert overlay['epochs'] == 50
 
 
 def test_search_window_size_five_train_step() -> None:

@@ -1,5 +1,8 @@
+import math
+
 import torch
 import torch.nn.functional as F
+from scipy.spatial import KDTree
 
 DET_LOSSES = ('weighted_bce', 'focal', 'gaussian_heatmap')
 _HEATMAP_GRIDS: dict[tuple, torch.Tensor] = {}
@@ -67,7 +70,35 @@ def focal_detection_loss(
     alpha = torch.where(
         target == 1.0, (1.0 / n_pos).reshape(shape), (neg_weight / n_neg).reshape(shape)
     )
-    return (alpha * ((1 - p_t) ** focal_gamma) * bce).sum() / B
+    return (alpha * ((1 - p_t).clamp_min(1e-8) ** focal_gamma) * bce).sum() / B
+
+
+def _gaussian_heatmap_splat(coords, mask, depth, height, width, sigma):
+    batch = coords.shape[0]
+    device = coords.device
+    sigma = max(float(sigma), 1e-6)
+    radius = max(1, math.ceil(6.08 * sigma))
+    out = coords.new_zeros(batch, depth, height, width)
+    batch_idx, node_idx = mask.nonzero(as_tuple=True)
+    if batch_idx.numel() == 0:
+        return out
+    offs = torch.arange(-radius, radius + 1, device=device, dtype=torch.float32)
+    offset = torch.stack(torch.meshgrid(offs, offs, offs, indexing='ij'), dim=-1).reshape(-1, 3)
+    points = coords[batch_idx, node_idx]
+    dest = points.round().unsqueeze(1) + offset.unsqueeze(0)
+    zi, yi, xi = dest.unbind(-1)
+    valid = (zi >= 0) & (zi < depth) & (yi >= 0) & (yi < height) & (xi >= 0) & (xi < width)
+    dist_sq = (dest - points.unsqueeze(1)).square().sum(dim=-1)
+    values = torch.exp(-dist_sq / (2.0 * sigma * sigma)).masked_fill(~valid, 0.0)
+    sample = batch_idx.unsqueeze(1).expand_as(values)
+    index = (
+        (sample.long() * depth + zi.long().clamp(0, depth - 1)) * height
+        + yi.long().clamp(0, height - 1)
+    ) * width + xi.long().clamp(0, width - 1)
+    out.view(-1).scatter_reduce_(
+        0, index.reshape(-1), values.reshape(-1), reduce='amax', include_self=True
+    )
+    return out
 
 
 def gaussian_heatmap_target(coords, mask, spatial, sigma=1.0) -> torch.Tensor:
@@ -78,6 +109,9 @@ def gaussian_heatmap_target(coords, mask, spatial, sigma=1.0) -> torch.Tensor:
     with torch.autocast(device.type, enabled=False):
         if coords_f.shape[1] == 0:
             return coords_f.new_zeros(coords_f.shape[0], depth, height, width)
+        if device.type != 'cpu':
+            # Local max of nearest Gaussians; radius covers ~1e-8 tails.
+            return _gaussian_heatmap_splat(coords_f, mask_b, depth, height, width, sigma)
         key = (depth, height, width, device.type, device.index)
         grid = _HEATMAP_GRIDS.get(key)
         if grid is None or grid.device != device:
@@ -85,17 +119,18 @@ def gaussian_heatmap_target(coords, mask, spatial, sigma=1.0) -> torch.Tensor:
             yy = torch.arange(height, device=device, dtype=torch.float32)
             xx = torch.arange(width, device=device, dtype=torch.float32)
             grid = torch.stack(torch.meshgrid(zz, yy, xx, indexing='ij'), dim=-1).reshape(-1, 3)
+            # Trials can change resolution/device: never retain all their voxel grids.
+            _HEATMAP_GRIDS.clear()
             _HEATMAP_GRIDS[key] = grid
-        points = coords_f.masked_fill(~mask_b.unsqueeze(-1), 1.0e6)
         batch, size = coords_f.shape[0], grid.shape[0]
-        nearest_sq = coords_f.new_empty(batch, size)
-        chunk = 32768
-        for start in range(0, size, chunk):
-            stop = min(start + chunk, size)
-            delta = grid[start:stop].view(1, -1, 1, 3) - points.unsqueeze(1)
-            nearest_sq[:, start:stop] = delta.square().sum(dim=-1).min(dim=-1).values
-        empty = ~mask_b.any(dim=1)
-        nearest_sq = nearest_sq.masked_fill(empty.unsqueeze(-1), 0)
+        nearest_sq = coords_f.new_full((batch, size), float('inf'))
+        # Exact nearest Gaussian centre; O(V log N), without a B*V*N*3 broadcast.
+        grid_np = grid.numpy()
+        for b in range(batch):
+            points = coords_f[b, mask_b[b]].numpy()
+            if len(points):
+                distance, _ = KDTree(points, leafsize=16).query(grid_np, workers=1)
+                nearest_sq[b] = torch.from_numpy(distance * distance)
         sigma2 = 2.0 * max(float(sigma), 1e-6) ** 2
         return torch.exp(-nearest_sq / sigma2).reshape(batch, depth, height, width)
 

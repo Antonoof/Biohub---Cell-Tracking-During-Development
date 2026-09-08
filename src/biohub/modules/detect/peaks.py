@@ -22,19 +22,17 @@ def subvoxel_offsets(
     max_shift: float = 0.49,
 ) -> torch.Tensor:
     offsets = torch.zeros(peak_idx.shape, dtype=torch.float32, device=logits.device)
+    if peak_idx.numel() == 0:
+        return offsets
+    centre = peak_idx.long()
     for axis in range(3):
         size = logits.shape[axis]
         if size < 3:
             continue
-        interior = (peak_idx[:, axis] > 0) & (peak_idx[:, axis] < size - 1)
-        if not bool(interior.any()):
-            continue
-        rows = torch.nonzero(interior, as_tuple=False)[:, 0]
-        centre = peak_idx[rows]
         lower = centre.clone()
         upper = centre.clone()
-        lower[:, axis] = centre[:, axis] - 1
-        upper[:, axis] = centre[:, axis] + 1
+        lower[:, axis] = (centre[:, axis] - 1).clamp(0, size - 1)
+        upper[:, axis] = (centre[:, axis] + 1).clamp(0, size - 1)
         value_c = logits[centre[:, 0], centre[:, 1], centre[:, 2]].float()
         value_l = logits[lower[:, 0], lower[:, 1], lower[:, 2]].float()
         value_r = logits[upper[:, 0], upper[:, 1], upper[:, 2]].float()
@@ -44,7 +42,45 @@ def subvoxel_offsets(
             0.5 * (value_l - value_r) / denominator,
             torch.zeros_like(denominator),
         )
-        offsets[rows, axis] = shift.clamp(-max_shift, max_shift)
+        interior = (centre[:, axis] > 0) & (centre[:, axis] < size - 1)
+        offsets[:, axis] = torch.where(
+            interior, shift.clamp(-max_shift, max_shift), offsets[:, axis]
+        )
+    return offsets
+
+
+def subvoxel_offsets_batched(
+    logits: torch.Tensor,
+    peak_idx: torch.Tensor,
+    batch_idx: torch.Tensor,
+    max_shift: float = 0.49,
+) -> torch.Tensor:
+    offsets = torch.zeros(peak_idx.shape, dtype=torch.float32, device=logits.device)
+    if peak_idx.numel() == 0:
+        return offsets
+    centre = peak_idx.long()
+    batch_idx = batch_idx.long()
+    for axis in range(3):
+        size = logits.shape[axis + 1]
+        if size < 3:
+            continue
+        lower = centre.clone()
+        upper = centre.clone()
+        lower[:, axis] = (centre[:, axis] - 1).clamp(0, size - 1)
+        upper[:, axis] = (centre[:, axis] + 1).clamp(0, size - 1)
+        value_c = logits[batch_idx, centre[:, 0], centre[:, 1], centre[:, 2]].float()
+        value_l = logits[batch_idx, lower[:, 0], lower[:, 1], lower[:, 2]].float()
+        value_r = logits[batch_idx, upper[:, 0], upper[:, 1], upper[:, 2]].float()
+        denominator = value_l - 2.0 * value_c + value_r
+        shift = torch.where(
+            denominator.abs() > 1e-6,
+            0.5 * (value_l - value_r) / denominator,
+            torch.zeros_like(denominator),
+        )
+        interior = (centre[:, axis] > 0) & (centre[:, axis] < size - 1)
+        offsets[:, axis] = torch.where(
+            interior, shift.clamp(-max_shift, max_shift), offsets[:, axis]
+        )
     return offsets
 
 

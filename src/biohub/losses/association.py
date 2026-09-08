@@ -39,7 +39,7 @@ def compute_loss(
     probs = torch.softmax(logits, dim=0)
     bce = F.binary_cross_entropy(probs, target, reduction='none')
     p_t = probs * target + (1 - probs) * (1 - target)
-    loss = ((1 - p_t) ** focal_gamma) * bce
+    loss = ((1 - p_t).clamp_min(1e-8) ** focal_gamma) * bce
     weight = torch.ones_like(loss)
     weight[target.sum(dim=1) > 1] = div_weight
     return (loss * weight * mask).sum() / mask.sum().clamp(min=1)
@@ -71,7 +71,7 @@ def asl_softmax_loss(
     probs = torch.softmax(logits, dim=0)
     bce = F.binary_cross_entropy(probs, target, reduction='none')
     pos_term = ((1 - probs) ** 1.0) * bce
-    neg_term = (probs**focal_gamma) * bce
+    neg_term = (probs.clamp_min(1e-8) ** focal_gamma) * bce
     loss = torch.where(target > 0.5, pos_term, neg_term)
     weight = torch.ones_like(loss)
     weight[target.sum(dim=1) > 1] = div_weight
@@ -147,7 +147,7 @@ def _focal_batched(
     probs = torch.softmax(logits, dim=1)
     bce = F.binary_cross_entropy(probs, target, reduction='none')
     p_t = probs * target + (1 - probs) * (1 - target)
-    loss = ((1 - p_t) ** focal_gamma) * bce
+    loss = ((1 - p_t).clamp_min(1e-8) ** focal_gamma) * bce
     weight = torch.ones_like(loss)
     weight = weight.masked_fill((target.sum(dim=2) > 1).unsqueeze(-1), div_weight)
     denom = mask.sum(dim=(1, 2)).clamp(min=1)
@@ -183,7 +183,7 @@ def _asl_batched(
     probs = torch.softmax(logits, dim=1)
     bce = F.binary_cross_entropy(probs, target, reduction='none')
     pos_term = ((1 - probs) ** 1.0) * bce
-    neg_term = (probs**focal_gamma) * bce
+    neg_term = (probs.clamp_min(1e-8) ** focal_gamma) * bce
     loss = torch.where(target > 0.5, pos_term, neg_term)
     weight = torch.ones_like(loss)
     weight = weight.masked_fill((target.sum(dim=2) > 1).unsqueeze(-1), div_weight)
@@ -278,6 +278,49 @@ def evaluate_pair(
     total = mask.sum().item()
 
     return loss, int(correct), int(total)
+
+
+def evaluate_pairs_batched(logits, target, src_mask, tgt_mask, edge_threshold=0.5):
+    """Sum existing window-proxy statistics on device; no dense matrices sent to CPU.
+
+    Columns: loss sum, correct, total, edge TP/FP/FN, division TP/FP/FN.
+    This preserves pair_event_counts semantics; it is NOT the official graph scorer.
+    """
+    if logits.numel() == 0:
+        return torch.zeros(9, device=logits.device, dtype=torch.float64)
+    valid = src_mask.unsqueeze(-1) & tgt_mask.unsqueeze(1)
+    safe = logits.float().masked_fill(~src_mask.unsqueeze(-1), -float('inf'))
+    safe = torch.where(src_mask.any(1)[:, None, None], safe, 0.0)
+    probs = safe.softmax(dim=1).masked_fill(~valid, 0.0)
+    target = target.float().masked_fill(~valid, 0.0)
+    active = _active_mask_batched(target) & valid
+    bce = F.binary_cross_entropy(probs, target, reduction='none')
+    p_t = probs * target + (1 - probs) * (1 - target)
+    loss = (
+        (
+            ((1 - p_t).clamp_min(1e-8).square() * bce * active).sum((1, 2))
+            / active.sum((1, 2)).clamp_min(1)
+        )
+        .double()
+        .sum()
+    )
+    pred = (probs > edge_threshold) & valid
+    gt = (target > 0.5) & valid
+    pred_div = pred.sum(-1) > 1
+    gt_div = gt.sum(-1) > 1
+    return torch.stack(
+        [
+            loss,
+            ((pred == target) & active).sum(),
+            active.sum(),
+            (pred & gt).sum(),
+            (pred & ~gt).sum(),
+            (gt & ~pred).sum(),
+            (pred_div & gt_div).sum(),
+            (pred_div & ~gt_div).sum(),
+            (gt_div & ~pred_div).sum(),
+        ]
+    )
 
 
 def pair_event_counts(

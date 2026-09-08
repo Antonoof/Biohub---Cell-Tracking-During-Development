@@ -16,8 +16,15 @@ def noise_augment(
     if skip_augment(rng, proba):
         return imgs, coords, masks
     if isinstance(rng, np.random.Generator):
+        seed = int(rng.integers(0, 2**31 - 1))
+        if imgs.device.type == 'cpu' and imgs.dtype == torch.float32 and not imgs.requires_grad:
+            # Child RNG preserves the parent stream used by subsequent augmentations.
+            noise_np = np.random.default_rng(seed).standard_normal(imgs.shape, dtype=np.float32)
+            noise_np *= np.float32(std)
+            noise_np += imgs.numpy()
+            return torch.from_numpy(noise_np), coords, masks
         generator = torch.Generator(device='cpu')
-        generator.manual_seed(int(rng.integers(0, 2**31 - 1)))
+        generator.manual_seed(seed)
         noise = torch.randn(imgs.shape, generator=generator, dtype=torch.float32) * float(std)
         return imgs + noise.to(device=imgs.device, dtype=imgs.dtype), coords, masks
     noise = np.asarray(rng.normal(0.0, std, size=tuple(imgs.shape)), dtype=np.float32)

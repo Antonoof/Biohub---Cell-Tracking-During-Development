@@ -13,7 +13,7 @@ import tracksdata as td
 import zarr
 from torch.utils.data import Dataset, Sampler, default_collate
 
-from biohub.data.volume import invert_time_graph, open_dataset
+from biohub.data.volume import open_dataset
 from biohub.losses.association import compute_gt_transition_matrix
 from biohub.losses.detection import gaussian_heatmap_target
 from biohub.utils.seed import SharedEpoch, sample_numpy_rng
@@ -40,7 +40,6 @@ class VideoMeta:
 
 
 _ZARR_ARRAYS: dict[str, Any] = {}
-_MASK_MUTATING_AUGS = frozenset({'translate_augment', 'scale_augment'})
 
 
 def _zarr_array(path: Path):
@@ -219,10 +218,6 @@ class FrameWindowDataset(Dataset):
         self._frames: OrderedDict[tuple, torch.Tensor] = OrderedDict()
         self._frame_bytes = 0
         self.heatmap_sigma = heatmap_sigma
-        self._repack_masks = any(
-            getattr(getattr(aug, 'func', aug), '__name__', '') in _MASK_MUTATING_AUGS
-            for aug in self.augmentations
-        )
         self._meta_tensors: dict[str, tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = {}
 
         self._data: list[tuple[FrameWindowData, VideoMeta]] = []
@@ -265,7 +260,8 @@ class FrameWindowDataset(Dataset):
             tensor = torch.from_numpy(np.ascontiguousarray(raw))
             if tensor.dtype != torch.float32:
                 tensor = tensor.to(dtype=torch.float32)
-            result = ((tensor - vm.q_low) / (vm.q_high - vm.q_low + 1e-6)).clamp(min=0.0)
+            # Subtraction owns its storage; subsequent passes can reuse it safely.
+            result = (tensor - vm.q_low).div_(vm.q_high - vm.q_low + 1e-6).clamp_(min=0.0)
             if result.shape[1:] != target_shape:
                 result = F.interpolate(
                     result[:, None], size=target_shape, mode='trilinear', align_corners=False
@@ -297,9 +293,10 @@ class FrameWindowDataset(Dataset):
         if self.augmentations:
             rng = sample_numpy_rng(self.seed, self.epoch.get(), index)
             c, m = meta['coords'], meta['masks']
+            original_masks = m.clone()
             for aug in self.augmentations:
                 imgs, c, m = aug(imgs, c, m, rng=rng)
-            if self._repack_masks and not torch.equal(m, meta['masks']):
+            if not torch.equal(m, original_masks):
                 meta = compact_window(meta, c, m)
             else:
                 meta = {**meta, 'coords': c, 'masks': m}
@@ -358,6 +355,10 @@ def load_dataset_windows(
     max_frames: int | None = None,
     downsample: tuple[int, ...] = (1, 1, 1),
 ) -> tuple[VideoMeta, list[FrameWindowData]]:
+    if invert_time:
+        raise ValueError(
+            'invert_time is unsupported: image frames and GT must be reversed together'
+        )
     ds = open_dataset(
         ds_path, normalize=False, require_tracks=True, load_image=False, downsample=downsample
     )
@@ -369,9 +370,6 @@ def load_dataset_windows(
     voxel_size = tuple(s * d for s, d in zip(ds.scale, downsample))
     if image_shape is None or tracks is None or ds.zarr_path is None:
         raise ValueError(f'Missing tracks or image shape for {ds_path}')
-
-    if invert_time:
-        tracks = invert_time_graph(tracks, max_t=image_shape[0])
 
     if max_frames is not None:
         image_shape = (min(max_frames, image_shape[0]), *image_shape[1:])
