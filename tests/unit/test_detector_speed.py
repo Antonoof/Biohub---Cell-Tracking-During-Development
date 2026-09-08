@@ -1,0 +1,390 @@
+from copy import deepcopy
+from pathlib import Path
+
+import numpy as np
+import pytest
+import torch
+from torch.utils.data import DataLoader, Dataset
+
+from biohub.augmentations.blur import blur_augment
+from biohub.augmentations.rot90 import rot90_augment
+from biohub.data.windows import (
+    FrameWindowData,
+    FrameWindowDataset,
+    VideoMeta,
+    collate_windows,
+    compact_window,
+    pad_window,
+)
+from biohub.features.position import POS_EMBED_DIM
+from biohub.losses.association import association_loss
+from biohub.losses.aux import division_aux_loss
+from biohub.losses.detection import _binary_target, gaussian_heatmap_target
+from biohub.models.detector import UNetNodeTransformer
+from biohub.models.node_transformer import SimpleNodeTransformer
+from biohub.models.temporal_unet import TemporalUNet3D
+from biohub.train.assign import greedy_assign, match_peaks
+from biohub.train.detector import build_matched_edge_targets, detector_optimizer_step, train_epoch
+from biohub.train.optim import _muon_update
+from biohub.train.schedule import ModelEma
+
+
+def _window(n=3, start=0):
+    return FrameWindowData(
+        start, 2, [torch.zeros(n, 32)] * 2, [torch.ones(n, 3)] * 2, [n, n], [torch.eye(n)]
+    )
+
+
+class RepeatedSample(Dataset):
+    def __init__(self, sample, count=1):
+        self.sample = sample
+        self.count = count
+        self.reads = 0
+
+    def __len__(self):
+        return self.count
+
+    def __getitem__(self, index):
+        self.reads += 1
+        return self.sample
+
+
+@pytest.mark.parametrize('k', [1, 2, 3])
+def test_rot90_all_turns_track_image(k):
+    seed = next(s for s in range(100) if np.random.default_rng(s).integers(0, 4) == k)
+    image = torch.zeros(1, 1, 5, 5)
+    image[0, 0, 1, 3] = 1
+    coords = torch.tensor([[[0.0, 1.0, 3.0]]])
+    rotated, points, _ = rot90_augment(
+        image, coords, torch.ones(1, 1, dtype=torch.bool), rng=np.random.default_rng(seed)
+    )
+    z, y, x = points[0, 0].long().tolist()
+    assert rotated[0, z, y, x] == 1
+
+
+def test_compact_window_reindexes_both_edge_axes():
+    meta = pad_window(_window(), 5)
+    mask = torch.tensor([[False, True, True, False, False], [True, False, True, False, False]])
+    compact = compact_window(meta, meta['coords'], mask)
+    assert compact['masks'].tolist() == [[True, True, False, False, False]] * 2
+    assert compact['node_counts'].tolist() == [2, 2]
+    torch.testing.assert_close(
+        compact['targets'][0, :2, :2], torch.tensor([[0.0, 0.0], [0.0, 1.0]])
+    )
+    assert meta['targets'][0].trace() == 3
+
+
+def test_binary_target_handles_nonprefix_masks():
+    coords = torch.tensor([[[0.0, 0.0, 0.0], [1.0, 1.0, 1.0], [2.0, 2.0, 2.0]]])
+    _, target = _binary_target(
+        torch.zeros(1, 1, 3, 3, 3), coords, torch.tensor([[False, True, False]])
+    )
+    assert target.sum() == 1 and target[0, 1, 1, 1] == 1
+
+
+def test_soft_matching_accepts_padded_gt_and_hard_gather_matches_gemm():
+    gt = torch.zeros(1, 7, 7)
+    gt[0, :2, :3] = torch.tensor([[1.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+    left, right = torch.tensor([1, -1, 0]), torch.tensor([2, 0])
+    hard = build_matched_edge_targets([left], [right], gt, 4, 3)
+    torch.testing.assert_close(hard[0, :3, :2], torch.tensor([[1.0, 0.0], [0.0, 0.0], [0.0, 1.0]]))
+    c0, c1 = torch.rand(3, 2), torch.rand(2, 3)
+    soft = build_matched_edge_targets(
+        [left], [right], gt, 4, 3, match_soft=True, couplings_t=[c0], couplings_t1=[c1]
+    )
+    torch.testing.assert_close(soft[0, :3, :2], c0 @ gt[0, :2, :3] @ c1.T)
+
+
+def test_sinkhorn_rectangular_transport_is_subprobability():
+    _, coupling = match_peaks(torch.zeros(2, 7), 5, kind='sinkhorn')
+    assert (coupling.sum(1) <= 1 + 1e-6).all()
+    assert (coupling.sum(0) <= 1 + 1e-6).all()
+
+
+def test_vectorized_greedy_matches_loop_including_ties():
+    for seed in range(10):
+        torch.manual_seed(seed)
+        dists = torch.randint(0, 8, (31, 17)).float()
+        val, idx = dists.min(1)
+        expected = torch.full((31,), -1)
+        used = set()
+        for row in val.argsort().tolist():
+            col = int(idx[row])
+            if val[row] <= 4 and col not in used:
+                expected[row] = col
+                used.add(col)
+        assert torch.equal(greedy_assign(dists, 4), expected)
+
+
+@pytest.mark.parametrize('kind', ['mlp', 'bilinear'])
+@pytest.mark.parametrize('geom', ['rel', 'dist', 'rel_dist'])
+def test_factorized_pair_head_output_and_gradients(kind, geom):
+    torch.manual_seed(1)
+    model = SimpleNodeTransformer(4, 8, 2, 1, dropout=0, pair_head=kind, pair_geom=geom)
+    ref = deepcopy(model).eval()
+    values = [
+        torch.randn(2, 3, 8),
+        torch.randn(2, 5, 8),
+        torch.randn(2, 3, 3),
+        torch.randn(2, 5, 3),
+    ]
+    left = [v.clone().requires_grad_() for v in values]
+    right = [v.clone().requires_grad_() for v in values]
+    actual = model._pair_scores(*left)
+    expected = ref._pair_scores(*right)
+    torch.testing.assert_close(actual, expected, atol=2e-6, rtol=2e-5)
+    actual.sum().backward()
+    expected.sum().backward()
+    for a, b in zip(
+        left + list(model.pair_mlp.parameters()),
+        right + list(ref.pair_mlp.parameters()),
+        strict=True,
+    ):
+        torch.testing.assert_close(a.grad, b.grad, atol=3e-6, rtol=2e-5)
+
+
+def test_checkpoint_batchnorm_buffers_and_gradients_match():
+    torch.manual_seed(2)
+    model = TemporalUNet3D(1, 4, layers=(8, 16), temporal_mix='none')
+    checkpointed = deepcopy(model)
+    checkpointed.gradient_checkpointing = True
+    x = torch.randn(2, 2, 1, 4, 8, 8)
+    out = model(x)
+    chk = checkpointed(x)
+    out.square().mean().backward()
+    chk.square().mean().backward()
+    torch.testing.assert_close(out, chk)
+    for key, val in model.state_dict().items():
+        torch.testing.assert_close(val, checkpointed.state_dict()[key])
+    for a, b in zip(model.parameters(), checkpointed.parameters(), strict=True):
+        torch.testing.assert_close(a.grad, b.grad)
+
+
+def test_frame_cache_bounded_matches_uncached_and_batch_padding(monkeypatch):
+    reads = []
+    raw = np.arange(5 * 4 * 8 * 8, dtype=np.float32).reshape(5, 4, 8, 8) / 1000
+
+    class Array:
+        def __getitem__(self, key):
+            reads.append(key)
+            return raw[key]
+
+    monkeypatch.setattr('biohub.data.windows._zarr_array', lambda _: Array())
+    vm = VideoMeta(Path('/fake'), raw.shape, (1, 1, 1), (1.0, 1.0, 1.0), 0.0, 1.0)
+    data = [(vm, [_window(2, 0), _window(3, 1), _window(2, 3)])]
+    cached = FrameWindowDataset(
+        data, max_nodes=99, batch_padding=True, frame_cache_mb=2 * raw[0].nbytes / 1024**2
+    )
+    uncached = FrameWindowDataset(data, batch_padding=True)
+    first = cached[0]
+    cached[0]['imgs'].zero_()
+    torch.testing.assert_close(first['imgs'], cached[0]['imgs'])
+    assert len(reads) == 2
+    for i in range(3):
+        torch.testing.assert_close(cached[i]['imgs'], uncached[i]['imgs'])
+        assert cached._frame_bytes <= cached.frame_cache_bytes
+    batch = collate_windows([first, cached[1]])
+    assert batch['targets'].shape == (2, 1, 3, 3)
+    assert batch['coords'].shape == (2, 2, 3, 3)
+
+
+def test_gaussian_nearest_distance_equals_dense_max():
+    torch.manual_seed(4)
+    coords = torch.rand(2, 7, 3) * 6
+    mask = torch.rand(2, 7) > 0.3
+    shape = (8, 9, 10)
+    grid = torch.stack(torch.meshgrid(*(torch.arange(s) for s in shape), indexing='ij'), -1)
+    expected = []
+    for c, m in zip(coords, mask, strict=True):
+        blobs = torch.exp(-((grid[None] - c[m, None, None, None]) ** 2).sum(-1) / (2 * 1.3**2))
+        expected.append(blobs.max(0).values)
+    actual = gaussian_heatmap_target(coords, mask, shape, 1.3)
+    torch.testing.assert_close(actual, torch.stack(expected), atol=2e-7, rtol=2e-6)
+
+
+def test_separable_blur_matches_full_kernel():
+    import math
+
+    import torch.nn.functional as F
+
+    imgs = torch.rand(2, 3, 11, 13)
+    sigma = 1.3
+    r = math.ceil(3 * sigma)
+    x = torch.arange(-r, r + 1).float()
+    k = torch.exp(-0.5 * (x / sigma) ** 2)
+    k /= k.sum()
+    expected = F.conv2d(
+        F.pad(imgs.reshape(-1, 1, 11, 13), (r,) * 4, mode='replicate'),
+        torch.outer(k, k)[None, None],
+    ).reshape_as(imgs)
+    actual, _, _ = blur_augment(
+        imgs,
+        torch.zeros(2, 1, 3),
+        torch.ones(2, 1, dtype=torch.bool),
+        sigma=sigma,
+        rng=np.random.default_rng(1),
+    )
+    torch.testing.assert_close(actual, expected, atol=1e-6, rtol=1e-6)
+
+
+@pytest.mark.parametrize('kind', ['weighted_bce', 'focal', 'gaussian_heatmap'])
+def test_train_matched_sinkhorn_soft_with_aux_losses(kind):
+    torch.manual_seed(7)
+    unet = TemporalUNet3D(1, 4, layers=(4, 8), temporal_mix='conv')
+    model = UNetNodeTransformer(unet, 4, 32, hidden_dim=8, n_heads=2, n_blocks=1, dropout=0)
+    sample = {
+        **pad_window(_window(2), 7),
+        'imgs': torch.rand(2, 4, 8, 8),
+        'image_shape': torch.tensor([2, 4, 8, 8]),
+        'voxel_size': torch.ones(3),
+        'downsample': torch.ones(3),
+    }
+    if kind == 'gaussian_heatmap':
+        sample['heatmap_target'] = gaussian_heatmap_target(
+            sample['coords'], sample['masks'], (4, 8, 8)
+        )
+    opt = torch.optim.AdamW(model.parameters(), lr=0.001)
+    losses = train_epoch(
+        model,
+        DataLoader(RepeatedSample(sample), batch_size=1),
+        opt,
+        torch.device('cpu'),
+        det_loss_kind=kind,
+        match_assign='sinkhorn',
+        match_soft=True,
+        train_peak_topk=3,
+        aux_division_weight=0.1,
+        aux_contrastive_weight=0.1,
+        aux_offset_weight=0.1,
+    )
+    assert all(np.isfinite(losses))
+
+
+def test_train_epoch_flushes_short_accumulation_and_does_not_cache_batches(monkeypatch):
+    torch.manual_seed(3)
+    unet = TemporalUNet3D(1, 4, layers=(4, 8), temporal_mix='none')
+    model = UNetNodeTransformer(
+        unet, 4, 4 * POS_EMBED_DIM, hidden_dim=8, n_heads=2, n_blocks=1, dropout=0
+    )
+    sample = {
+        **pad_window(_window(2), 2),
+        'imgs': torch.rand(2, 4, 8, 8),
+        'image_shape': torch.tensor([2, 4, 8, 8]),
+        'voxel_size': torch.ones(3),
+        'downsample': torch.ones(3),
+    }
+
+    ds = RepeatedSample(sample, 2)
+    loader = DataLoader(ds, batch_size=1)
+    opt = torch.optim.SGD(model.parameters(), lr=0.001)
+    steps = []
+    original_step = opt.step
+
+    def step(*args, **kwargs):
+        steps.append(1)
+        return original_step(*args, **kwargs)
+
+    monkeypatch.setattr(opt, 'step', step)
+    losses = train_epoch(
+        model, loader, opt, torch.device('cpu'), max_iters=3, accum_steps=2, target_mode='gt_nodes'
+    )
+    assert len(steps) == 2
+    assert ds.reads == 3  # cycle(loader) used to reuse its first cached batch.
+    assert all(np.isfinite(losses))
+    assert all(p.grad is None for p in model.parameters())
+
+
+def test_scaler_overflow_skips_optimizer_and_ema_then_recovers():
+    model = torch.nn.Linear(2, 1)
+    opt = torch.optim.SGD(model.parameters(), lr=0.01)
+    scaler = torch.amp.GradScaler('cpu', init_scale=8.0)
+    ema = ModelEma(model, 0.5)
+    before = deepcopy(model.state_dict())
+    loss = model(torch.ones(1, 2)).sum()
+    scaler.scale(loss).backward()
+    assert model.weight.grad is not None
+    model.weight.grad.fill_(float('inf'))
+    detector_optimizer_step(model, opt, scaler, 1.0, ema)
+    assert scaler.get_scale() == 4.0
+    for key, value in before.items():
+        torch.testing.assert_close(model.state_dict()[key], value)
+        torch.testing.assert_close(ema.state_dict()[key], value)
+    scaler.scale(model(torch.ones(1, 2)).sum()).backward()
+    detector_optimizer_step(model, opt, scaler, 1.0, ema)
+    assert not torch.equal(model.weight, before['weight'])
+
+
+def test_muon_conv3d_equals_flattened_matrix_update():
+    grad = torch.randn(8, 4, 3, 3, 3)
+    flat = grad.flatten(1).clone()
+    actual = _muon_update(grad.clone(), torch.zeros_like(grad))
+    expected = _muon_update(flat, torch.zeros_like(flat))
+    assert actual.shape == expected.shape
+    torch.testing.assert_close(actual, expected)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason='requires CUDA autocast')
+@pytest.mark.parametrize('dtype', [torch.float16, torch.bfloat16])
+def test_cuda_amp_bce_losses_backward(dtype):
+    if dtype == torch.bfloat16 and not torch.cuda.is_bf16_supported():
+        pytest.skip()
+    logits = torch.randn(3, 4, device='cuda', dtype=dtype, requires_grad=True)
+    target = torch.zeros(3, 4, device='cuda')
+    target[0, :2] = 1
+    with torch.autocast('cuda', dtype=dtype):
+        loss = sum(
+            association_loss(kind, logits, target)
+            for kind in ('focal_softmax', 'ce_softmax', 'asl_softmax')
+        )
+        loss = loss + division_aux_loss(logits, target)
+    loss.backward()
+    assert logits.grad is not None
+    assert torch.isfinite(logits.grad).all()
+
+
+def test_epoch_callback_and_fixed_validation_protocol(tmp_path, monkeypatch):
+    from biohub.train import detector
+
+    vm = VideoMeta(Path('/fake'), (3, 4, 8, 8), (1, 1, 1), (1.0, 1.0, 1.0), 0.0, 1.0)
+    monkeypatch.setattr(detector, 'load_dataset_windows', lambda *a, **k: (vm, [_window(2)]))
+    monkeypatch.setattr(detector, 'train_epoch', lambda *a, **k: (1.0, 1.0))
+    eval_kwargs = []
+
+    def evaluate(*args, **kwargs):
+        eval_kwargs.append(kwargs)
+        return {key: 0.0 for key in detector.CHECKPOINT_METRICS} | {'loss': 1.0}
+
+    monkeypatch.setattr(detector, 'evaluate', evaluate)
+    epochs = []
+
+    def callback(epoch, metrics):
+        epochs.append(epoch)
+        return False
+
+    detector.train(
+        tmp_path,
+        0,
+        tmp_path / 'splits.json',
+        tmp_path,
+        debug_video=Path('/fake'),
+        n_epochs=5,
+        num_workers=0,
+        unet_layers=[4, 8],
+        unet_out_channels=4,
+        hidden_dim=8,
+        n_heads=2,
+        n_blocks=1,
+        device='cpu',
+        match_assign='sinkhorn',
+        match_soft=True,
+        max_match_distance=8,
+        train_peak_topk=64,
+        epoch_callback=callback,
+    )
+    assert epochs == [0]
+    assert len(eval_kwargs) == 1
+    assert eval_kwargs[0]['max_match_distance'] == 5.0
+    assert eval_kwargs[0]['match_assign'] == 'greedy'
+    assert eval_kwargs[0]['match_soft'] is False
+    assert eval_kwargs[0]['train_peak_topk'] == 0
+    assert (tmp_path / 'unet_transformer/split_0/edge_predictor_best.pth').exists()

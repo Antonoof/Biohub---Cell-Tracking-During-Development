@@ -95,6 +95,15 @@ def association_loss(
     focal_gamma: float = 2.0,
     div_weight: float = 1.0,
 ) -> torch.Tensor:
+    # BCE(probabilities) is forbidden inside CUDA autocast. Keep probability
+    # reductions in FP32 even when the encoder/attention run in BF16/FP16.
+    with torch.autocast(logits.device.type, enabled=False):
+        return _association_loss_fp32(
+            kind, logits.float(), target.float(), focal_gamma=focal_gamma, div_weight=div_weight
+        )
+
+
+def _association_loss_fp32(kind, logits, target, *, focal_gamma, div_weight):
     if kind == 'focal_softmax':
         return compute_loss(logits, target, focal_gamma=focal_gamma, div_weight=div_weight)
     if kind == 'ce_softmax':
@@ -135,9 +144,11 @@ def compute_batch_loss(
 ) -> torch.Tensor:
     B = logits.shape[0]
     losses = []
+    source_counts = mask_t.sum(dim=1).tolist()
+    target_counts = mask_t1.sum(dim=1).tolist()
     for b in range(B):
-        nt = mask_t[b].sum().item()
-        nt1 = mask_t1[b].sum().item()
+        nt = int(source_counts[b])
+        nt1 = int(target_counts[b])
         pair = logits[b, :nt, :nt1]
         if coords_src is not None and coords_tgt is not None:
             pair = _gate_logits(pair, coords_src[b, :nt], coords_tgt[b, :nt1], gate_distance)

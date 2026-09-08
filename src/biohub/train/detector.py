@@ -1,8 +1,8 @@
 import argparse
 import json
 import time
+from collections.abc import Callable
 from functools import partial
-from itertools import cycle
 from pathlib import Path
 
 import torch
@@ -32,6 +32,7 @@ from biohub.data.windows import (
     FrameWindowData,
     FrameWindowDataset,
     VideoMeta,
+    collate_windows,
     load_dataset_windows,
 )
 from biohub.features.position import POS_EMBED_DIM, pos_embed_torch
@@ -62,6 +63,9 @@ from biohub.validation.splits import detector_fold_names, detector_validation_ro
 
 DEFAULT_METHOD = 'unet_transformer'
 DEFAULT_AUGMENTATIONS = [brightness_augment, flip_augment]
+# Matching is a measurement rule, not a tunable model parameter.
+VALIDATION_MATCH_DISTANCE = 5.0
+VALIDATION_MATCH_ASSIGN = 'greedy'
 CHECKPOINT_METRICS = (
     'acc_times_recall',
     'competition_metric',
@@ -95,9 +99,34 @@ def require_finite(tensor: torch.Tensor, what: str) -> None:
 
 
 def require_finite_grads(model: nn.Module) -> None:
-    for name, param in model.named_parameters():
-        if param.grad is not None:
-            require_finite(param.grad, f'Detector gradient {name}')
+    grads = [(name, p.grad) for name, p in model.named_parameters() if p.grad is not None]
+    # One host synchronization on the healthy path, not one per parameter.
+    if grads and not torch.stack([torch.isfinite(g).all() for _, g in grads]).all():
+        for name, grad in grads:
+            require_finite(grad, f'Detector gradient {name}')
+
+
+def detector_optimizer_step(model, optimizer, scaler, grad_clip_norm, ema=None) -> None:
+    updated = True
+    if scaler is not None:
+        scaler.unscale_(optimizer)
+        if grad_clip_norm > 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_norm)
+        old_scale = scaler.get_scale()
+        scaler.step(optimizer)  # Non-finite scaled gradients are handled by GradScaler.
+        scaler.update()
+        updated = scaler.get_scale() >= old_scale
+    else:
+        if grad_clip_norm > 0:
+            torch.nn.utils.clip_grad_norm_(
+                model.parameters(), grad_clip_norm, error_if_nonfinite=True
+            )
+        else:
+            require_finite_grads(model)
+        optimizer.step()
+    optimizer.zero_grad(set_to_none=True)
+    if ema is not None and updated:
+        ema.update(model)
 
 
 def prepare_detector_output(output_dir: Path, *, overwrite: bool) -> None:
@@ -199,7 +228,7 @@ def detect_and_match(
             batch_ids = torch.cat([batch_ids, *extra_b])
             peak_coords = torch.cat([peak_coords, *extra_c])
 
-    nt_per_sample = mask.sum(dim=1).long()
+    nt_per_sample = mask.sum(dim=1).tolist()
 
     sample_matches: list[torch.Tensor] = []
     sample_couplings: list[torch.Tensor] = []
@@ -210,7 +239,7 @@ def detect_and_match(
         sel = batch_ids == b
         det_b = peak_coords[sel]
         n_det = det_b.shape[0]
-        nt = int(nt_per_sample[b].item())
+        nt = int(nt_per_sample[b])
         gt_b = gt_coords[b, :nt]
         n_gt = gt_b.shape[0]
 
@@ -285,12 +314,23 @@ def build_matched_edge_targets(
         n_gt_t, n_gt_t1 = gt_trans.shape
         left = couplings_t[b] if match_soft and couplings_t is not None else match_t[b]
         right = couplings_t1[b] if match_soft and couplings_t1 is not None else match_t1[b]
+        if left.ndim == right.ndim == 1:
+            # Hard matching is indexing, not two dense one-hot GEMMs.
+            if n_gt_t and n_gt_t1:
+                values = gt_trans[left.clamp(min=0)[:, None], right.clamp(min=0)[None, :]]
+                valid = (left >= 0)[:, None] & (right >= 0)[None, :]
+                target[b, : len(left), : len(right)] = values.masked_fill(~valid, 0)
+            continue
         c0 = _as_coupling(left, n_gt_t)
         c1 = _as_coupling(right, n_gt_t1)
         n_t, n_t1 = c0.shape[0], c1.shape[0]
         if n_t == 0 or n_t1 == 0:
             continue
-        target[b, :n_t, :n_t1] = c0 @ gt_trans @ c1.T
+        # Couplings contain actual GT nodes, while gt_trans includes padding.
+        with torch.autocast(device.type, enabled=False):
+            target[b, :n_t, :n_t1] = (
+                c0.float() @ gt_trans[: c0.shape[1], : c1.shape[1]].float() @ c1.float().T
+            )
 
     return target
 
@@ -338,19 +378,22 @@ def train_epoch(
     dtype = amp_dtype(amp_kind)
     autocast_on = dtype is not None and device.type == 'cuda'
 
-    if max_iters is not None:
-        batch_iter = cycle(loader)
-        pbar = tqdm(range(max_iters), desc='  iters', leave=False, disable=False)
-    else:
-        batch_iter = iter(loader)
-        pbar = tqdm(range(len(loader)), desc='  batches', leave=False, disable=False)
+    n_steps = int(max_iters) if max_iters is not None else len(loader)
+    if n_steps <= 0 or len(loader) == 0:
+        raise ValueError('Detector training requires a nonempty loader and positive steps')
+    batch_iter = iter(loader)
+    pbar = tqdm(range(n_steps), desc='  batches', leave=False, disable=False)
 
     t_data, t_forward, t_backward = 0.0, 0.0, 0.0
     t0 = time.perf_counter()
-    optimizer.zero_grad()
+    optimizer.zero_grad(set_to_none=True)
 
     for step_i, _ in enumerate(pbar):
-        batch = next(batch_iter)
+        try:
+            batch = next(batch_iter)
+        except StopIteration:
+            batch_iter = iter(loader)
+            batch = next(batch_iter)
 
         imgs = batch['imgs'].to(device, dtype=torch.float32, non_blocking=True)
         coords = batch['coords'].to(device, non_blocking=True)
@@ -383,6 +426,9 @@ def train_epoch(
                     neg_weight=det_neg_weight,
                     heatmap_sigma=det_heatmap_sigma,
                     focal_gamma=edge_focal_gamma,
+                    heatmap_target=(
+                        batch['heatmap_target'][:, i] if 'heatmap_target' in batch else None
+                    ),
                 )
                 for i in range(W)
             ]
@@ -487,10 +533,13 @@ def train_epoch(
                         gate_distance=edge_gate_distance,
                     )
                 )
+                if aux_division_weight > 0 or aux_contrastive_weight > 0:
+                    src_counts = frame_det[i][2].sum(dim=1).tolist()
+                    tgt_counts = frame_det[i + 1][2].sum(dim=1).tolist()
                 if aux_division_weight > 0:
                     for b in range(B):
-                        ns_b = int(frame_det[i][2][b].sum().item())
-                        nt_b = int(frame_det[i + 1][2][b].sum().item())
+                        ns_b = int(src_counts[b])
+                        nt_b = int(tgt_counts[b])
                         aux_div.append(
                             division_aux_loss(
                                 edge_logits[b, :ns_b, :nt_b],
@@ -499,8 +548,8 @@ def train_epoch(
                         )
                 if aux_contrastive_weight > 0 and query is not None and key is not None:
                     for b in range(B):
-                        ns_b = int(frame_det[i][2][b].sum().item())
-                        nt_b = int(frame_det[i + 1][2][b].sum().item())
+                        ns_b = int(src_counts[b])
+                        nt_b = int(tgt_counts[b])
                         aux_con.append(
                             contrastive_aux_loss(
                                 query[b, :ns_b],
@@ -527,7 +576,9 @@ def train_epoch(
                     for i in range(W)
                 ]
                 loss = loss + aux_offset_weight * (sum(offset_terms) / W)
-            loss = loss / accum
+            # Average the final short accumulation group by its actual size.
+            group_size = min(accum, n_steps - (step_i // accum) * accum)
+            loss = loss / group_size
 
         require_finite(loss, 'Detector training loss')
 
@@ -538,21 +589,8 @@ def train_epoch(
             scaler.scale(loss).backward()
         else:
             loss.backward()
-        if (step_i + 1) % accum == 0:
-            require_finite_grads(model)
-            if scaler is not None:
-                if grad_clip_norm > 0:
-                    scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_norm)
-                scaler.step(optimizer)
-                scaler.update()
-            else:
-                if grad_clip_norm > 0:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_norm)
-                optimizer.step()
-            optimizer.zero_grad()
-            if ema is not None:
-                ema.update(model)
+        if (step_i + 1) % accum == 0 or step_i + 1 == n_steps:
+            detector_optimizer_step(model, optimizer, scaler, grad_clip_norm, ema)
 
         t3 = time.perf_counter()
         t_backward += t3 - t2
@@ -834,7 +872,13 @@ def train(
     train_peak_topk: int = 0,
     edge_gate_distance: float = 0.0,
     offset_target: str = 'frac',
+    batch_padding: bool = True,
+    frame_cache_mb: float = 0.0,
+    epoch_callback: Callable[[int, dict[str, float]], bool | None] | None = None,
 ) -> UNetNodeTransformer:
+    if seed is not None:
+        # Direct train() and CLI calls must seed model initialization as well as workers.
+        seed_everything(int(seed), deterministic=torch.are_deterministic_algorithms_enabled())
     if unet_layers is None:
         unet_layers = [32, 64, 128]
     checkpoint_score(checkpoint_metric, {name: 0.0 for name in CHECKPOINT_METRICS})
@@ -963,6 +1007,12 @@ def train(
         'edge_loss': edge_loss,
         'det_loss': det_loss,
         'target_mode': target_mode,
+        'validation_match_distance': VALIDATION_MATCH_DISTANCE,
+        'validation_match_assign': VALIDATION_MATCH_ASSIGN,
+        'validation_match_soft': False,
+        'validation_peak_topk': 0,
+        'batch_padding': batch_padding,
+        'frame_cache_mb': frame_cache_mb,
     }
     (output_dir / 'config.json').write_text(json.dumps(model_config, indent=2) + '\n')
 
@@ -972,8 +1022,17 @@ def train(
         max_nodes=max_nodes,
         augmentations=augmentations,
         seed=dataset_seed,
+        batch_padding=batch_padding,
+        frame_cache_mb=frame_cache_mb,
+        heatmap_sigma=det_heatmap_sigma if det_loss == 'gaussian_heatmap' else None,
     )
-    test_ds = FrameWindowDataset(test_video_data, max_nodes=max_nodes, seed=dataset_seed)
+    test_ds = FrameWindowDataset(
+        test_video_data,
+        max_nodes=max_nodes,
+        seed=dataset_seed,
+        batch_padding=batch_padding,
+        frame_cache_mb=frame_cache_mb,
+    )
     g = None
     worker_init_fn = None
     if seed is not None:
@@ -990,6 +1049,7 @@ def train(
         pin_memory=True,
         generator=g,
         worker_init_fn=worker_init_fn,
+        collate_fn=collate_windows if batch_padding else None,
     )
     test_loader = DataLoader(
         test_ds,
@@ -1001,6 +1061,7 @@ def train(
         pin_memory=True,
         generator=g,
         worker_init_fn=worker_init_fn,
+        collate_fn=collate_windows if batch_padding else None,
     )
 
     train_device = resolve_train_device(device)
@@ -1159,13 +1220,13 @@ def train(
             train_device,
             pool_kernel_um=pool_kernel_um,
             det_threshold=det_threshold,
-            max_match_distance=max_match_distance,
+            max_match_distance=VALIDATION_MATCH_DISTANCE,
             edge_threshold=edge_threshold,
-            match_assign=match_assign,
-            match_soft=match_soft,
+            match_assign=VALIDATION_MATCH_ASSIGN,
+            match_soft=False,
             sinkhorn_tau=sinkhorn_tau,
             sinkhorn_iters=sinkhorn_iters,
-            train_peak_topk=train_peak_topk,
+            train_peak_topk=0,
         )
         test_time = time.monotonic() - t0
 
@@ -1218,6 +1279,18 @@ def train(
         )
         if lr_sched is not None:
             lr_sched.step()
+        if epoch_callback is not None:
+            try:
+                keep_training = epoch_callback(epoch, dict(metrics))
+            except BaseException:
+                # Optuna TrialPruned must not retain live persistent workers in
+                # the traceback of a long-lived search process.
+                writer.close()
+                del train_loader, test_loader
+                raise
+            if keep_training is False:
+                print(f'Stopped by epoch callback at epoch {epoch}', flush=True)
+                break
         if patience > 0 and stale >= patience:
             print(
                 f'Early stopping at epoch {epoch} ({patience} epochs without '
@@ -1255,6 +1328,11 @@ def _as_int_tuple(value, default: tuple[int, ...]) -> tuple[int, ...]:
 
 
 def _augmentations_from_cfg(cfg: dict) -> list:
+    if any(cfg.get(key, False) for key in ('time_stretch_aug', 'time_warp_aug')):
+        raise ValueError(
+            'Temporal resampling changes images without resampling GT tracks; '
+            'disable time_stretch_aug and time_warp_aug for detector training'
+        )
     augs = []
     if cfg.get('brightness_aug', True):
         augs.append(
@@ -1423,10 +1501,16 @@ def _recipe_kwargs(cfg: dict) -> dict:
         'train_peak_topk': int(cfg.get('train_peak_topk', 0)),
         'edge_gate_distance': float(cfg.get('edge_gate_distance', 0.0)),
         'offset_target': str(cfg.get('offset_target', 'frac')),
+        'batch_padding': bool(cfg.get('batch_padding', True)),
+        'frame_cache_mb': float(cfg.get('frame_cache_mb', 0.0)),
     }
 
 
-def train_from_config(cfg: dict) -> None:
+def train_from_config(
+    cfg: dict,
+    *,
+    epoch_callback: Callable[[int, dict[str, float]], bool | None] | None = None,
+) -> None:
     if cfg.get('seed') is not None:
         seed_everything(int(cfg['seed']), deterministic=bool(cfg.get('deterministic', False)))
     data_dir = Path(cfg['data_dir'])
@@ -1486,6 +1570,7 @@ def train_from_config(cfg: dict) -> None:
             unet_n_heads=int(cfg.get('unet_n_heads', 4)),
             device=str(cfg.get('device', 'auto')),
             edge_threshold=float(cfg.get('edge_threshold', 0.5)),
+            epoch_callback=epoch_callback,
             **_recipe_kwargs(cfg),
         )
 
@@ -1510,6 +1595,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument('--lr', type=float, default=1e-4)
     parser.add_argument('--batch-size', type=int, default=16)
     parser.add_argument('--num-workers', type=int, default=8)
+    parser.add_argument(
+        '--frame-cache-mb',
+        type=float,
+        default=0.0,
+        help='Normalized FP32 frame LRU budget per dataset per worker.',
+    )
+    parser.add_argument('--no-batch-padding', dest='batch_padding', action='store_false')
     parser.add_argument('--unet-out-channels', type=int, default=32)
     parser.add_argument('--unet-layers', type=str, default='32,64,128')
     parser.add_argument('--unet-weights', type=str, default=None)
@@ -1672,6 +1764,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
+    if args.seed is not None:
+        seed_everything(int(args.seed), deterministic=bool(args.deterministic))
     data_dir = _resolve_data_dir(args.data_dir)
     splits_file = Path(args.splits) if args.splits else data_dir / 'dataset_splits.json'
     weights_dir = Path(args.weights_dir)

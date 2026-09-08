@@ -18,11 +18,15 @@ def blur_augment(
     if skip_augment(rng, proba) or sigma <= 0:
         return imgs, coords, masks
     radius = max(int(math.ceil(3.0 * sigma)), 1)
-    x = torch.arange(-radius, radius + 1, dtype=imgs.dtype)
+    x = torch.arange(-radius, radius + 1, dtype=imgs.dtype, device=imgs.device)
     kernel_1d = torch.exp(-0.5 * (x / sigma) ** 2)
     kernel_1d = kernel_1d / kernel_1d.sum()
-    kernel = torch.outer(kernel_1d, kernel_1d)[None, None]
     spatial = imgs.reshape(-1, 1, imgs.shape[-2], imgs.shape[-1])
-    pad = radius
-    blurred = F.conv2d(F.pad(spatial, (pad, pad, pad, pad), mode='replicate'), kernel)
+    # Gaussian is separable: 2*K taps instead of K*K, same replicate boundary.
+    horizontal = F.conv2d(
+        F.pad(spatial, (radius, radius, 0, 0), mode='replicate'), kernel_1d.view(1, 1, 1, -1)
+    )
+    blurred = F.conv2d(
+        F.pad(horizontal, (0, 0, radius, radius), mode='replicate'), kernel_1d.view(1, 1, -1, 1)
+    )
     return blurred.reshape(imgs.shape), coords, masks

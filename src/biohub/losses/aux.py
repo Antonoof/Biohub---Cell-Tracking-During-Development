@@ -7,10 +7,10 @@ from biohub.modules.detect.peaks import subvoxel_offsets
 def division_aux_loss(logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     if logits.numel() == 0 or target.numel() == 0:
         return logits.sum() * 0
-    gt = (target.sum(dim=1) > 1).float()
-    mass = torch.softmax(logits, dim=0).sum(dim=1)
-    pred = torch.sigmoid(mass - 1.0)
-    return F.binary_cross_entropy(pred, gt)
+    with torch.autocast(logits.device.type, enabled=False):
+        gt = (target.sum(dim=1) > 1).float()
+        mass = torch.softmax(logits.float(), dim=0).sum(dim=1)
+        return F.binary_cross_entropy_with_logits(mass - 1.0, gt)
 
 
 def contrastive_aux_loss(

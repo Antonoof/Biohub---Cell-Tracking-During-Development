@@ -1,5 +1,6 @@
 import math
 from collections.abc import Sequence
+from contextlib import contextmanager, nullcontext
 
 import torch
 import torch.nn as nn
@@ -294,6 +295,22 @@ def unet_in_channels(
     return channels
 
 
+@contextmanager
+def preserve_batchnorm_stats(block: nn.Module):
+    states = []
+    for m in block.modules():
+        if isinstance(m, nn.modules.batchnorm._BatchNorm) and m.track_running_stats:
+            for buffer in (m.running_mean, m.running_var, m.num_batches_tracked):
+                if buffer is not None:
+                    states.append((buffer, buffer.clone()))
+    try:
+        yield
+    finally:
+        with torch.no_grad():
+            for buffer, saved in states:
+                buffer.copy_(saved)
+
+
 class TemporalUNet3D(nn.Module):
     def __init__(
         self,
@@ -365,7 +382,12 @@ class TemporalUNet3D(nn.Module):
 
     def _run(self, block: nn.Module, x: torch.Tensor) -> torch.Tensor:
         if self.gradient_checkpointing and self.training:
-            return grad_ckpt(block, x, use_reentrant=False)
+            return grad_ckpt(
+                block,
+                x,
+                use_reentrant=False,
+                context_fn=lambda: (nullcontext(), preserve_batchnorm_stats(block)),
+            )
         return block(x)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

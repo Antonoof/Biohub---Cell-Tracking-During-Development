@@ -6,6 +6,8 @@ epochs: 50
 lr: 0.0001
 batch_size: 16
 num_workers: 8
+batch_padding: true
+frame_cache_mb: 0.0  # Per dataset per worker; try 256 for repeated local Zarr reads.
 unet_out_channels: 32
 unet_layers:
 - 32

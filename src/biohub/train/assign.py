@@ -9,15 +9,13 @@ def greedy_assign(dists: torch.Tensor, max_distance: float) -> torch.Tensor:
         return matched
     min_d, min_i = dists.min(dim=1)
     order = min_d.argsort()
-    gt_taken = torch.zeros(n_gt, dtype=torch.bool, device=dists.device)
-    for idx in order:
-        if min_d[idx] > max_distance:
-            break
-        gi = min_i[idx]
-        if not gt_taken[gi]:
-            matched[idx] = gi
-            gt_taken[gi] = True
-    return matched
+    # Exactly the old nearest-only greedy policy, including argsort tie order.
+    rank = torch.empty_like(order)
+    rank[order] = torch.arange(n_det, device=dists.device)
+    winner = torch.full((n_gt,), n_det, dtype=torch.long, device=dists.device)
+    winner.scatter_reduce_(0, min_i, rank, reduce='amin', include_self=True)
+    valid = (rank == winner[min_i]) & (min_d <= max_distance)
+    return torch.where(valid, min_i, matched)
 
 
 def hungarian_assign(dists: torch.Tensor, max_distance: float) -> torch.Tensor:
@@ -25,10 +23,12 @@ def hungarian_assign(dists: torch.Tensor, max_distance: float) -> torch.Tensor:
     matched = torch.full((n_det,), -1, dtype=torch.long, device=dists.device)
     if n_det == 0 or n_gt == 0:
         return matched
-    rows, cols = linear_sum_assignment(dists.detach().cpu().numpy())
-    for row, col in zip(rows.tolist(), cols.tolist()):
-        if float(dists[row, col]) <= max_distance:
-            matched[row] = int(col)
+    costs = dists.detach().float().cpu().numpy()
+    rows, cols = linear_sum_assignment(costs)
+    valid = costs[rows, cols] <= max_distance
+    rows = torch.as_tensor(rows[valid], device=dists.device)
+    cols = torch.as_tensor(cols[valid], device=dists.device)
+    matched[rows] = cols
     return matched
 
 
@@ -75,6 +75,9 @@ def match_peaks(
         gated = dists.masked_fill(far, dists.new_tensor(1e4))
         coupling = sinkhorn_coupling(gated, tau=tau, iters=iters)
         coupling = coupling.masked_fill(far, 0.0)
+        # Rectangular Sinkhorn normalizes columns to one; rows may exceed one.
+        # Sub-probability rows keep transported BCE targets within [0, 1].
+        coupling = coupling / coupling.sum(dim=1, keepdim=True).clamp(min=1.0)
         cost = (-coupling).masked_fill(far, 1e3)
         matched = hungarian_assign(cost, 0.0)
         valid = matched >= 0

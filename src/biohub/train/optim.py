@@ -234,7 +234,9 @@ def _muon_update(
 ) -> torch.Tensor:
     momentum.lerp_(grad, 1.0 - beta)
     update = grad.lerp_(momentum, beta) if nesterov else momentum
-    if update.ndim == 4:
+    # Conv2d and Conv3d: orthogonalize output channels against flattened inputs,
+    # not independent spatial kernel matrices for every channel pair.
+    if update.ndim in (4, 5):
         update = update.view(len(update), -1)
     update = _zeropower_via_newtonschulz5(update, steps=ns_steps)
     return update * max(1.0, update.size(-2) / update.size(-1)) ** 0.5

@@ -15,19 +15,14 @@ def _index_nearest(
     coords: torch.Tensor,
     mask: torch.Tensor,
 ) -> torch.Tensor:
-    B, C = feat_maps.shape[:2]
+    B = feat_maps.shape[0]
     spatial = feat_maps.shape[2:]
-    max_nodes = coords.shape[1]
-    out = torch.zeros(B, max_nodes, C, device=feat_maps.device, dtype=feat_maps.dtype)
-    for b in range(B):
-        nt = int(mask[b].sum().item())
-        if nt == 0:
-            continue
-        z = coords[b, :nt, 0].long().clamp(0, spatial[0] - 1)
-        y = coords[b, :nt, 1].long().clamp(0, spatial[1] - 1)
-        x = coords[b, :nt, 2].long().clamp(0, spatial[2] - 1)
-        out[b, :nt] = feat_maps[b, :, z, y, x].T
-    return out
+    z = coords[..., 0].long().clamp(0, spatial[0] - 1)
+    y = coords[..., 1].long().clamp(0, spatial[1] - 1)
+    x = coords[..., 2].long().clamp(0, spatial[2] - 1)
+    batch = torch.arange(B, device=feat_maps.device)[:, None]
+    out = feat_maps.permute(0, 2, 3, 4, 1)[batch, z, y, x]
+    return out.masked_fill(~mask[..., None], 0)
 
 
 def _index_trilinear(

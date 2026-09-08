@@ -25,12 +25,12 @@ def rot90_augment(
     y = coords[..., 1]
     x = coords[..., 2]
     if k == 1:
-        out[..., 1] = x
-        out[..., 2] = height - 1 - y
+        out[..., 1] = width - 1 - x
+        out[..., 2] = y
     elif k == 2:
         out[..., 1] = height - 1 - y
         out[..., 2] = width - 1 - x
     else:
-        out[..., 1] = width - 1 - x
-        out[..., 2] = y
+        out[..., 1] = x
+        out[..., 2] = height - 1 - y
     return rotated, out, masks

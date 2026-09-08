@@ -139,16 +139,17 @@ class CrossAttentionBlock(nn.Module):
         if kv_mask is not None:
             key_padding_mask = ~kv_mask
             blocked = key_padding_mask.all(dim=-1)
-            if blocked.any():
-                key_padding_mask = key_padding_mask.clone()
-                key_padding_mask[blocked, 0] = False
+            key_padding_mask = key_padding_mask.clone()
+            key_padding_mask[:, 0] &= ~blocked
+        norm_kv = self.norm1(kv)
         attn_out, _ = self.cross_attn(
             self.norm1(q),
-            self.norm1(kv),
-            self.norm1(kv),
+            norm_kv,
+            norm_kv,
             key_padding_mask=key_padding_mask,
+            need_weights=not self.training,  # Keep legacy serving numerics; SDPA for training.
         )
-        if blocked is not None and blocked.any():
+        if blocked is not None:
             attn_out = attn_out.masked_fill(blocked[:, None, None], 0)
         q = q + self.drop_path(self.ls1(attn_out))
         q = q + self.drop_path(self.ls2(self.mlp(self.norm2(q))))
@@ -243,6 +244,8 @@ class SimpleNodeTransformer(nn.Module):
             raise ValueError(f'Unknown pair_head {pair_head!r}')
 
     def _pair_geom(self, rel: torch.Tensor) -> torch.Tensor:
+        if self.pair_geom == 'rel':
+            return rel
         dist = rel.norm(dim=-1, keepdim=True)
         if self.pair_geom == 'dist':
             return dist
@@ -263,6 +266,25 @@ class SimpleNodeTransformer(nn.Module):
         ke = kk.unsqueeze(1).expand(-1, nc_i, -1, -1)
         rel = (cc.unsqueeze(2) - cc1.unsqueeze(1)) / self.rel_coord_scale
         geom = self._pair_geom(rel)
+        if self.training:
+            # Project each node once instead of multiplying a concatenated
+            # (B, source, target, 2H+geometry) tensor for every pair.
+            if isinstance(self.pair_mlp, nn.Sequential):
+                first = self.pair_mlp[0]
+                h = qc.shape[-1]
+                hidden = (
+                    F.linear(qc, first.weight[:, :h], first.bias).unsqueeze(2)
+                    + F.linear(kk, first.weight[:, h : 2 * h]).unsqueeze(1)
+                    + F.linear(geom, first.weight[:, 2 * h :])
+                )
+                for layer in list(self.pair_mlp.children())[1:]:
+                    hidden = layer(hidden)
+                return hidden.squeeze(-1)
+            if isinstance(self.pair_mlp, BilinearPairHead):
+                head = self.pair_mlp
+                scores = (qc @ head.bilinear.weight[0]) @ kk.transpose(-1, -2)
+                scores = scores + head.bilinear.bias[0] + head.rel(geom).squeeze(-1)
+                return head.drop(scores)
         if isinstance(self.pair_mlp, BilinearPairHead):
             return self.pair_mlp(qe, ke, geom)
         return self.pair_mlp(torch.cat([qe, ke, geom], dim=-1)).squeeze(-1)

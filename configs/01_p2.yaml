@@ -6,6 +6,8 @@ epochs: 500
 lr: 0.0001
 batch_size: 8
 num_workers: 4
+batch_padding: true
+frame_cache_mb: 0.0
 unet_out_channels: 32
 unet_layers:
 - 32

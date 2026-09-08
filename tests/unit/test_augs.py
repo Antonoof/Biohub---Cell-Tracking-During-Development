@@ -137,7 +137,7 @@ def test_time_domain_and_blur_keep_coords() -> None:
         assert torch.equal(out_m, masks)
 
 
-def test_scale_aug_updates_xy_coords() -> None:
+def test_scale_aug_rounded_identity_preserves_coords() -> None:
     imgs = torch.zeros(1, 2, 4, 4)
     imgs[0, 0, 1, 2] = 1.0
     coords = torch.tensor([[[0.0, 1.0, 2.0]]])
@@ -147,7 +147,9 @@ def test_scale_aug_updates_xy_coords() -> None:
         def uniform(self, low, high):
             return high
 
-    _out_i, out_c, _ = scale_augment(
+    out_i, out_c, _ = scale_augment(
         imgs, coords, masks, rng=_HighRng(), proba=1.0, scale_range=0.2
     )
-    assert float(out_c[0, 0, 1]) != 1.0 or float(out_c[0, 0, 2]) != 2.0
+    # floor(4 * 1.2) == 4: interpolate is identity, so labels must not move.
+    torch.testing.assert_close(out_i, imgs)
+    torch.testing.assert_close(out_c, coords)
