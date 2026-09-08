@@ -13,8 +13,11 @@ from biohub.losses.detection import gaussian_heatmap_target
 from biohub.models.detector import UNetNodeTransformer
 from biohub.models.temporal_unet import TemporalUNet3D, unet_in_channels
 from biohub.train.detector import (
+    SCORE_THRESHOLDS,
     _augmentations_from_cfg,
     _recipe_kwargs,
+    evaluate,
+    score_threshold_key,
     train_epoch,
 )
 from biohub.train.detector_search import (
@@ -24,6 +27,7 @@ from biohub.train.detector_search import (
     params_from_config,
     pooled_oof_score,
     sample_search_params,
+    seed_trial_params,
     trial_config,
 )
 from biohub.train.schedule import build_optimizer
@@ -78,7 +82,10 @@ def test_apply_search_params_derives_conditionals() -> None:
     assert overlay['frame_cache_mb'] == 256.0
     assert overlay['batch_padding'] is True
     assert overlay['pair_chunk_size'] == 512
-    assert overlay['checkpoint_metric'] == 'acc_times_recall'
+    assert overlay['checkpoint_metric'] == 'competition_metric'
+    assert overlay['det_threshold'] == 0.97
+    assert overlay['edge_threshold'] == 0.97
+    assert 0.97 in SCORE_THRESHOLDS
     assert overlay['amp'] == 'bf16'
     assert overlay['seed'] == 42
     assert overlay['unet_layers'] == [32, 64, 128]
@@ -143,8 +150,9 @@ def test_pooled_oof_sums_fold_counts(tmp_path: Path) -> None:
     assert bundled['gt_matched'] == 40.0
     assert bundled['pair_correct'] == 50.0
     assert bundled['pair_total'] == 100.0
-    assert score == 0.2
     assert bundled['acc_times_recall'] == 0.2
+    assert bundled['competition_metric'] == score
+    assert score > 0.0
 
 
 def test_optuna_enqueues_p1_params() -> None:
@@ -162,6 +170,29 @@ def test_optuna_enqueues_p1_params() -> None:
 
     study.optimize(objective, n_trials=1)
     assert study.trials[0].params['optimizer'] == 'adamw'
+
+
+def test_seed_trial_params_uses_heatmap() -> None:
+    yaml_params = params_from_config(load_base_config())
+    seed = seed_trial_params(load_base_config())
+    assert yaml_params['det_loss'] == 'weighted_bce'
+    assert seed['det_loss'] == 'gaussian_heatmap'
+    assert set(seed) == set(SEARCH_PARAM_NAMES)
+
+
+def test_optuna_enqueues_heatmap_seed() -> None:
+    import optuna
+    from optuna.samplers import TPESampler
+
+    study = optuna.create_study(direction='maximize', sampler=TPESampler(seed=0))
+    study.enqueue_trial(seed_trial_params(load_base_config()))
+
+    def objective(trial: optuna.Trial) -> float:
+        params = sample_search_params(trial)
+        assert params['det_loss'] == 'gaussian_heatmap'
+        return 0.0
+
+    study.optimize(objective, n_trials=1)
 
 
 def _tiny_detector(**knobs) -> UNetNodeTransformer:
@@ -305,6 +336,21 @@ def _combo_sample(n_frames: int = 2, spatial: tuple[int, int, int] = (4, 8, 8)) 
         'voxel_size': torch.ones(3),
         'downsample': torch.ones(3),
     }
+
+
+def test_evaluate_logs_competition_thresholds() -> None:
+    torch.manual_seed(0)
+    metrics = evaluate(
+        _tiny_detector(),
+        DataLoader(_Once(_combo_sample()), batch_size=1),
+        torch.device('cpu'),
+        det_threshold=0.97,
+        edge_threshold=0.97,
+    )
+    for threshold in SCORE_THRESHOLDS:
+        value = metrics[score_threshold_key(threshold)]
+        assert value == value
+    assert metrics['competition_metric'] == metrics[score_threshold_key(0.97)]
 
 
 @pytest.mark.parametrize(

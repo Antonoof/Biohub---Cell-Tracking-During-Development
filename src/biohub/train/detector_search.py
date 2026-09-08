@@ -141,7 +141,7 @@ FIXED_TRAIN_KEYS = {
     'n_folds': 5,
     'seed': 42,
     'patience': 5,
-    'checkpoint_metric': 'acc_times_recall',
+    'checkpoint_metric': 'competition_metric',
     'batch_size': 16,
     'accum_steps': 1,
     'grad_clip_norm': 2.0,
@@ -154,8 +154,8 @@ FIXED_TRAIN_KEYS = {
     'pair_chunk_size': 512,
     'gradient_checkpointing': False,
     'downsample': [1, 4, 4],
-    'det_threshold': 0.5,
-    'edge_threshold': 0.5,
+    'det_threshold': 0.97,
+    'edge_threshold': 0.97,
     'target_mode': 'matched_det',
     'target_gt_frac': 0.0,
     'brightness_aug': True,
@@ -490,6 +490,12 @@ def params_from_config(cfg: dict[str, Any]) -> dict[str, Any]:
     return params
 
 
+def seed_trial_params(cfg: dict[str, Any]) -> dict[str, Any]:
+    params = params_from_config(cfg)
+    params['det_loss'] = 'gaussian_heatmap'
+    return params
+
+
 def trial_config(
     params: dict[str, Any],
     *,
@@ -537,12 +543,11 @@ def pooled_oof_score(trial_dir: Path, n_folds: int = 5) -> tuple[float, dict[str
     )
     acc = totals['pair_correct'] / max(totals['pair_total'], 1.0)
     recall = totals['gt_matched'] / max(totals['gt_total'], 1.0)
-    score = acc * recall
     bundled = {
-        'oof': score,
-        'acc_times_recall': score,
+        'oof': competition,
         'competition_metric': competition,
+        'acc_times_recall': acc * recall,
         **totals,
         **{f'fold{fold}_{key}': row[key] for fold, row in enumerate(folds) for key in row},
     }
-    return float(score), bundled
+    return float(competition), bundled

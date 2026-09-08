@@ -89,6 +89,25 @@ CHECKPOINT_METRICS = (
     'det_precision',
     'node_ratio',
 )
+SCORE_THRESHOLDS = (
+    0.1,
+    0.2,
+    0.3,
+    0.4,
+    0.5,
+    0.6,
+    0.7,
+    0.8,
+    0.9,
+    0.95,
+    0.97,
+    0.99,
+    0.997,
+)
+
+
+def score_threshold_key(threshold: float) -> str:
+    return f'competition_th/{threshold:g}'
 
 
 def _rates(tp: float, fp: float, fn: float) -> tuple[float, float, float, float]:
@@ -812,100 +831,20 @@ def train_epoch(
     )
 
 
-@torch.inference_mode()
-def evaluate(
-    model: UNetNodeTransformer,
-    loader: DataLoader,
-    device: torch.device,
-    pool_kernel_um: float = 5.0,
-    det_threshold: float = 0.5,
-    max_match_distance: float = 5.0,
-    edge_threshold: float = 0.5,
-    match_assign: str = 'greedy',
-    match_soft: bool = False,
-    sinkhorn_tau: float = 0.1,
-    sinkhorn_iters: int = 20,
-    train_peak_topk: int = 0,
-    amp_kind: str = 'off',
+def _score_threshold_index(value: float) -> int | None:
+    for index, threshold in enumerate(SCORE_THRESHOLDS):
+        if abs(threshold - value) <= 1e-12:
+            return index
+    return None
+
+
+def _eval_metrics(
+    pair_stats: torch.Tensor,
+    n_pairs: int,
+    gt_total: int,
+    gt_matched: int,
+    num_pred_nodes: int,
 ) -> dict[str, float]:
-    model.eval()
-    n_pairs = 0
-    pair_stats = torch.zeros(9, device=device, dtype=torch.float64)
-    gt_total_t = torch.zeros((), device=device, dtype=torch.long)
-    gt_matched_t = torch.zeros((), device=device, dtype=torch.long)
-    num_pred_t = torch.zeros((), device=device, dtype=torch.long)
-    edge_tp = edge_fp = edge_fn = 0
-    division_tp = division_fp = division_fn = 0
-    dtype = amp_dtype(amp_kind)
-    autocast_on = dtype is not None and device.type == 'cuda'
-
-    for batch in loader:
-        imgs = batch['imgs'].to(device, dtype=torch.float32, non_blocking=True)
-        coords = batch['coords'].to(device, non_blocking=True)
-        masks = batch['masks'].to(device, non_blocking=True)
-        targets = batch['targets'].to(device, non_blocking=True)
-        image_shape = tuple(batch['image_shape'][0].tolist())
-        voxel_size = tuple(batch['voxel_size'][0].tolist())
-        ds_scale = batch['downsample'][0].to(device)
-
-        B, W = imgs.shape[:2]
-        with torch.autocast(device.type, dtype=dtype or torch.float32, enabled=autocast_on):
-            unet_out, det_stack = model.encode_stacked(imgs)
-        det_c, det_p, det_m, matches_w, feat, couplings_w = _window_detections(
-            model,
-            unet_out,
-            det_stack,
-            coords,
-            masks,
-            image_shape,
-            voxel_size,
-            use_gt=False,
-            det_threshold=det_threshold,
-            pool_kernel_um=pool_kernel_um,
-            max_match_distance=max_match_distance,
-            match_assign=match_assign,
-            sinkhorn_tau=sinkhorn_tau,
-            sinkhorn_iters=sinkhorn_iters,
-            train_peak_topk=train_peak_topk,
-            match_soft=match_soft,
-        )
-        assert matches_w is not None
-        gt_total_t += masks.sum().long()
-        gt_matched_t += (matches_w >= 0).sum()
-        num_pred_t += det_m.sum().long()
-
-        pairs = W - 1
-        if pairs > 0:
-            pair_batch = B * pairs
-            nodes = feat.shape[2]
-            with torch.autocast(device.type, dtype=dtype or torch.float32, enabled=autocast_on):
-                pair_logits_all = model.predict_edges(
-                    feat[:, :-1].reshape(pair_batch, nodes, feat.shape[3]),
-                    feat[:, 1:].reshape(pair_batch, nodes, feat.shape[3]),
-                    (det_c[:, :-1] * ds_scale).reshape(pair_batch, nodes, 3),
-                    (det_c[:, 1:] * ds_scale).reshape(pair_batch, nodes, 3),
-                    det_p[:, :-1].reshape(pair_batch, nodes, det_p.shape[-1]),
-                    det_p[:, 1:].reshape(pair_batch, nodes, det_p.shape[-1]),
-                    det_m[:, :-1].reshape(pair_batch, nodes),
-                    det_m[:, 1:].reshape(pair_batch, nodes),
-                )
-            pair_target = _pair_edge_targets(
-                use_gt=False,
-                match_soft=match_soft,
-                matches_w=matches_w,
-                targets=targets,
-                nodes=nodes,
-                couplings_w=couplings_w,
-            )
-            pair_stats += evaluate_pairs_batched(
-                pair_logits_all,
-                pair_target,
-                det_m[:, :-1].reshape(pair_batch, nodes),
-                det_m[:, 1:].reshape(pair_batch, nodes),
-                edge_threshold,
-            )
-            n_pairs += pair_batch
-
     (
         total_loss,
         correct,
@@ -917,9 +856,6 @@ def evaluate(
         division_fp,
         division_fn,
     ) = pair_stats.tolist()
-    gt_total = int(gt_total_t.item())
-    gt_matched = int(gt_matched_t.item())
-    num_pred_nodes = int(num_pred_t.item())
     node_recall = gt_matched / max(gt_total, 1)
     det_precision = gt_matched / max(num_pred_nodes, 1)
     acc = correct / max(total, 1)
@@ -965,6 +901,218 @@ def evaluate(
         'pair_correct': float(correct),
         'pair_total': float(total),
     }
+
+
+def _eval_encoded_window(
+    model: UNetNodeTransformer,
+    unet_out: torch.Tensor,
+    det_stack: torch.Tensor,
+    coords: torch.Tensor,
+    masks: torch.Tensor,
+    targets: torch.Tensor,
+    ds_scale: torch.Tensor,
+    image_shape: tuple[int, ...],
+    voxel_size: tuple[float, ...],
+    *,
+    det_threshold: float,
+    edge_threshold: float,
+    pool_kernel_um: float,
+    max_match_distance: float,
+    match_assign: str,
+    match_soft: bool,
+    sinkhorn_tau: float,
+    sinkhorn_iters: int,
+    train_peak_topk: int,
+    cast_dtype: torch.dtype | None,
+    autocast_on: bool,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, int]:
+    det_c, det_p, det_m, matches_w, feat, couplings_w = _window_detections(
+        model,
+        unet_out,
+        det_stack,
+        coords,
+        masks,
+        image_shape,
+        voxel_size,
+        use_gt=False,
+        det_threshold=det_threshold,
+        pool_kernel_um=pool_kernel_um,
+        max_match_distance=max_match_distance,
+        match_assign=match_assign,
+        sinkhorn_tau=sinkhorn_tau,
+        sinkhorn_iters=sinkhorn_iters,
+        train_peak_topk=train_peak_topk,
+        match_soft=match_soft,
+    )
+    assert matches_w is not None
+    gt_total = masks.sum().long()
+    gt_matched = (matches_w >= 0).sum()
+    num_pred = det_m.sum().long()
+    batch, frames = unet_out.shape[:2]
+    pairs = frames - 1
+    zeros = torch.zeros(9, device=unet_out.device, dtype=torch.float64)
+    if pairs <= 0:
+        return zeros, gt_total, gt_matched, num_pred, 0
+    pair_batch = batch * pairs
+    nodes = feat.shape[2]
+    with torch.autocast(
+        unet_out.device.type,
+        dtype=cast_dtype or torch.float32,
+        enabled=autocast_on,
+    ):
+        pair_logits_all = model.predict_edges(
+            feat[:, :-1].reshape(pair_batch, nodes, feat.shape[3]),
+            feat[:, 1:].reshape(pair_batch, nodes, feat.shape[3]),
+            (det_c[:, :-1] * ds_scale).reshape(pair_batch, nodes, 3),
+            (det_c[:, 1:] * ds_scale).reshape(pair_batch, nodes, 3),
+            det_p[:, :-1].reshape(pair_batch, nodes, det_p.shape[-1]),
+            det_p[:, 1:].reshape(pair_batch, nodes, det_p.shape[-1]),
+            det_m[:, :-1].reshape(pair_batch, nodes),
+            det_m[:, 1:].reshape(pair_batch, nodes),
+        )
+    pair_target = _pair_edge_targets(
+        use_gt=False,
+        match_soft=match_soft,
+        matches_w=matches_w,
+        targets=targets,
+        nodes=nodes,
+        couplings_w=couplings_w,
+    )
+    pair_stats = evaluate_pairs_batched(
+        pair_logits_all,
+        pair_target,
+        det_m[:, :-1].reshape(pair_batch, nodes),
+        det_m[:, 1:].reshape(pair_batch, nodes),
+        edge_threshold,
+    )
+    return pair_stats, gt_total, gt_matched, num_pred, pair_batch
+
+
+@torch.inference_mode()
+def evaluate(
+    model: UNetNodeTransformer,
+    loader: DataLoader,
+    device: torch.device,
+    pool_kernel_um: float = 5.0,
+    det_threshold: float = 0.5,
+    max_match_distance: float = 5.0,
+    edge_threshold: float = 0.5,
+    match_assign: str = 'greedy',
+    match_soft: bool = False,
+    sinkhorn_tau: float = 0.1,
+    sinkhorn_iters: int = 20,
+    train_peak_topk: int = 0,
+    amp_kind: str = 'off',
+) -> dict[str, float]:
+    model.eval()
+    n_th = len(SCORE_THRESHOLDS)
+    sweep_pair = torch.zeros(n_th, 9, device=device, dtype=torch.float64)
+    sweep_gt_total = torch.zeros(n_th, device=device, dtype=torch.long)
+    sweep_gt_matched = torch.zeros(n_th, device=device, dtype=torch.long)
+    sweep_num_pred = torch.zeros(n_th, device=device, dtype=torch.long)
+    sweep_n_pairs = 0
+    primary_index = (
+        _score_threshold_index(det_threshold)
+        if abs(det_threshold - edge_threshold) <= 1e-12
+        else None
+    )
+    n_pairs = 0
+    pair_stats = torch.zeros(9, device=device, dtype=torch.float64)
+    gt_total_t = torch.zeros((), device=device, dtype=torch.long)
+    gt_matched_t = torch.zeros((), device=device, dtype=torch.long)
+    num_pred_t = torch.zeros((), device=device, dtype=torch.long)
+    dtype = amp_dtype(amp_kind)
+    autocast_on = dtype is not None and device.type == 'cuda'
+    window_kw = {
+        'pool_kernel_um': pool_kernel_um,
+        'max_match_distance': max_match_distance,
+        'match_assign': match_assign,
+        'match_soft': match_soft,
+        'sinkhorn_tau': sinkhorn_tau,
+        'sinkhorn_iters': sinkhorn_iters,
+        'train_peak_topk': train_peak_topk,
+        'cast_dtype': dtype,
+        'autocast_on': autocast_on,
+    }
+
+    for batch in loader:
+        imgs = batch['imgs'].to(device, dtype=torch.float32, non_blocking=True)
+        coords = batch['coords'].to(device, non_blocking=True)
+        masks = batch['masks'].to(device, non_blocking=True)
+        targets = batch['targets'].to(device, non_blocking=True)
+        image_shape = tuple(batch['image_shape'][0].tolist())
+        voxel_size = tuple(batch['voxel_size'][0].tolist())
+        ds_scale = batch['downsample'][0].to(device)
+        with torch.autocast(device.type, dtype=dtype or torch.float32, enabled=autocast_on):
+            unet_out, det_stack = model.encode_stacked(imgs)
+        if primary_index is None:
+            stats, gt_t, gt_m, n_pred, n_pair = _eval_encoded_window(
+                model,
+                unet_out,
+                det_stack,
+                coords,
+                masks,
+                targets,
+                ds_scale,
+                image_shape,
+                voxel_size,
+                det_threshold=det_threshold,
+                edge_threshold=edge_threshold,
+                **window_kw,
+            )
+            pair_stats += stats
+            gt_total_t += gt_t
+            gt_matched_t += gt_m
+            num_pred_t += n_pred
+            n_pairs += n_pair
+        for index, threshold in enumerate(SCORE_THRESHOLDS):
+            stats, gt_t, gt_m, n_pred, n_pair = _eval_encoded_window(
+                model,
+                unet_out,
+                det_stack,
+                coords,
+                masks,
+                targets,
+                ds_scale,
+                image_shape,
+                voxel_size,
+                det_threshold=threshold,
+                edge_threshold=threshold,
+                **window_kw,
+            )
+            sweep_pair[index] += stats
+            sweep_gt_total[index] += gt_t
+            sweep_gt_matched[index] += gt_m
+            sweep_num_pred[index] += n_pred
+            if index == 0:
+                sweep_n_pairs += n_pair
+
+    if primary_index is None:
+        metrics = _eval_metrics(
+            pair_stats,
+            n_pairs,
+            int(gt_total_t.item()),
+            int(gt_matched_t.item()),
+            int(num_pred_t.item()),
+        )
+    else:
+        metrics = _eval_metrics(
+            sweep_pair[primary_index],
+            sweep_n_pairs,
+            int(sweep_gt_total[primary_index].item()),
+            int(sweep_gt_matched[primary_index].item()),
+            int(sweep_num_pred[primary_index].item()),
+        )
+    for index, threshold in enumerate(SCORE_THRESHOLDS):
+        extra = _eval_metrics(
+            sweep_pair[index],
+            sweep_n_pairs,
+            int(sweep_gt_total[index].item()),
+            int(sweep_gt_matched[index].item()),
+            int(sweep_num_pred[index].item()),
+        )
+        metrics[score_threshold_key(threshold)] = extra['competition_metric']
+    return metrics
 
 
 def train(
@@ -1502,6 +1650,14 @@ def train(
                 f'competition={metrics["competition_metric"]:.4f} | '
                 f'{checkpoint_metric}={score:.4f} | best={best_score:.4f} {marker} | '
                 f'train={train_time:.1f}s test={test_time:.1f}s',
+                flush=True,
+            )
+            print(
+                '    competition_th '
+                + ' '.join(
+                    f'{threshold:g}={metrics[score_threshold_key(threshold)]:.4f}'
+                    for threshold in SCORE_THRESHOLDS
+                ),
                 flush=True,
             )
             if lr_sched is not None:

@@ -5,6 +5,7 @@ import torch.nn.functional as F
 from scipy.spatial import KDTree
 
 DET_LOSSES = ('weighted_bce', 'focal', 'gaussian_heatmap')
+HEATMAP_POS_THRESHOLD = 0.05
 _HEATMAP_GRIDS: dict[tuple, torch.Tensor] = {}
 
 
@@ -142,14 +143,33 @@ def gaussian_heatmap_loss(
     *,
     heatmap_sigma: float = 1.0,
     heatmap_target: torch.Tensor | None = None,
+    neg_weight: float = 0.1,
 ) -> torch.Tensor:
     with torch.autocast(det_logits.device.type, enabled=False):
         spatial = det_logits.shape[2:]
         logits = det_logits[:, 0].float()
+        batch = logits.shape[0]
         if heatmap_target is None:
             heatmap_target = gaussian_heatmap_target(coords, mask, spatial, heatmap_sigma)
         target = heatmap_target.to(device=logits.device, dtype=torch.float32, non_blocking=True)
-        return F.mse_loss(torch.sigmoid(logits), target)
+        pos = target > HEATMAP_POS_THRESHOLD
+        n_pos = pos.reshape(batch, -1).sum(dim=1).clamp(min=1)
+        n_neg = (target.numel() // batch - n_pos).clamp(min=1)
+        shape = (batch,) + (1,) * (logits.ndim - 1)
+        weight = torch.where(
+            pos,
+            (1.0 / n_pos).reshape(shape),
+            (neg_weight / n_neg).reshape(shape),
+        )
+        return (
+            F.binary_cross_entropy_with_logits(
+                logits,
+                target,
+                weight=weight,
+                reduction='sum',
+            )
+            / batch
+        )
 
 
 def detection_loss(
@@ -172,6 +192,11 @@ def detection_loss(
         )
     if kind == 'gaussian_heatmap':
         return gaussian_heatmap_loss(
-            det_logits, coords, mask, heatmap_sigma=heatmap_sigma, heatmap_target=heatmap_target
+            det_logits,
+            coords,
+            mask,
+            heatmap_sigma=heatmap_sigma,
+            heatmap_target=heatmap_target,
+            neg_weight=neg_weight,
         )
     raise ValueError(f'Unknown det_loss {kind!r}; expected one of {DET_LOSSES}')

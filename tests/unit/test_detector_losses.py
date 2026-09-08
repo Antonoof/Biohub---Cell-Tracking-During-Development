@@ -52,6 +52,17 @@ def test_gaussian_heatmap_peaks_on_gt() -> None:
     assert float(better) < float(loss)
 
 
+def test_gaussian_heatmap_does_not_prefer_background_collapse() -> None:
+    coords = torch.tensor([[[8.0, 8.0, 8.0]]])
+    mask = torch.ones(1, 1, dtype=torch.bool)
+    collapsed = torch.full((1, 1, 16, 16, 16), -8.0)
+    peaked = torch.full((1, 1, 16, 16, 16), -2.0)
+    peaked[0, 0, 8, 8, 8] = 8.0
+    assert float(detection_loss('gaussian_heatmap', peaked, coords, mask)) < float(
+        detection_loss('gaussian_heatmap', collapsed, coords, mask)
+    )
+
+
 def test_aux_zero_weight_does_not_change_total() -> None:
     logits = torch.randn(3, 4)
     target = torch.zeros(3, 4)
@@ -113,6 +124,18 @@ def test_offset_parabolic_matches_masked_points() -> None:
         sample_pred = pred[b, :, zi, yi, xi].T
         losses.append((sample_pred - frac).abs().mean())
     torch.testing.assert_close(actual, torch.stack(losses).mean())
+
+
+def test_offset_aux_accepts_bf16_under_autocast() -> None:
+    pred = torch.randn(2, 3, 4, 4, 4, dtype=torch.bfloat16)
+    det = torch.randn(2, 1, 4, 4, 4, dtype=torch.bfloat16)
+    coords = torch.tensor([[[1.2, 2.4, 1.1], [0.0, 0.0, 0.0]], [[2.1, 1.4, 0.8], [0.0, 0.0, 0.0]]])
+    mask = torch.tensor([[True, False], [True, False]])
+    with torch.autocast('cpu', dtype=torch.bfloat16, enabled=True):
+        frac = offset_aux_loss(pred, coords, mask, target='frac')
+        para = offset_aux_loss(pred, coords, mask, target='parabolic', det_logits=det)
+    assert torch.isfinite(frac).all()
+    assert torch.isfinite(para).all()
 
 
 def _gate_pair(logits, coords_src, coords_tgt, gate_distance):

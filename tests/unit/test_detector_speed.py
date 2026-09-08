@@ -603,7 +603,13 @@ def test_epoch_callback_and_fixed_validation_protocol(tmp_path, monkeypatch):
 
     def evaluate(*args, **kwargs):
         eval_kwargs.append(kwargs)
-        return {key: 0.0 for key in detector.CHECKPOINT_METRICS} | {'loss': 1.0}
+        return {key: 0.0 for key in detector.CHECKPOINT_METRICS} | {
+            'loss': 1.0,
+            **{
+                detector.score_threshold_key(threshold): 0.0
+                for threshold in detector.SCORE_THRESHOLDS
+            },
+        }
 
     monkeypatch.setattr(detector, 'evaluate', evaluate)
     epochs = []

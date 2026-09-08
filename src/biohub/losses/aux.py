@@ -72,9 +72,31 @@ def offset_aux_loss(
 ) -> torch.Tensor:
     B = offset_pred.shape[0]
     spatial = offset_pred.shape[2:]
-    if target == 'parabolic':
-        if det_logits is None:
-            raise ValueError('offset_target=parabolic requires det_logits')
+    with torch.autocast(offset_pred.device.type, enabled=False):
+        offset_pred = offset_pred.float()
+        coords = coords.float()
+        if target == 'parabolic':
+            if det_logits is None:
+                raise ValueError('offset_target=parabolic requires det_logits')
+            det_logits = det_logits.float()
+            valid = mask.bool()
+            batch_idx = torch.arange(B, device=mask.device).unsqueeze(1).expand_as(mask)[valid]
+            gt = coords[valid]
+            zi = gt[:, 0].long().clamp(0, spatial[0] - 1)
+            yi = gt[:, 1].long().clamp(0, spatial[1] - 1)
+            xi = gt[:, 2].long().clamp(0, spatial[2] - 1)
+            pred = offset_pred[batch_idx, :, zi, yi, xi]
+            frac = subvoxel_offsets_batched(
+                det_logits[:, 0], torch.stack((zi, yi, xi), dim=-1), batch_idx
+            )
+            err = (pred - frac).abs().sum(dim=-1)
+            summed = offset_pred.new_zeros(B)
+            if batch_idx.numel():
+                summed.scatter_add_(0, batch_idx, err)
+            denom = mask.sum(dim=1).to(dtype=summed.dtype) * offset_pred.shape[1]
+            return (summed / denom.clamp(min=1)).mean()
+        if target != 'frac':
+            raise ValueError(f'Unknown offset_target {target!r}')
         valid = mask.bool()
         batch_idx = torch.arange(B, device=mask.device).unsqueeze(1).expand_as(mask)[valid]
         gt = coords[valid]
@@ -82,27 +104,9 @@ def offset_aux_loss(
         yi = gt[:, 1].long().clamp(0, spatial[1] - 1)
         xi = gt[:, 2].long().clamp(0, spatial[2] - 1)
         pred = offset_pred[batch_idx, :, zi, yi, xi]
-        frac = subvoxel_offsets_batched(
-            det_logits[:, 0], torch.stack((zi, yi, xi), dim=-1), batch_idx
-        )
-        err = (pred - frac).abs().sum(dim=-1)
+        frac = gt - torch.stack((zi, yi, xi), dim=-1)
         summed = offset_pred.new_zeros(B)
         if batch_idx.numel():
-            summed.scatter_add_(0, batch_idx, err)
+            summed.scatter_add_(0, batch_idx, (pred - frac).abs().sum(dim=-1))
         denom = mask.sum(dim=1).to(dtype=summed.dtype) * offset_pred.shape[1]
         return (summed / denom.clamp(min=1)).mean()
-    if target != 'frac':
-        raise ValueError(f'Unknown offset_target {target!r}')
-    valid = mask.bool()
-    batch_idx = torch.arange(B, device=mask.device).unsqueeze(1).expand_as(mask)[valid]
-    gt = coords[valid]
-    zi = gt[:, 0].long().clamp(0, spatial[0] - 1)
-    yi = gt[:, 1].long().clamp(0, spatial[1] - 1)
-    xi = gt[:, 2].long().clamp(0, spatial[2] - 1)
-    pred = offset_pred[batch_idx, :, zi, yi, xi]
-    frac = gt - torch.stack((zi, yi, xi), dim=-1).to(dtype=gt.dtype)
-    summed = offset_pred.new_zeros(B)
-    if batch_idx.numel():
-        summed.scatter_add_(0, batch_idx, (pred - frac).abs().sum(dim=-1))
-    denom = mask.sum(dim=1).to(dtype=summed.dtype) * offset_pred.shape[1]
-    return (summed / denom.clamp(min=1)).mean()
