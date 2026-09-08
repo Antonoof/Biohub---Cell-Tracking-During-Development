@@ -921,6 +921,7 @@ def evaluate(
     gt_matched = int(gt_matched_t.item())
     num_pred_nodes = int(num_pred_t.item())
     node_recall = gt_matched / max(gt_total, 1)
+    det_precision = gt_matched / max(num_pred_nodes, 1)
     acc = correct / max(total, 1)
     loss = total_loss / max(n_pairs, 1)
     metric = competition_score(
@@ -950,7 +951,7 @@ def evaluate(
         'division_recall': div_r,
         'division_f1': div_f1,
         'division_jaccard': div_j,
-        'det_precision': gt_matched / max(num_pred_nodes, 1),
+        'det_precision': det_precision,
         'node_ratio': num_pred_nodes / max(gt_total, 1),
         'edge_tp': float(edge_tp),
         'edge_fp': float(edge_fp),
@@ -959,7 +960,10 @@ def evaluate(
         'division_fp': float(division_fp),
         'division_fn': float(division_fn),
         'num_pred_nodes': float(num_pred_nodes),
+        'gt_matched': float(gt_matched),
         'gt_total': float(gt_total),
+        'pair_correct': float(correct),
+        'pair_total': float(total),
     }
 
 

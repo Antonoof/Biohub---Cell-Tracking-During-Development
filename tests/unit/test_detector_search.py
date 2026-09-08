@@ -78,6 +78,7 @@ def test_apply_search_params_derives_conditionals() -> None:
     assert overlay['frame_cache_mb'] == 256.0
     assert overlay['batch_padding'] is True
     assert overlay['pair_chunk_size'] == 512
+    assert overlay['checkpoint_metric'] == 'acc_times_recall'
     assert overlay['amp'] == 'bf16'
     assert overlay['seed'] == 42
     assert overlay['unet_layers'] == [32, 64, 128]
@@ -129,14 +130,21 @@ def test_pooled_oof_sums_fold_counts(tmp_path: Path) -> None:
                     'division_fp': 0,
                     'division_fn': 0,
                     'num_pred_nodes': 20,
+                    'gt_matched': 8,
                     'gt_total': 20,
+                    'pair_correct': 10,
+                    'pair_total': 20,
                 }
             )
         )
     score, bundled = pooled_oof_score(tmp_path)
     assert bundled['edge_tp'] == 50.0
     assert bundled['gt_total'] == 100.0
-    assert score > 0.0
+    assert bundled['gt_matched'] == 40.0
+    assert bundled['pair_correct'] == 50.0
+    assert bundled['pair_total'] == 100.0
+    assert score == 0.2
+    assert bundled['acc_times_recall'] == 0.2
 
 
 def test_optuna_enqueues_p1_params() -> None:

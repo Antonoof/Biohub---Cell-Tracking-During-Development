@@ -22,7 +22,10 @@ OOF_COUNT_KEYS = (
     'division_fp',
     'division_fn',
     'num_pred_nodes',
+    'gt_matched',
     'gt_total',
+    'pair_correct',
+    'pair_total',
 )
 SEARCH_PARAM_NAMES = (
     'epochs',
@@ -138,7 +141,7 @@ FIXED_TRAIN_KEYS = {
     'n_folds': 5,
     'seed': 42,
     'patience': 5,
-    'checkpoint_metric': 'competition_metric',
+    'checkpoint_metric': 'acc_times_recall',
     'batch_size': 16,
     'accum_steps': 1,
     'grad_clip_norm': 2.0,
@@ -522,7 +525,7 @@ def pooled_oof_score(trial_dir: Path, n_folds: int = 5) -> tuple[float, dict[str
         folds.append(row)
         for key, value in row.items():
             totals[key] += value
-    score = competition_score(
+    competition = competition_score(
         edge_tp=totals['edge_tp'],
         edge_fp=totals['edge_fp'],
         edge_fn=totals['edge_fn'],
@@ -532,8 +535,13 @@ def pooled_oof_score(trial_dir: Path, n_folds: int = 5) -> tuple[float, dict[str
         num_pred_nodes=totals['num_pred_nodes'],
         n_total=totals['gt_total'],
     )
+    acc = totals['pair_correct'] / max(totals['pair_total'], 1.0)
+    recall = totals['gt_matched'] / max(totals['gt_total'], 1.0)
+    score = acc * recall
     bundled = {
         'oof': score,
+        'acc_times_recall': score,
+        'competition_metric': competition,
         **totals,
         **{f'fold{fold}_{key}': row[key] for fold, row in enumerate(folds) for key in row},
     }
