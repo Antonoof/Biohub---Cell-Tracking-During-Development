@@ -1100,6 +1100,7 @@ def train(
     print(f'Starting training for {n_epochs} epochs (batch_size={batch_size})...', flush=True)
 
     best_score = float('-inf')
+    best_metrics: dict[str, float] | None = None
     stale = 0
     save_path = output_dir / 'edge_predictor_best.pth'
     pbar = tqdm(range(n_epochs), desc='Training', disable=False)
@@ -1173,7 +1174,9 @@ def train(
 
         if is_best:
             best_score = score
+            best_metrics = {key: float(value) for key, value in metrics.items()}
             stale = 0
+            (output_dir / 'metrics.json').write_text(json.dumps(best_metrics, indent=2) + '\n')
             torch.save(
                 {
                     k.replace('unet.module.', 'unet.', 1): v
@@ -1223,6 +1226,8 @@ def train(
             )
             break
 
+    if best_metrics is not None:
+        (output_dir / 'metrics.json').write_text(json.dumps(best_metrics, indent=2) + '\n')
     print(
         f'\nBest {checkpoint_metric}: {best_score:.4f}, saved to {save_path}. '
         'Window competition_metric is a proxy; promotion requires official evaluate '

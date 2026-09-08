@@ -17,6 +17,20 @@ wheels = [
 ]
 
 [[package]]
+name = "alembic"
+version = "1.19.2"
+source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }
+dependencies = [
+    { name = "mako" },
+    { name = "sqlalchemy" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/alembic/1.19.2/alembic-1.19.2.tar.gz", hash = "sha256:297950a8a91f6770eb82bfbce9bea55c728b90a5386c6e81430191a319d138b0" }
+wheels = [
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/alembic/1.19.2/alembic-1.19.2-py3-none-any.whl", hash = "sha256:32d553dcd577e6fe5c3c63e91468526d35e4dcecafe865d7db4e9b328fa93cb2" },
+]
+
+[[package]]
 name = "annotated-doc"
 version = "0.0.5"
 source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }
@@ -119,9 +133,27 @@ score = [
     { name = "zarr", version = "3.1.6", source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }, marker = "python_full_version < '3.12'" },
     { name = "zarr", version = "3.3.0", source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }, marker = "python_full_version >= '3.12'" },
 ]
+tune = [
+    { name = "blosc2" },
+    { name = "geff" },
+    { name = "joblib" },
+    { name = "optuna" },
+    { name = "pandas" },
+    { name = "rustworkx" },
+    { name = "scikit-learn" },
+    { name = "scipy", version = "1.17.1", source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "scipy", version = "1.18.1", source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "tensorboard" },
+    { name = "threadpoolctl" },
+    { name = "torch" },
+    { name = "tracksdata" },
+    { name = "zarr", version = "3.1.6", source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "zarr", version = "3.3.0", source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }, marker = "python_full_version >= '3.12'" },
+]
 
 [package.dev-dependencies]
 dev = [
+    { name = "optuna" },
     { name = "pytest" },
     { name = "ruff" },
     { name = "ty" },
@@ -149,16 +181,21 @@ score = [
     { name = "zarr", version = "3.1.6", source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }, marker = "python_full_version < '3.12'" },
     { name = "zarr", version = "3.3.0", source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }, marker = "python_full_version >= '3.12'" },
 ]
+tune = [
+    { name = "optuna" },
+]
 
 [package.metadata]
 requires-dist = [
     { name = "biohub", extras = ["infer"], marker = "extra == 'encoders'" },
+    { name = "biohub", extras = ["infer"], marker = "extra == 'tune'" },
     { name = "biohub", extras = ["score"], marker = "extra == 'infer'" },
     { name = "blosc2", marker = "extra == 'score'" },
     { name = "cellpose", marker = "extra == 'encoders'", specifier = ">=3.0.1" },
     { name = "geff", marker = "extra == 'score'", specifier = ">=1.1.3" },
     { name = "joblib", marker = "extra == 'infer'" },
     { name = "numpy", specifier = ">=1.26.4,<3.0.0" },
+    { name = "optuna", marker = "extra == 'tune'", specifier = ">=4.0.0,<5.0.0" },
     { name = "pandas", marker = "extra == 'infer'", specifier = ">=2.2.0,<3.0.0" },
     { name = "polars", specifier = ">=1.20.0,<2.0.0" },
     { name = "pyarrow", specifier = ">=16.0.0,<22.0.0" },
@@ -175,10 +212,11 @@ requires-dist = [
     { name = "tracksdata", marker = "extra == 'score'" },
     { name = "zarr", marker = "extra == 'score'", specifier = ">=3.0.10,<4" },
 ]
-provides-extras = ["score", "infer", "encoders"]
+provides-extras = ["score", "infer", "encoders", "tune"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "optuna", specifier = ">=4.0.0,<5.0.0" },
     { name = "pytest", specifier = ">=8.0.0,<9.0.0" },
     { name = "ruff", specifier = ">=0.13.0,<0.14.0" },
     { name = "ty", specifier = ">=0.0.40" },
@@ -204,6 +242,7 @@ score = [
     { name = "tracksdata" },
     { name = "zarr", specifier = ">=3.0.10,<4" },
 ]
+tune = [{ name = "optuna", specifier = ">=4.0.0,<5.0.0" }]
 
 [[package]]
 name = "blosc2"
@@ -304,6 +343,18 @@ source = { registry = "http://package-cache-pypi.query.consul-tech/repository/py
 sdist = { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/colorama/0.4.6/colorama-0.4.6.tar.gz", hash = "sha256:08695f5cb7ed6e0531a20572697297273c47b8cae5a63ffc6d6ed5c201be6e44" }
 wheels = [
     { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/colorama/0.4.6/colorama-0.4.6-py2.py3-none-any.whl", hash = "sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6" },
+]
+
+[[package]]
+name = "colorlog"
+version = "6.12.0"
+source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }
+dependencies = [
+    { name = "colorama", marker = "sys_platform == 'win32'" },
+]
+sdist = { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/colorlog/6.12.0/colorlog-6.12.0.tar.gz", hash = "sha256:2a7924c1dadf18b22a0eb8b06d1c7b01d5341707ec1641eb6fcc4fde0c3e8e5f" }
+wheels = [
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/colorlog/6.12.0/colorlog-6.12.0-py3-none-any.whl", hash = "sha256:30d392604e9110045a2c2aeefc27d7a017abbab63f3a8aee594eac0801df784e" },
 ]
 
 [[package]]
@@ -912,6 +963,18 @@ source = { registry = "http://package-cache-pypi.query.consul-tech/repository/py
 sdist = { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/locket/1.0.0/locket-1.0.0.tar.gz", hash = "sha256:5c0d4c052a8bbbf750e056a8e65ccd309086f4f0f18a2eac306a8dfa4112a632" }
 wheels = [
     { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/locket/1.0.0/locket-1.0.0-py2.py3-none-any.whl", hash = "sha256:b6c819a722f7b6bd955b80781788e4a66a55628b858d347536b7e81325a3a5e3" },
+]
+
+[[package]]
+name = "mako"
+version = "1.4.1"
+source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }
+dependencies = [
+    { name = "markupsafe" },
+]
+sdist = { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/mako/1.4.1/mako-1.4.1.tar.gz", hash = "sha256:d7904710b662996425a21627710c4777c45053146942cf8a7aebf757c92b8c27" }
+wheels = [
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/mako/1.4.1/mako-1.4.1-py3-none-any.whl", hash = "sha256:a359d9a94a541213958742b2698d0a7757bb83551767bc468a74b9905aba9617" },
 ]
 
 [[package]]
@@ -1621,6 +1684,25 @@ wheels = [
     { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/opencv-python-headless/5.0.0.93/opencv_python_headless-5.0.0.93-cp37-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:ed709fdf9aa0bd1f2ed8549e71d19449b03a675bb581eb292285f6861953be37" },
     { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/opencv-python-headless/5.0.0.93/opencv_python_headless-5.0.0.93-cp37-abi3-win32.whl", hash = "sha256:c6bcd96b185975ea240d22cfdb15a1f6d080cc95264cfbe2621f21bb144d89b9" },
     { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/opencv-python-headless/5.0.0.93/opencv_python_headless-5.0.0.93-cp37-abi3-win_amd64.whl", hash = "sha256:829717b6a95554f273e49e357cee3b3a2a26b6f4842fbc1bed2b45bdd8f87e0e" },
+]
+
+[[package]]
+name = "optuna"
+version = "4.9.0"
+source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }
+dependencies = [
+    { name = "alembic" },
+    { name = "colorlog" },
+    { name = "numpy", version = "2.4.6", source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.2", source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "packaging" },
+    { name = "pyyaml" },
+    { name = "sqlalchemy" },
+    { name = "tqdm" },
+]
+sdist = { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/optuna/4.9.0/optuna-4.9.0.tar.gz", hash = "sha256:b322e5cbdf1655fb84c37646c4a7a1f391de1b47806bbe222e015825d0a82b87" }
+wheels = [
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/optuna/4.9.0/optuna-4.9.0-py3-none-any.whl", hash = "sha256:f52f3be6148654850c92a5860d398fd88ec6b2c84ab68d9c3d07dcff02e7afee" },
 ]
 
 [[package]]

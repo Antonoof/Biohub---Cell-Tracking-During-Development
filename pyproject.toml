@@ -35,12 +35,17 @@ encoders = [
     "segment-anything>=1.0",
     "torchvision==0.22.1",
 ]
+tune = [
+    "biohub[infer]",
+    "optuna>=4.0.0,<5.0.0",
+]
 
 [dependency-groups]
 dev = [
     "pytest>=8.0.0,<9.0.0",
     "ruff>=0.13.0,<0.14.0",
     "ty>=0.0.40",
+    "optuna>=4.0.0,<5.0.0",
 ]
 score = [
     "blosc2",
@@ -62,6 +67,9 @@ encoders = [
     "cellpose>=3.0.1",
     "segment-anything>=1.0",
     "torchvision==0.22.1",
+]
+tune = [
+    "optuna>=4.0.0,<5.0.0",
 ]
 
 [build-system]
