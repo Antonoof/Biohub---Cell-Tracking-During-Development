@@ -29,6 +29,7 @@ from biohub.models.deepcenter import DeepCenterUNet3D
 from biohub.train.tensorboard import log_scalars, open_writer
 from biohub.utils.cli import run_argparse_main
 from biohub.utils.seed import dataloader_generator, seed_everything, seed_worker
+from biohub.validation.cv import movie_group_fold_names
 
 VOXEL_SCALE_UM = (1.625, 0.40625, 0.40625)
 
@@ -136,7 +137,20 @@ def split_samples(
     samples: list[dict[str, Any]],
     val_fraction: float,
     seed: int,
+    *,
+    cv_mode: str = 'group_kfold',
+    fold: int = 0,
+    n_folds: int = 5,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    names = [str(sample['name']) for sample in samples]
+    if cv_mode == 'group_kfold' and len(set(names)) >= 2:
+        train_names, val_names = movie_group_fold_names(names, fold, n_folds)
+        train_set = set(train_names)
+        val_set = set(val_names)
+        train = [sample for sample in samples if str(sample['name']) in train_set]
+        val = [sample for sample in samples if str(sample['name']) in val_set]
+        if train:
+            return train, val
     rng = random.Random(seed)
     by_embryo: dict[str, list[dict[str, Any]]] = {}
     for sample in samples:
@@ -646,7 +660,14 @@ def train(args: argparse.Namespace) -> None:
     print(json.dumps(asdict(cfg), indent=2, sort_keys=True))
 
     samples = discover_samples(data_dir, cfg)
-    train_samples, val_samples = split_samples(samples, cfg.val_fraction, cfg.seed)
+    train_samples, val_samples = split_samples(
+        samples,
+        cfg.val_fraction,
+        cfg.seed,
+        cv_mode=str(args.cv_mode),
+        fold=int(args.fold),
+        n_folds=int(args.n_folds),
+    )
     print(f'samples: total={len(samples)} train={len(train_samples)} val={len(val_samples)}')
     print('train sample examples:', [s['name'] for s in train_samples[:5]])
     print('val sample examples:', [s['name'] for s in val_samples[:5]])
@@ -868,6 +889,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--frames-per-movie', type=int, default=0)
     parser.add_argument('--movie-limit', type=int, default=None)
     parser.add_argument('--val-fraction', type=float, default=0.10)
+    parser.add_argument('--cv-mode', choices=('group_kfold', 'embryo'), default='group_kfold')
+    parser.add_argument('--fold', type=int, default=0)
+    parser.add_argument('--n-folds', type=int, default=5)
     parser.add_argument('--num-workers', type=int, default=4)
     parser.add_argument('--learning-rate', type=float, default=1.0e-3)
     parser.add_argument('--weight-decay', type=float, default=0.0)

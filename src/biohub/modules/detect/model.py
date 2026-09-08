@@ -10,7 +10,7 @@ import tracksdata as td
 
 from biohub.features.position import POS_EMBED_DIM
 from biohub.models.detector import UNetNodeTransformer
-from biohub.models.temporal_unet import TemporalUNet3D
+from biohub.models.temporal_unet import TemporalUNet3D, unet_in_channels
 
 _DEFAULT_CONFIG: dict[str, Any] = {
     'unet_out_channels': 32,
@@ -22,6 +22,34 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     'n_blocks': 4,
     'dropout': 0.3,
     'pos_feat_dim': 4 * POS_EMBED_DIM,
+    'mlp_ratio': 2.0,
+    'pair_chunk_size': 32,
+    'skip_fullres_temporal': True,
+    'unet_n_heads': 4,
+    'drop_path': 0.0,
+    'use_self_attn': False,
+    'norm': 'layernorm',
+    'rel_coord_scale': 100.0,
+    'pair_head': 'mlp',
+    'layer_scale_init': 0.0,
+    'ffn_act': 'gelu',
+    'attn_dropout': 0.3,
+    'drop_path_decay': False,
+    'pair_geom': 'rel',
+    'se_ratio': 0.0,
+    'unet_block': 'plain',
+    'unet_norm': 'batchnorm',
+    'unet_gn_groups': 8,
+    'unet_deform': False,
+    'temporal_mix': 'attn',
+    'coord_kind': 'none',
+    'fourier_bands': 4,
+    'flow_input': 'none',
+    'extra_encoder': 'none',
+    'extra_encoder_channels': 8,
+    'extra_encoder_freeze': True,
+    'extra_encoder_weights': None,
+    'feature_sample': 'nearest',
 }
 
 
@@ -79,11 +107,55 @@ def load_model(
     n_blocks = int(config.get('n_blocks', 4))
     dropout = float(config.get('dropout', 0.3))
     pos_feat_dim = int(config.get('pos_feat_dim', 4 * POS_EMBED_DIM))
+    mlp_ratio = float(config.get('mlp_ratio', 2.0))
+    raw_chunk = config.get('pair_chunk_size', 32)
+    pair_chunk_size = None if raw_chunk in (None, 0) else int(raw_chunk)
+    skip_fullres_temporal = bool(config.get('skip_fullres_temporal', True))
+    unet_n_heads = int(config.get('unet_n_heads', 4))
+    drop_path = float(config.get('drop_path', 0.0))
+    use_self_attn = bool(config.get('use_self_attn', False))
+    norm = str(config.get('norm', 'layernorm'))
+    rel_coord_scale = float(config.get('rel_coord_scale', 100.0))
+    pair_head = str(config.get('pair_head', 'mlp'))
+    layer_scale_init = float(config.get('layer_scale_init', 0.0))
+    ffn_act = str(config.get('ffn_act', 'gelu'))
+    attn_dropout = float(config.get('attn_dropout', dropout))
+    drop_path_decay = bool(config.get('drop_path_decay', False))
+    pair_geom = str(config.get('pair_geom', 'rel'))
+    se_ratio = float(config.get('se_ratio', 0.0))
+    unet_block = str(config.get('unet_block', 'plain'))
+    unet_norm = str(config.get('unet_norm', 'batchnorm'))
+    unet_gn_groups = int(config.get('unet_gn_groups', 8))
+    unet_deform = bool(config.get('unet_deform', False))
+    temporal_mix = str(config.get('temporal_mix', 'attn'))
+    coord_kind = str(config.get('coord_kind', 'none'))
+    fourier_bands = int(config.get('fourier_bands', 4))
+    flow_input = str(config.get('flow_input', 'none'))
+    extra_encoder = str(config.get('extra_encoder', 'none'))
+    extra_encoder_channels = int(config.get('extra_encoder_channels', 8))
+    extra_encoder_freeze = bool(config.get('extra_encoder_freeze', True))
+    extra_weights = config.get('extra_encoder_weights')
+    extra_encoder_weights = None if extra_weights in (None, '', 0) else str(extra_weights)
+    feature_sample = str(config.get('feature_sample', 'nearest'))
 
     unet = TemporalUNet3D(
-        in_channels=1,
+        in_channels=unet_in_channels(
+            coord_kind=coord_kind,
+            fourier_bands=fourier_bands,
+            flow_input=flow_input,
+            extra_encoder=extra_encoder,
+            extra_encoder_channels=extra_encoder_channels,
+        ),
         out_channels=out_channels,
         layers=layers,
+        skip_fullres_temporal=skip_fullres_temporal,
+        temporal_n_heads=unet_n_heads,
+        se_ratio=se_ratio,
+        unet_block=unet_block,
+        unet_norm=unet_norm,
+        unet_gn_groups=unet_gn_groups,
+        unet_deform=unet_deform,
+        temporal_mix=temporal_mix,
     )
     model = UNetNodeTransformer(
         unet=unet,
@@ -93,6 +165,26 @@ def load_model(
         n_heads=n_heads,
         n_blocks=n_blocks,
         dropout=dropout,
+        mlp_ratio=mlp_ratio,
+        pair_chunk_size=pair_chunk_size,
+        drop_path=drop_path,
+        use_self_attn=use_self_attn,
+        norm=norm,
+        rel_coord_scale=rel_coord_scale,
+        pair_head=pair_head,
+        layer_scale_init=layer_scale_init,
+        ffn_act=ffn_act,
+        attn_dropout=attn_dropout,
+        drop_path_decay=drop_path_decay,
+        pair_geom=pair_geom,
+        feature_sample=feature_sample,
+        coord_kind=coord_kind,
+        fourier_bands=fourier_bands,
+        flow_input=flow_input,
+        extra_encoder=extra_encoder,
+        extra_encoder_channels=extra_encoder_channels,
+        extra_encoder_freeze=extra_encoder_freeze,
+        extra_encoder_weights=extra_encoder_weights,
     )
     state = torch.load(weights_path, map_location=device, weights_only=True)
     saved_arch = state.get('_arch')
@@ -104,7 +196,7 @@ def load_model(
                 f'Detector architecture mismatch: checkpoint {saved} vs config {constructed}'
             )
     missing, unexpected = model.load_state_dict(state, strict=False)
-    allowed_missing = {'_arch'}
+    allowed_missing = {'_arch', 'offset_head.weight', 'offset_head.bias'}
     bad_missing = [key for key in missing if key not in allowed_missing]
     if bad_missing or unexpected:
         raise RuntimeError(

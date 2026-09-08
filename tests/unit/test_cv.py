@@ -1,7 +1,13 @@
 import numpy as np
 from sklearn.model_selection import GroupKFold
 
-from biohub.validation.cv import EMBRYOS, embryo_two_fold, movie_group_kfold
+from biohub.validation.cv import (
+    EMBRYOS,
+    embryo_two_fold,
+    movie_group_fold_names,
+    movie_group_kfold,
+    payload_movie_names,
+)
 from biohub.validation.splits import detector_validation_role
 
 
@@ -14,6 +20,17 @@ def test_movie_group_kfold_is_five_fold_by_movie() -> None:
         np.testing.assert_array_equal(fit, exp_fit)
         np.testing.assert_array_equal(held, exp_held)
         assert set(groups[held]).isdisjoint(set(groups[fit]))
+
+
+def test_movie_group_fold_names_holds_out_movies() -> None:
+    movies = [f'movie_{index}.zarr' for index in range(10)]
+    train, val = movie_group_fold_names(movies, fold=0, n_splits=5)
+    assert train and val
+    assert set(train).isdisjoint(set(val))
+    assert set(train) | set(val) == set(movies)
+    payload = {'0': {'train': movies[:8], 'test': movies[8:]}}
+    names = payload_movie_names(payload)
+    assert names == movies
 
 
 def test_embryo_two_fold_swaps_44b6_and_6bba() -> None:

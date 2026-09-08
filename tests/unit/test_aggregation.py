@@ -1,7 +1,7 @@
 import math
 
 from biohub.contracts import EvaluationLevel
-from biohub.metrics.aggregation import nan_row, per_sample_metrics, summarise
+from biohub.metrics.aggregation import competition_score, nan_row, per_sample_metrics, summarise
 from biohub.metrics.scorer import IncompleteEvaluationError, completeness
 
 
@@ -77,3 +77,39 @@ def test_failed_movie_is_not_silently_skipped() -> None:
     )
     assert report.failed_movies == ('bad',)
     assert not report.complete
+
+
+def test_competition_score_matches_official_formula() -> None:
+    perfect = competition_score(
+        edge_tp=10,
+        edge_fp=0,
+        edge_fn=0,
+        division_tp=0,
+        division_fp=0,
+        division_fn=0,
+        num_pred_nodes=100,
+        n_total=100,
+    )
+    assert math.isclose(perfect, 1.0)
+    with_div = competition_score(
+        edge_tp=10,
+        edge_fp=0,
+        edge_fn=0,
+        division_tp=2,
+        division_fp=0,
+        division_fn=0,
+        num_pred_nodes=100,
+        n_total=100,
+    )
+    assert math.isclose(with_div, 1.1)
+    empty = competition_score(
+        edge_tp=0,
+        edge_fp=0,
+        edge_fn=0,
+        division_tp=0,
+        division_fp=0,
+        division_fn=0,
+        num_pred_nodes=0,
+        n_total=0,
+    )
+    assert empty == 0.0

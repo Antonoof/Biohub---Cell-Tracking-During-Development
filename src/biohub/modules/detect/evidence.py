@@ -6,7 +6,7 @@ from scipy.spatial import cKDTree  # ty: ignore[unresolved-import]
 
 from biohub.features.position import extract_pos_features
 from biohub.modules.detect.config import PredictConfig
-from biohub.modules.detect.peaks import detect_cells_pooled
+from biohub.modules.detect.peaks import detect_cells_pooled, index_zyx
 
 _ACTIVE_DETECT_CFG = PredictConfig()
 
@@ -97,8 +97,8 @@ def append_native_evidence_pair(
     downsample_array = np.asarray(downsample, np.float32)
     source_raw = source_native[:, 1:].astype(np.float32)
     target_raw = target_native[:, 1:].astype(np.float32)
-    source_downsampled = np.rint(source_raw / downsample_array).astype(np.float32)
-    target_downsampled = np.rint(target_raw / downsample_array).astype(np.float32)
+    source_downsampled = index_zyx(model, source_raw / downsample_array)
+    target_downsampled = index_zyx(model, target_raw / downsample_array)
     n_source, n_target = len(source_downsampled), len(target_downsampled)
     source_tensor = torch.from_numpy(source_downsampled).unsqueeze(0).to(device)
     target_tensor = torch.from_numpy(target_downsampled).unsqueeze(0).to(device)

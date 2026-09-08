@@ -23,7 +23,7 @@ from biohub.modules.detect.evidence import (
     save_native_evidence,
 )
 from biohub.modules.detect.model import build_graph, load_frame, load_model
-from biohub.modules.detect.peaks import detect_cells_pooled, pool_kernel_from_um
+from biohub.modules.detect.peaks import detect_cells_pooled, index_zyx, pool_kernel_from_um
 from biohub.modules.ilp import apply_ilp
 
 
@@ -474,8 +474,8 @@ def predict_video(
                     if len(native_src) and len(native_tgt):
                         source_raw = native_src[:, 1:].astype(np.float32)
                         target_raw = native_tgt[:, 1:].astype(np.float32)
-                        source_ds = np.rint(source_raw / ds_arr).astype(np.float32)
-                        target_ds = np.rint(target_raw / ds_arr).astype(np.float32)
+                        source_ds = index_zyx(division_model, source_raw / ds_arr)
+                        target_ds = index_zyx(division_model, target_raw / ds_arr)
                         n_div_source, n_div_target = len(source_ds), len(target_ds)
                         div_src = torch.from_numpy(source_ds).unsqueeze(0).to(device)
                         div_tgt = torch.from_numpy(target_ds).unsqueeze(0).to(device)
@@ -593,14 +593,10 @@ def predict_video(
                 idx_tgt = np.arange(s_tgt, e_tgt, dtype=np.int64)
 
                 p_coords_src = (
-                    torch.from_numpy(np.rint(c_src[:, 1:]).astype(np.float32))
-                    .unsqueeze(0)
-                    .to(device)
+                    torch.from_numpy(index_zyx(model, c_src[:, 1:])).unsqueeze(0).to(device)
                 )
                 p_coords_tgt = (
-                    torch.from_numpy(np.rint(c_tgt[:, 1:]).astype(np.float32))
-                    .unsqueeze(0)
-                    .to(device)
+                    torch.from_numpy(index_zyx(model, c_tgt[:, 1:])).unsqueeze(0).to(device)
                 )
                 window_shape = (W,) + image_shape[1:]
                 c_src_rel = np.rint(c_src).astype(np.float32)

@@ -7,15 +7,212 @@ import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint as grad_ckpt
 
 
-def _conv_block(in_channels: int, out_channels: int) -> nn.Sequential:
-    return nn.Sequential(
-        nn.Conv3d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
-        nn.BatchNorm3d(out_channels),
-        nn.ReLU(inplace=True),
-        nn.Conv3d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
-        nn.BatchNorm3d(out_channels),
-        nn.ReLU(inplace=True),
+class SqueezeExcite(nn.Module):
+    def __init__(self, channels: int, ratio: float) -> None:
+        super().__init__()
+        hidden = max(1, int(channels * ratio))
+        self.pool = nn.AdaptiveAvgPool3d(1)
+        self.fc = nn.Sequential(
+            nn.Linear(channels, hidden),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden, channels),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        weight = self.fc(self.pool(x).flatten(1)).view(x.shape[0], x.shape[1], 1, 1, 1)
+        return x * weight
+
+
+def make_unet_norm(kind: str, channels: int, gn_groups: int) -> nn.Module:
+    if kind == 'groupnorm':
+        groups = min(int(gn_groups), channels)
+        while groups > 1 and channels % groups != 0:
+            groups -= 1
+        return nn.GroupNorm(max(1, groups), channels)
+    if kind == 'batchnorm':
+        return nn.BatchNorm3d(channels)
+    raise ValueError(f'Unknown unet_norm {kind!r}')
+
+
+def _identity_grid(volume: torch.Tensor) -> torch.Tensor:
+    n, _c, depth, height, width = volume.shape
+    zz = torch.linspace(-1.0, 1.0, depth, device=volume.device, dtype=volume.dtype)
+    yy = torch.linspace(-1.0, 1.0, height, device=volume.device, dtype=volume.dtype)
+    xx = torch.linspace(-1.0, 1.0, width, device=volume.device, dtype=volume.dtype)
+    grid_z, grid_y, grid_x = torch.meshgrid(zz, yy, xx, indexing='ij')
+    grid = torch.stack((grid_x, grid_y, grid_z), dim=-1)
+    return grid.unsqueeze(0).expand(n, -1, -1, -1, -1)
+
+
+class DeformConv3d(nn.Module):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int = 3,
+        padding: int = 1,
+        groups: int = 1,
+    ) -> None:
+        super().__init__()
+        self.offset = nn.Conv3d(in_channels, 3, kernel_size=1)
+        nn.init.zeros_(self.offset.weight)
+        if self.offset.bias is not None:
+            nn.init.zeros_(self.offset.bias)
+        self.conv = nn.Conv3d(
+            in_channels,
+            out_channels,
+            kernel_size=kernel_size,
+            padding=padding,
+            bias=False,
+            groups=groups,
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        offset = self.offset(x)
+        depth, height, width = x.shape[2:]
+        scale = x.new_tensor(
+            [max(width - 1, 1) / 2.0, max(height - 1, 1) / 2.0, max(depth - 1, 1) / 2.0]
+        ).view(1, 3, 1, 1, 1)
+        grid = _identity_grid(x) + (offset.permute(0, 2, 3, 4, 1) / scale.permute(0, 2, 3, 4, 1))
+        sampled = F.grid_sample(x, grid, mode='bilinear', padding_mode='border', align_corners=True)
+        return self.conv(sampled)
+
+
+def _spatial_conv(
+    in_channels: int,
+    out_channels: int,
+    *,
+    deform: bool,
+    kernel_size: int = 3,
+    padding: int = 1,
+    groups: int = 1,
+) -> nn.Module:
+    if deform:
+        return DeformConv3d(
+            in_channels, out_channels, kernel_size=kernel_size, padding=padding, groups=groups
+        )
+    return nn.Conv3d(
+        in_channels,
+        out_channels,
+        kernel_size=kernel_size,
+        padding=padding,
+        bias=False,
+        groups=groups,
     )
+
+
+def _conv_block(
+    in_channels: int,
+    out_channels: int,
+    se_ratio: float = 0.0,
+    *,
+    unet_norm: str = 'batchnorm',
+    gn_groups: int = 8,
+    deform: bool = False,
+) -> nn.Sequential:
+    layers: list[nn.Module] = [
+        _spatial_conv(in_channels, out_channels, deform=deform),
+        make_unet_norm(unet_norm, out_channels, gn_groups),
+        nn.ReLU(inplace=True),
+        _spatial_conv(out_channels, out_channels, deform=deform),
+        make_unet_norm(unet_norm, out_channels, gn_groups),
+        nn.ReLU(inplace=True),
+    ]
+    if se_ratio > 0:
+        layers.append(SqueezeExcite(out_channels, se_ratio))
+    return nn.Sequential(*layers)
+
+
+class ResidualBlock3d(nn.Module):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        se_ratio: float,
+        unet_norm: str,
+        gn_groups: int,
+        deform: bool,
+    ) -> None:
+        super().__init__()
+        self.conv1 = _spatial_conv(in_channels, out_channels, deform=deform)
+        self.norm1 = make_unet_norm(unet_norm, out_channels, gn_groups)
+        self.conv2 = _spatial_conv(out_channels, out_channels, deform=deform)
+        self.norm2 = make_unet_norm(unet_norm, out_channels, gn_groups)
+        self.relu = nn.ReLU(inplace=True)
+        self.skip = (
+            nn.Identity()
+            if in_channels == out_channels
+            else nn.Conv3d(in_channels, out_channels, kernel_size=1, bias=False)
+        )
+        self.se = SqueezeExcite(out_channels, se_ratio) if se_ratio > 0 else nn.Identity()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        residual = self.skip(x)
+        x = self.relu(self.norm1(self.conv1(x)))
+        x = self.norm2(self.conv2(x))
+        x = self.relu(x + residual)
+        return self.se(x)
+
+
+class ConvNeXtBlock3d(nn.Module):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        se_ratio: float,
+        unet_norm: str,
+        gn_groups: int,
+        deform: bool,
+    ) -> None:
+        super().__init__()
+        hidden = 4 * in_channels
+        self.dw = _spatial_conv(
+            in_channels, in_channels, deform=deform, kernel_size=7, padding=3, groups=in_channels
+        )
+        self.norm = make_unet_norm(unet_norm, in_channels, gn_groups)
+        self.pw1 = nn.Conv3d(in_channels, hidden, kernel_size=1)
+        self.act = nn.GELU()
+        self.pw2 = nn.Conv3d(hidden, out_channels, kernel_size=1)
+        self.skip = (
+            nn.Identity()
+            if in_channels == out_channels
+            else nn.Conv3d(in_channels, out_channels, kernel_size=1, bias=False)
+        )
+        self.se = SqueezeExcite(out_channels, se_ratio) if se_ratio > 0 else nn.Identity()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        residual = self.skip(x)
+        x = self.dw(x)
+        x = self.norm(x)
+        x = self.pw2(self.act(self.pw1(x)))
+        return self.se(x + residual)
+
+
+def make_stage_block(
+    in_channels: int,
+    out_channels: int,
+    *,
+    unet_block: str,
+    se_ratio: float,
+    unet_norm: str,
+    gn_groups: int,
+    deform: bool,
+) -> nn.Module:
+    if unet_block == 'plain':
+        return _conv_block(
+            in_channels,
+            out_channels,
+            se_ratio,
+            unet_norm=unet_norm,
+            gn_groups=gn_groups,
+            deform=deform,
+        )
+    if unet_block == 'residual':
+        return ResidualBlock3d(in_channels, out_channels, se_ratio, unet_norm, gn_groups, deform)
+    if unet_block == 'convnext':
+        return ConvNeXtBlock3d(in_channels, out_channels, se_ratio, unet_norm, gn_groups, deform)
+    raise ValueError(f'Unknown unet_block {unet_block!r}')
 
 
 class _TemporalAttention(nn.Module):
@@ -36,14 +233,82 @@ class _TemporalAttention(nn.Module):
         return x + h
 
 
+class _TemporalConv(nn.Module):
+    def __init__(self, channels: int) -> None:
+        super().__init__()
+        self.norm = nn.GroupNorm(1, channels)
+        self.conv = nn.Conv3d(channels, channels, kernel_size=3, padding=1, bias=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, T, C, Z = x.shape[:4]
+        spatial = x.shape[4:]
+        h = x.permute(0, 3, 2, 1, 4, 5).reshape(B * Z, C, T, *spatial)
+        h = self.conv(self.norm(h))
+        h = h.reshape(B, Z, C, T, *spatial).permute(0, 3, 2, 1, 4, 5)
+        return x + h
+
+
+def make_temporal_block(
+    channels: int,
+    *,
+    temporal_mix: str,
+    n_heads: int,
+    skip: bool,
+) -> nn.Module:
+    if skip or temporal_mix == 'none':
+        return nn.Identity()
+    if temporal_mix == 'attn':
+        return _TemporalAttention(channels, n_heads=n_heads)
+    if temporal_mix == 'conv':
+        return _TemporalConv(channels)
+    if temporal_mix == 'both':
+        return nn.Sequential(_TemporalConv(channels), _TemporalAttention(channels, n_heads=n_heads))
+    raise ValueError(f'Unknown temporal_mix {temporal_mix!r}')
+
+
+def unet_in_channels(
+    *,
+    coord_kind: str = 'none',
+    fourier_bands: int = 4,
+    flow_input: str = 'none',
+    extra_encoder: str = 'none',
+    extra_encoder_channels: int = 8,
+) -> int:
+    channels = 1
+    if coord_kind == 'coord':
+        channels += 3
+    elif coord_kind == 'fourier':
+        channels += 6 * int(fourier_bands)
+    elif coord_kind != 'none':
+        raise ValueError(f'Unknown coord_kind {coord_kind!r}')
+    if flow_input == 'frame_diff':
+        channels += 1
+    elif flow_input == 'spatial_grad':
+        channels += 3
+    elif flow_input == 'frame_diff_grad':
+        channels += 4
+    elif flow_input != 'none':
+        raise ValueError(f'Unknown flow_input {flow_input!r}')
+    if extra_encoder != 'none':
+        channels += int(extra_encoder_channels)
+    return channels
+
+
 class TemporalUNet3D(nn.Module):
     def __init__(
         self,
         in_channels: int = 1,
         out_channels: int = 32,
         layers: Sequence[int] = (32, 64, 128),
-        gradient_checkpointing: bool = True,
+        gradient_checkpointing: bool = False,
         skip_fullres_temporal: bool = True,
+        temporal_n_heads: int = 4,
+        se_ratio: float = 0.0,
+        unet_block: str = 'plain',
+        unet_norm: str = 'batchnorm',
+        unet_gn_groups: int = 8,
+        unet_deform: bool = False,
+        temporal_mix: str = 'attn',
     ) -> None:
         super().__init__()
         stage_widths = list(layers)
@@ -56,11 +321,25 @@ class TemporalUNet3D(nn.Module):
         self.temporal_blocks = nn.ModuleList()
         prev = in_channels
         for i, ch in enumerate(stage_widths):
-            self.encoder_blocks.append(_conv_block(prev, ch))
-            if skip_fullres_temporal and i == 0:
-                self.temporal_blocks.append(nn.Identity())
-            else:
-                self.temporal_blocks.append(_TemporalAttention(ch))
+            self.encoder_blocks.append(
+                make_stage_block(
+                    prev,
+                    ch,
+                    unet_block=unet_block,
+                    se_ratio=se_ratio,
+                    unet_norm=unet_norm,
+                    gn_groups=unet_gn_groups,
+                    deform=unet_deform,
+                )
+            )
+            self.temporal_blocks.append(
+                make_temporal_block(
+                    ch,
+                    temporal_mix=temporal_mix,
+                    n_heads=temporal_n_heads,
+                    skip=bool(skip_fullres_temporal and i == 0),
+                )
+            )
             prev = ch
         self.pool = nn.MaxPool3d(kernel_size=2, stride=2)
 
@@ -71,7 +350,15 @@ class TemporalUNet3D(nn.Module):
                 nn.Upsample(scale_factor=2, mode='trilinear', align_corners=False)
             )
             self.decoder_blocks.append(
-                _conv_block(stage_widths[i] + stage_widths[i - 1], stage_widths[i - 1])
+                make_stage_block(
+                    stage_widths[i] + stage_widths[i - 1],
+                    stage_widths[i - 1],
+                    unet_block=unet_block,
+                    se_ratio=se_ratio,
+                    unet_norm=unet_norm,
+                    gn_groups=unet_gn_groups,
+                    deform=unet_deform,
+                )
             )
 
         self.head = nn.Conv3d(stage_widths[0], out_channels, kernel_size=1)

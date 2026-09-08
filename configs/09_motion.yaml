@@ -1,6 +1,9 @@
 data: kaggle/input/competitions/biohub-cell-tracking-during-development/train
 proposals: data/ab_proposals_export/biohub_ab_proposals
 splits: data/splits_ensembleB.json
+fold: 0
+cv_mode: group_kfold
+n_folds: 5
 cache: cache/motion_cost_cache
 output: runs/motion_corrector
 tight: 6.2

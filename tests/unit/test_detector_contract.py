@@ -11,14 +11,25 @@ from biohub.models.temporal_unet import TemporalUNet3D
 from biohub.modules.detect.model import load_model
 from biohub.train.detector import (
     build_matched_edge_targets,
+    checkpoint_score,
     detect_and_match,
+    optional_positive_int,
     prepare_detector_output,
+    resolve_train_device,
 )
 from biohub.train.motion_cache import build_model
 
 
 def _tiny_detector(
-    *, hidden_dim: int = 32, n_heads: int = 4, n_blocks: int = 1
+    *,
+    hidden_dim: int = 32,
+    n_heads: int = 4,
+    n_blocks: int = 1,
+    mlp_ratio: float = 2.0,
+    use_self_attn: bool = False,
+    norm: str = 'layernorm',
+    pair_head: str = 'mlp',
+    rel_coord_scale: float = 100.0,
 ) -> UNetNodeTransformer:
     unet = TemporalUNet3D(
         in_channels=1,
@@ -34,6 +45,11 @@ def _tiny_detector(
         n_heads=n_heads,
         n_blocks=n_blocks,
         dropout=0.0,
+        mlp_ratio=mlp_ratio,
+        use_self_attn=use_self_attn,
+        norm=norm,
+        pair_head=pair_head,
+        rel_coord_scale=rel_coord_scale,
     )
     model.eval()
     return model
@@ -107,6 +123,32 @@ def test_load_model_restores_nondefault_hidden_dim(tmp_path: Path) -> None:
         'n_blocks': 1,
         'dropout': 0.0,
         'pos_feat_dim': 8,
+    }
+    loaded, _window, _downsample = load_model(
+        _write_detector(tmp_path, model, config), torch.device('cpu')
+    )
+    loaded_det, loaded_edges = _edge_logits(loaded, imgs)
+    assert torch.allclose(det, loaded_det, atol=1e-5, rtol=1e-5)
+    assert torch.allclose(edges, loaded_edges, atol=1e-5, rtol=1e-5)
+
+
+@torch.no_grad()
+def test_load_model_restores_nondefault_mlp_ratio(tmp_path: Path) -> None:
+    torch.manual_seed(4)
+    model = _tiny_detector(mlp_ratio=1.0)
+    imgs = torch.rand(1, 2, 4, 8, 8)
+    det, edges = _edge_logits(model, imgs)
+    config = {
+        'unet_out_channels': 4,
+        'unet_layers': [8, 16],
+        'downsample': [1, 1, 1],
+        'window_size': 2,
+        'hidden_dim': 32,
+        'n_heads': 4,
+        'n_blocks': 1,
+        'dropout': 0.0,
+        'pos_feat_dim': 8,
+        'mlp_ratio': 1.0,
     }
     loaded, _window, _downsample = load_model(
         _write_detector(tmp_path, model, config), torch.device('cpu')
@@ -297,6 +339,35 @@ def test_empty_target_frame_train_step_has_finite_grads() -> None:
             assert torch.isfinite(param.grad).all()
 
 
+def test_detect_and_match_thresholds_sigmoid_probability() -> None:
+    logits = torch.full((1, 1, 3, 3, 3), -8.0)
+    logits[0, 0, 1, 1, 1] = 0.2
+    gt = torch.zeros(1, 1, 3)
+    mask = torch.zeros(1, 1, dtype=torch.bool)
+    image_shape = (1, 3, 3, 3)
+    voxel = (1.0, 1.0, 1.0)
+    _coords, _pos, det_mask, _matches, _couplings = detect_and_match(
+        logits,
+        gt,
+        mask,
+        image_shape,
+        det_threshold=0.5,
+        voxel_size=voxel,
+        pool_kernel_um=1.0,
+    )
+    assert bool(det_mask[0].any())
+    _coords_hi, _pos_hi, det_mask_hi, _, _ = detect_and_match(
+        logits,
+        gt,
+        mask,
+        image_shape,
+        det_threshold=0.6,
+        voxel_size=voxel,
+        pool_kernel_um=1.0,
+    )
+    assert not bool(det_mask_hi[0].any())
+
+
 def test_prepare_detector_output_refuses_nonempty_without_overwrite(tmp_path: Path) -> None:
     occupied = tmp_path / 'split_0'
     occupied.mkdir()
@@ -307,3 +378,99 @@ def test_prepare_detector_output_refuses_nonempty_without_overwrite(tmp_path: Pa
     empty = tmp_path / 'split_1'
     prepare_detector_output(empty, overwrite=False)
     assert empty.is_dir()
+
+
+def test_checkpoint_score_selects_configured_metric() -> None:
+    values = {
+        'acc_times_recall': 0.2,
+        'competition_metric': 0.8,
+        'acc': 0.5,
+        'recall': 0.4,
+        'neg_loss': -1.5,
+    }
+    assert checkpoint_score('competition_metric', values) == 0.8
+    assert checkpoint_score('acc_times_recall', values) == 0.2
+    assert checkpoint_score('edge_f1', {**values, 'edge_f1': 0.7}) == 0.7
+    with pytest.raises(ValueError, match='Unknown checkpoint_metric'):
+        checkpoint_score('not_a_metric', values)
+
+
+def test_optional_positive_int_and_cpu_device() -> None:
+    assert optional_positive_int(32) == 32
+    assert optional_positive_int(0) is None
+    assert resolve_train_device('cpu').type == 'cpu'
+
+
+@torch.no_grad()
+def test_load_model_roundtrip_arch_menu(tmp_path: Path) -> None:
+    torch.manual_seed(5)
+    model = _tiny_detector(
+        use_self_attn=True, norm='rmsnorm', pair_head='bilinear', rel_coord_scale=50.0
+    )
+    imgs = torch.rand(1, 2, 4, 8, 8)
+    det, edges = _edge_logits(model, imgs)
+    config = {
+        'unet_out_channels': 4,
+        'unet_layers': [8, 16],
+        'downsample': [1, 1, 1],
+        'window_size': 2,
+        'hidden_dim': 32,
+        'n_heads': 4,
+        'n_blocks': 1,
+        'dropout': 0.0,
+        'pos_feat_dim': 8,
+        'use_self_attn': True,
+        'norm': 'rmsnorm',
+        'pair_head': 'bilinear',
+        'rel_coord_scale': 50.0,
+    }
+    loaded, _window, _downsample = load_model(
+        _write_detector(tmp_path, model, config), torch.device('cpu')
+    )
+    loaded_det, loaded_edges = _edge_logits(loaded, imgs)
+    assert torch.allclose(det, loaded_det, atol=1e-5, rtol=1e-5)
+    assert torch.allclose(edges, loaded_edges, atol=1e-5, rtol=1e-5)
+
+
+@torch.no_grad()
+def test_load_model_rejects_bilinear_weights_with_mlp_config(tmp_path: Path) -> None:
+    torch.manual_seed(6)
+    model = _tiny_detector(pair_head='bilinear')
+    config = {
+        'unet_out_channels': 4,
+        'unet_layers': [8, 16],
+        'downsample': [1, 1, 1],
+        'window_size': 2,
+        'hidden_dim': 32,
+        'n_heads': 4,
+        'n_blocks': 1,
+        'dropout': 0.0,
+        'pos_feat_dim': 8,
+        'pair_head': 'mlp',
+    }
+    weights = _write_detector(tmp_path, model, config)
+    with pytest.raises(RuntimeError, match='state_dict mismatch'):
+        load_model(weights, torch.device('cpu'))
+
+
+@torch.no_grad()
+def test_load_model_allows_missing_offset_head(tmp_path: Path) -> None:
+    torch.manual_seed(7)
+    model = _tiny_detector()
+    config = {
+        'unet_out_channels': 4,
+        'unet_layers': [8, 16],
+        'downsample': [1, 1, 1],
+        'window_size': 2,
+        'hidden_dim': 32,
+        'n_heads': 4,
+        'n_blocks': 1,
+        'dropout': 0.0,
+        'pos_feat_dim': 8,
+    }
+    weights = _write_detector(tmp_path, model, config)
+    state = torch.load(weights, map_location='cpu', weights_only=True)
+    state = {k: v for k, v in state.items() if not k.startswith('offset_head.')}
+    torch.save(state, weights)
+    loaded, _window, _downsample = load_model(weights, torch.device('cpu'))
+    assert loaded.offset_head.weight.shape[0] == 3

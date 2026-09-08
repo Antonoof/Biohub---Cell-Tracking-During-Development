@@ -2,6 +2,8 @@ data: kaggle/input/competitions/biohub-cell-tracking-during-development/train
 proposals: data/ab_proposals_export/biohub_ab_proposals
 splits: data/splits_ensembleB.json
 fold: 0
+cv_mode: group_kfold
+n_folds: 5
 init_weights: runs/01_p2/unet_transformer/split_0/edge_predictor_best.pth
 anchor_weights: runs/01_p1/unet_transformer/split_0/edge_predictor_best.pth
 output: runs/09_motion_cache

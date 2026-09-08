@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from biohub.losses.association import compute_loss
+from biohub.losses.association import compute_loss, pair_event_counts
 from biohub.models import SimpleNodeTransformer, TemporalUNet3D
 from biohub.models.option_head import OptionHead
 from biohub.train.detector import require_finite, require_finite_grads
@@ -60,6 +60,15 @@ def test_association_loss_empty_target_stays_finite() -> None:
     loss.backward()
     assert logits.grad is not None
     assert torch.isfinite(logits.grad).all()
+
+
+def test_pair_event_counts_edges_and_divisions() -> None:
+    identity = torch.tensor([[20.0, -20.0], [-20.0, 20.0]])
+    target = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
+    assert pair_event_counts(identity, target) == (2, 0, 0, 0, 0, 0)
+    split = torch.tensor([[20.0, 20.0], [-20.0, -20.0]])
+    split_target = torch.tensor([[1.0, 1.0], [0.0, 0.0]])
+    assert pair_event_counts(split, split_target) == (2, 0, 0, 1, 0, 0)
 
 
 def test_require_finite_rejects_nan_loss_and_grads() -> None:

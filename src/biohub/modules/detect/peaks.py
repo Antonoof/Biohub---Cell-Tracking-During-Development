@@ -16,7 +16,7 @@ def pool_kernel_from_um(
     return tuple(kernel)
 
 
-def _subvoxel_offsets(
+def subvoxel_offsets(
     logits: torch.Tensor,
     peak_idx: torch.Tensor,
     max_shift: float = 0.49,
@@ -66,7 +66,14 @@ def detect_cells_pooled(
 
     refined = peak_idx.float()
     if refine:
-        refined = refined + _subvoxel_offsets(det_logits[0], peak_idx)
+        refined = refined + subvoxel_offsets(det_logits[0], peak_idx)
     coords = refined.cpu().numpy()
     t_col = np.full((len(coords), 1), t, dtype=np.float32)
     return np.concatenate([t_col, coords], axis=1).astype(np.float32)
+
+
+def index_zyx(model: object, zyx: np.ndarray) -> np.ndarray:
+    arr = np.asarray(zyx, dtype=np.float32)
+    if getattr(model, 'feature_sample', 'nearest') == 'nearest':
+        return np.rint(arr).astype(np.float32)
+    return arr

@@ -45,6 +45,9 @@ def argspec():
         '--proposals', type=Path, default=Path('data/ab_proposals_export/biohub_ab_proposals')
     )
     p.add_argument('--splits', type=Path, default=Path('data/splits_ensembleB.json'))
+    p.add_argument('--fold', type=int, default=0)
+    p.add_argument('--cv-mode', choices=('group_kfold', 'file'), default='group_kfold')
+    p.add_argument('--n-folds', type=int, default=5)
     p.add_argument('--cache', type=Path, default=Path('data/motion_cost_cache'))
     p.add_argument('--output', type=Path, default=Path('runs/weights/motion_cost_corrector'))
     p.add_argument('--tight', type=float, default=6.2)
@@ -555,7 +558,9 @@ def main():
     args = argspec()
     seed_everything(int(args.seed), deterministic=bool(args.deterministic))
     args.device = str(torch.device(args.device if torch.cuda.is_available() else 'cpu'))
-    tr, va = ft.load_split(args.splits, 0)
+    tr, va = ft.load_split(
+        args.splits, int(args.fold), cv_mode=str(args.cv_mode), n_folds=int(args.n_folds)
+    )
     train_stems = tr[: args.max_videos or None]
     val_stems = va[: args.max_videos or None]
     if args.rebuild_cache or not (args.cache / 'train.npz').exists():

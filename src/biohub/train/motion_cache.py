@@ -18,6 +18,7 @@ from biohub.train.tensorboard import log_scalars, open_writer
 from biohub.utils.cli import run_argparse_main
 from biohub.utils.parallel import ordered_process_map
 from biohub.utils.seed import dataloader_generator, seed_everything, seed_worker
+from biohub.validation.cv import movie_group_fold_names, payload_movie_names
 
 
 def parse_args():
@@ -28,6 +29,8 @@ def parse_args():
     )
     p.add_argument('--splits', type=Path, default=Path('data/splits_ensembleB.json'))
     p.add_argument('--fold', type=int, default=0)
+    p.add_argument('--cv-mode', choices=('group_kfold', 'file'), default='group_kfold')
+    p.add_argument('--n-folds', type=int, default=5)
     p.add_argument(
         '--init-weights', type=Path, required=True, help='Existing model B edge_predictor_best.pth'
     )
@@ -70,8 +73,16 @@ def seed_all(seed: int, deterministic: bool = False):
     seed_everything(seed, deterministic=deterministic)
 
 
-def load_split(path: Path, fold: int):
+def load_split(path: Path, fold: int, cv_mode: str = 'group_kfold', n_folds: int = 5):
     obj = json.loads(path.read_text())
+    if cv_mode == 'group_kfold':
+        movies = payload_movie_names(obj)
+        train, val = movie_group_fold_names(movies, fold, n_folds)
+        train = [Path(x).stem for x in train]
+        val = [Path(x).stem for x in val]
+        if not train or not val:
+            raise ValueError('GroupKFold split must contain nonempty train and val lists')
+        return train, val
     if isinstance(obj, list):
         obj = obj[fold]
     elif 'folds' in obj:
@@ -276,7 +287,9 @@ def _load_proposal_video_job(item):
 def main():
     args = parse_args()
     seed_all(args.seed, bool(args.deterministic))
-    train_stems, val_stems = load_split(args.splits, args.fold)
+    train_stems, val_stems = load_split(
+        args.splits, args.fold, cv_mode=str(args.cv_mode), n_folds=int(args.n_folds)
+    )
     print(f'Loading proposals: {len(train_stems)} train / {len(val_stems)} val')
     train_v = ordered_process_map(
         _load_proposal_video_job,

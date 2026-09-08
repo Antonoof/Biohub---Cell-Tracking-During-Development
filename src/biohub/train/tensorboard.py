@@ -16,4 +16,7 @@ def log_scalars(writer: SummaryWriter | None, step: int, values: dict[str, Any])
     for name, value in values.items():
         if value is None:
             continue
-        writer.add_scalar(name, float(value), step)
+        number = float(value)
+        if number != number:
+            continue
+        writer.add_scalar(name, number, step)

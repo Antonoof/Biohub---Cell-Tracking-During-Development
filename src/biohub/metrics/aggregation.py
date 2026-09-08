@@ -130,3 +130,30 @@ def summarise(rows: list[MetricRow]) -> dict[str, float | int]:
         'n_adj': len(adj_rows),
         'score': score,
     }
+
+
+def competition_score(
+    *,
+    edge_tp: float,
+    edge_fp: float,
+    edge_fn: float,
+    division_tp: float,
+    division_fp: float,
+    division_fn: float,
+    num_pred_nodes: float,
+    n_total: float,
+) -> float:
+    row = per_sample_metrics(
+        edge_tp=edge_tp,
+        edge_fp=edge_fp,
+        edge_fn=edge_fn,
+        division_tp=division_tp,
+        division_fp=division_fp,
+        division_fn=division_fn,
+        num_pred_nodes=num_pred_nodes,
+        n_total=n_total,
+        node_recall=0.0,
+        movie_id='aggregate',
+    )
+    score = summarise([row])['score']
+    return float(score) if score == score else 0.0

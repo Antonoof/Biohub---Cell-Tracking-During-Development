@@ -29,6 +29,12 @@ infer = [
     "tensorboard",
     "torch==2.7.1",
 ]
+encoders = [
+    "biohub[infer]",
+    "cellpose>=3.0.1",
+    "segment-anything>=1.0",
+    "torchvision==0.22.1",
+]
 
 [dependency-groups]
 dev = [
@@ -51,6 +57,11 @@ infer = [
     "scikit-learn>=1.5.0,<2.0.0",
     "tensorboard",
     "torch==2.7.1",
+]
+encoders = [
+    "cellpose>=3.0.1",
+    "segment-anything>=1.0",
+    "torchvision==0.22.1",
 ]
 
 [build-system]

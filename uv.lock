@@ -73,6 +73,25 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+encoders = [
+    { name = "blosc2" },
+    { name = "cellpose" },
+    { name = "geff" },
+    { name = "joblib" },
+    { name = "pandas" },
+    { name = "rustworkx" },
+    { name = "scikit-learn" },
+    { name = "scipy", version = "1.17.1", source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "scipy", version = "1.18.1", source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "segment-anything" },
+    { name = "tensorboard" },
+    { name = "threadpoolctl" },
+    { name = "torch" },
+    { name = "torchvision" },
+    { name = "tracksdata" },
+    { name = "zarr", version = "3.1.6", source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "zarr", version = "3.3.0", source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }, marker = "python_full_version >= '3.12'" },
+]
 infer = [
     { name = "blosc2" },
     { name = "geff" },
@@ -107,6 +126,11 @@ dev = [
     { name = "ruff" },
     { name = "ty" },
 ]
+encoders = [
+    { name = "cellpose" },
+    { name = "segment-anything" },
+    { name = "torchvision" },
+]
 infer = [
     { name = "joblib" },
     { name = "pandas" },
@@ -128,8 +152,10 @@ score = [
 
 [package.metadata]
 requires-dist = [
+    { name = "biohub", extras = ["infer"], marker = "extra == 'encoders'" },
     { name = "biohub", extras = ["score"], marker = "extra == 'infer'" },
     { name = "blosc2", marker = "extra == 'score'" },
+    { name = "cellpose", marker = "extra == 'encoders'", specifier = ">=3.0.1" },
     { name = "geff", marker = "extra == 'score'", specifier = ">=1.1.3" },
     { name = "joblib", marker = "extra == 'infer'" },
     { name = "numpy", specifier = ">=1.26.4,<3.0.0" },
@@ -141,19 +167,26 @@ requires-dist = [
     { name = "rustworkx", marker = "extra == 'score'", specifier = ">=0.17.1" },
     { name = "scikit-learn", marker = "extra == 'infer'", specifier = ">=1.5.0,<2.0.0" },
     { name = "scipy", marker = "extra == 'score'", specifier = ">=1.13.0,<2.0.0" },
+    { name = "segment-anything", marker = "extra == 'encoders'", specifier = ">=1.0" },
     { name = "tensorboard", marker = "extra == 'infer'" },
     { name = "threadpoolctl", marker = "extra == 'score'" },
     { name = "torch", marker = "extra == 'infer'", specifier = "==2.7.1" },
+    { name = "torchvision", marker = "extra == 'encoders'", specifier = "==0.22.1" },
     { name = "tracksdata", marker = "extra == 'score'" },
     { name = "zarr", marker = "extra == 'score'", specifier = ">=3.0.10,<4" },
 ]
-provides-extras = ["score", "infer"]
+provides-extras = ["score", "infer", "encoders"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "pytest", specifier = ">=8.0.0,<9.0.0" },
     { name = "ruff", specifier = ">=0.13.0,<0.14.0" },
     { name = "ty", specifier = ">=0.0.40" },
+]
+encoders = [
+    { name = "cellpose", specifier = ">=3.0.1" },
+    { name = "segment-anything", specifier = ">=1.0" },
+    { name = "torchvision", specifier = "==0.22.1" },
 ]
 infer = [
     { name = "joblib" },
@@ -206,6 +239,35 @@ wheels = [
     { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/blosc2/4.12.0/blosc2-4.12.0-cp315-cp315t-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:e171df86bd1c7683c383e2d00a5596d9dac09bc0c74f9a53343b1d0074fd8a7d" },
     { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/blosc2/4.12.0/blosc2-4.12.0-cp315-cp315t-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:358f65ea5fb584a8e1703158a9507c7bebb0bdaa4200a41ba311572adbebf529" },
     { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/blosc2/4.12.0/blosc2-4.12.0-cp315-cp315t-win_amd64.whl", hash = "sha256:d2cd98d98c8f7f3550614a70dea5da1e8baa8419ef092a3255d4296857f9eda6" },
+]
+
+[[package]]
+name = "cellpose"
+version = "4.2.1.1"
+source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }
+dependencies = [
+    { name = "fastremap" },
+    { name = "fill-voids" },
+    { name = "imagecodecs", version = "2026.3.6", source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "imagecodecs", version = "2026.8.16", source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "natsort" },
+    { name = "numpy", version = "2.4.6", source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.2", source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "opencv-python-headless" },
+    { name = "roifile", version = "2026.2.10", source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "roifile", version = "2026.7.30", source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "scipy", version = "1.17.1", source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "scipy", version = "1.18.1", source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "segment-anything" },
+    { name = "tifffile", version = "2026.3.3", source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "tifffile", version = "2026.8.23", source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "torch" },
+    { name = "torchvision" },
+    { name = "tqdm" },
+]
+sdist = { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/cellpose/4.2.1.1/cellpose-4.2.1.1.tar.gz", hash = "sha256:229eedea3977184202b2c87b3bd41c609facd742c7203bb4ad3cebd7b6bc6839" }
+wheels = [
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/cellpose/4.2.1.1/cellpose-4.2.1.1-py3-none-any.whl", hash = "sha256:6c5c5159fd459115bee390ffb01d94d5e1006b97c211bf3c1a7b37d5395a1a13" },
 ]
 
 [[package]]
@@ -288,12 +350,102 @@ wheels = [
 ]
 
 [[package]]
+name = "fastremap"
+version = "1.20.0"
+source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }
+dependencies = [
+    { name = "numpy", version = "2.4.6", source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.2", source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }, marker = "python_full_version >= '3.12'" },
+]
+sdist = { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fastremap/1.20.0/fastremap-1.20.0.tar.gz", hash = "sha256:a64ffb4a99fd06c6f54f0ffbf48c73532fa238c429a4278b45767a55957468a0" }
+wheels = [
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fastremap/1.20.0/fastremap-1.20.0-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:a9d9ba687bf91c884275e59485e5f9f202c1fbcdc7f37656f720e1f00deaa362" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fastremap/1.20.0/fastremap-1.20.0-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:a19f91eac09f82e8da6ca51a22f6f0b0b8e936045db86b818fd0431774681d3c" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fastremap/1.20.0/fastremap-1.20.0-cp311-cp311-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:031a219496ad5510b1dd33800a8cefd126cb4b97a41686a9b244ee854cb8a0ce" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fastremap/1.20.0/fastremap-1.20.0-cp311-cp311-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:99f2e605a78c86fbe0721f81d3ddf8728c3644187a8dbe84d409f0a356ba62ea" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fastremap/1.20.0/fastremap-1.20.0-cp311-cp311-win32.whl", hash = "sha256:f461785097004aa3306d5a5d75fbbf20105c977ad0c99fed86e01f2b89318dfa" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fastremap/1.20.0/fastremap-1.20.0-cp311-cp311-win_amd64.whl", hash = "sha256:1c801e725fecf6d56b654bf11a26522d81c8f6ae5647736565b4cfdba0add9d8" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fastremap/1.20.0/fastremap-1.20.0-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:5638c0096bd5648343e8387b7fe9db45bf3f605ae95ccb9b65ea430a6db4d52e" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fastremap/1.20.0/fastremap-1.20.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:ec8707820d06f3fd524c4a05b51174eaf9650827172cdf77efa1ed18293412e4" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fastremap/1.20.0/fastremap-1.20.0-cp312-cp312-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:8d834527d15139611624ac11d307b44dd5fc9e37f18fb2592ac5612d4852a54c" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fastremap/1.20.0/fastremap-1.20.0-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:2daa147a1c02a74a4e2344a5631482e51e194bcf3bcc50410639511eed260f74" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fastremap/1.20.0/fastremap-1.20.0-cp312-cp312-win32.whl", hash = "sha256:23ca9cb8ff3ff182e391bcaea6af497fee2f2f861a6dff66d97d578b18124caf" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fastremap/1.20.0/fastremap-1.20.0-cp312-cp312-win_amd64.whl", hash = "sha256:823f51f444c54c6e32fd0e61b0b9bc620e39de97cc16db0e513e15ebe902311a" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fastremap/1.20.0/fastremap-1.20.0-cp313-cp313-macosx_10_13_x86_64.whl", hash = "sha256:50a265e258304a09d7afecf3f806b50a7db7a955d0bedba8feb33c11c378035c" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fastremap/1.20.0/fastremap-1.20.0-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:2cb35c664850c3a3d8f60512268e68b6f717c7a1baa518a20b1050bce42f3c7f" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fastremap/1.20.0/fastremap-1.20.0-cp313-cp313-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:6fcdbe8b589b86e61c2025b4c8e8f8182726f3d1b32e70d265156fa969b91196" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fastremap/1.20.0/fastremap-1.20.0-cp313-cp313-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:fd645a162abeaa0b0d2ae9c497314c2819a339b8c617e1718eea72e0e067cc4b" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fastremap/1.20.0/fastremap-1.20.0-cp313-cp313-win32.whl", hash = "sha256:6603d64c3547b84913acdb49b360dd9c6864d5defd0564ef839f4202849274e4" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fastremap/1.20.0/fastremap-1.20.0-cp313-cp313-win_amd64.whl", hash = "sha256:a653f54c1f5b52eca443eab33ca9700585c9d1298e309d5cc5ff8ce6d05111b0" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fastremap/1.20.0/fastremap-1.20.0-cp314-cp314-macosx_10_15_x86_64.whl", hash = "sha256:f06a89985c1b5619c2fd1ffe0824da83689a0f1562c58b1667e18a8ec241faf3" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fastremap/1.20.0/fastremap-1.20.0-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:410e6a014b7f6e7c10aed91edc870773ce07023a6937129b3b96e69c99ee484f" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fastremap/1.20.0/fastremap-1.20.0-cp314-cp314-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:114ab797b7621f50e4fbc4ef3d5f9cf0604e5199a2f2bf9b185bd1318e54765b" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fastremap/1.20.0/fastremap-1.20.0-cp314-cp314-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:c7a5e2abf28eb75b9b852abfcc1ceab169473d36ca2a5526e0637567d411e6e8" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fastremap/1.20.0/fastremap-1.20.0-cp314-cp314-win32.whl", hash = "sha256:9fb5bb87167a36e519b23ac28a40c2296f70082dba05db0022ed051c685da887" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fastremap/1.20.0/fastremap-1.20.0-cp314-cp314-win_amd64.whl", hash = "sha256:8a1431fb5f60792f6072d4bf2216c248512c6baab8a6f1385b76b655c420896a" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fastremap/1.20.0/fastremap-1.20.0-cp314-cp314t-macosx_10_15_x86_64.whl", hash = "sha256:3d19af90c62356685d77b3bb852d5701dff001224dcf847c7a2fec904eb86ec0" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fastremap/1.20.0/fastremap-1.20.0-cp314-cp314t-macosx_11_0_arm64.whl", hash = "sha256:c31a3e6aa9a88375c2b2b58f277b83ada5eb8d8122b3c0bc74b3cb719260a08a" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fastremap/1.20.0/fastremap-1.20.0-cp314-cp314t-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:78088c09176a5c14364b4c2fcbf5970375516adc94638ce02f2c7af257cb7dc2" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fastremap/1.20.0/fastremap-1.20.0-cp314-cp314t-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:fb517805c2b82b28cc7231fa5469327d6b3327a7ae8d036ab87f019e5d7096d0" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fastremap/1.20.0/fastremap-1.20.0-cp314-cp314t-win32.whl", hash = "sha256:b7701f3e5c870f84906afc9ca1daed2f046a98c4fadc66e994687439e26ade0a" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fastremap/1.20.0/fastremap-1.20.0-cp314-cp314t-win_amd64.whl", hash = "sha256:e45c389f99b77c764281350d3158e5ad3eb864d786733dedb63cc699a89ad363" },
+]
+
+[[package]]
 name = "filelock"
 version = "3.32.5"
 source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }
 sdist = { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/filelock/3.32.5/filelock-3.32.5.tar.gz", hash = "sha256:f6a6a28f743f9b95ce19db5abe0f376f75eb56517dff21e1a4751e2657d3e83d" }
 wheels = [
     { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/filelock/3.32.5/filelock-3.32.5-py3-none-any.whl", hash = "sha256:142cd9fa77a872c5e78c62329a0d15278fadc686eb89e760017968961a4fd6b2" },
+]
+
+[[package]]
+name = "fill-voids"
+version = "2.1.2"
+source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }
+dependencies = [
+    { name = "fastremap" },
+    { name = "numpy", version = "2.4.6", source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.2", source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }, marker = "python_full_version >= '3.12'" },
+]
+sdist = { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fill-voids/2.1.2/fill_voids-2.1.2.tar.gz", hash = "sha256:2b9ef2753ffd2394a1948f9a11431a7ff084d4d7024509e0466b1b260be089df" }
+wheels = [
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fill-voids/2.1.2/fill_voids-2.1.2-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:44e23f97bb4d47949fc822d9135133f7c0fd28beab233bdd41ef2f7895a4ae88" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fill-voids/2.1.2/fill_voids-2.1.2-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:6f0c37636d1da508311550914a93bf3d363924e740d16da93a4216d1b72d4ea1" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fill-voids/2.1.2/fill_voids-2.1.2-cp311-cp311-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:8867f88cb102fd9dab20c1a283a327ecfd0462b700813a4179704ed2de9559bd" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fill-voids/2.1.2/fill_voids-2.1.2-cp311-cp311-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:123d432afea5ac28289a7f15232bff78df378e8cb3e4aad8df9cda35d78a4aac" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fill-voids/2.1.2/fill_voids-2.1.2-cp311-cp311-musllinux_1_2_aarch64.whl", hash = "sha256:e8b5e19e1141332ba1e6a3354c7f8a81844a60cedeedcd700e3b5019f042cf92" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fill-voids/2.1.2/fill_voids-2.1.2-cp311-cp311-musllinux_1_2_x86_64.whl", hash = "sha256:28ddebd2b7abebaf775151c6e397e6adc8d9c4c772c8b83cda42ac5447540efd" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fill-voids/2.1.2/fill_voids-2.1.2-cp311-cp311-win_amd64.whl", hash = "sha256:d09b7847e510bd5dcfe5e6c172f6ec35ffbb2ee20501c918124552658caee62c" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fill-voids/2.1.2/fill_voids-2.1.2-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:f5ad954ca80b982e6141270d3738b948ae66e0be3f19130e0a9b98cb554c3b51" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fill-voids/2.1.2/fill_voids-2.1.2-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:989d5da074b270937280cdfafaf1d943996b27fa1d8496d229114ffdfc24a4f1" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fill-voids/2.1.2/fill_voids-2.1.2-cp312-cp312-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:e3abb19e76c0b926f178e6ec8741808d07a8c825a684d1af38be957507f89f04" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fill-voids/2.1.2/fill_voids-2.1.2-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:2261bb1c6d0bb34fe4078af215e92630bfeec4028558b5295308b61b54d4a720" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fill-voids/2.1.2/fill_voids-2.1.2-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:268a0fb817fa6149f4cc54d7c959526c34d8ea74920c4a46efefdc90f79d3eeb" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fill-voids/2.1.2/fill_voids-2.1.2-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:aa6d3c816d1e4532eeed21ef4d919c517c4bfa34dac7bc3b841be7530b36bebd" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fill-voids/2.1.2/fill_voids-2.1.2-cp312-cp312-win_amd64.whl", hash = "sha256:ede3fc63a3c89058cc24b6abfb54beeef4a22d26511e08e0e4d89e779c038df0" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fill-voids/2.1.2/fill_voids-2.1.2-cp313-cp313-macosx_10_13_x86_64.whl", hash = "sha256:7dc02a4208de7497f1b02109d54ee4303ec7c85c98b6a3e8e0fd98d4f258bada" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fill-voids/2.1.2/fill_voids-2.1.2-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:a5a9d426959112fa7879cd39b4c5ad99309810058ac62681772e992af51c36cc" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fill-voids/2.1.2/fill_voids-2.1.2-cp313-cp313-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:344f692be2dfc5bff2f1faea1d605229ed570d0eacfba66160195b8e6fea3a81" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fill-voids/2.1.2/fill_voids-2.1.2-cp313-cp313-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:55c20f81882f037fae3ac968bb5cd79550a2abeeda5e5993e3854385a5ccfab7" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fill-voids/2.1.2/fill_voids-2.1.2-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:15d9d007f9b473115ae3df49feb5ed3f632b28ed3e39be82a34937b8c786bda1" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fill-voids/2.1.2/fill_voids-2.1.2-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:a4d9def2de9cafcec367341ce81078a30465c4de27ff55c973ee29edad07701c" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fill-voids/2.1.2/fill_voids-2.1.2-cp313-cp313-win_amd64.whl", hash = "sha256:dc52abad93670d910d221330d11132ba9f14e9cea6df3d80772a1bbd007a9445" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fill-voids/2.1.2/fill_voids-2.1.2-cp314-cp314-macosx_10_15_x86_64.whl", hash = "sha256:821f3e586df0d8202d4decc1b4751e49a980546d3ba600de9570557d1e6f3528" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fill-voids/2.1.2/fill_voids-2.1.2-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:72608da4556ddc09829702ab755ebfcd23ae03702303d7b757cfab102e680dc8" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fill-voids/2.1.2/fill_voids-2.1.2-cp314-cp314-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:2d505758017fe24deb32aca0a246ef95da3838aa623f858aeeae49aff4496d38" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fill-voids/2.1.2/fill_voids-2.1.2-cp314-cp314-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:7c5666a561eab6cd24e6bcf1fe8d9e2f31b4e0d8b7f84e26eb882d53aff033f7" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fill-voids/2.1.2/fill_voids-2.1.2-cp314-cp314-musllinux_1_2_aarch64.whl", hash = "sha256:78a2f22b9b221cdc0f19030a9355a73192a1e4087d2fb5acae49c8f84653d6fa" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fill-voids/2.1.2/fill_voids-2.1.2-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:14023b0803da5fc77aebf16f404596965d1699ea58a3d658da3d1564f374f4c4" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fill-voids/2.1.2/fill_voids-2.1.2-cp314-cp314-win_amd64.whl", hash = "sha256:56dbd5aaff3b5e07824d974525e14a116526b3c07ae4dafc5a805eab99ae016f" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fill-voids/2.1.2/fill_voids-2.1.2-cp314-cp314t-macosx_10_15_x86_64.whl", hash = "sha256:a813b53253144a82548902066a251f2ae52598fb3ef44722293aba82a8367c09" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fill-voids/2.1.2/fill_voids-2.1.2-cp314-cp314t-macosx_11_0_arm64.whl", hash = "sha256:afc0f086ee0d72cf124ea2e05cd91de43e6a2dcfea2214ebe2eae25532118141" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fill-voids/2.1.2/fill_voids-2.1.2-cp314-cp314t-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:3a4f86e807afce22fa0668c97ad9959d1b1ce7b255411832741e1a9410432f63" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fill-voids/2.1.2/fill_voids-2.1.2-cp314-cp314t-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:8b1095cbb7def09ad9d32d52adfebc16eb6b410ec087d341ccfd4013aa5a6ef8" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fill-voids/2.1.2/fill_voids-2.1.2-cp314-cp314t-musllinux_1_2_aarch64.whl", hash = "sha256:620455dca04628b71f02ff86dfb7056f07f93fb6022e5b90006ad80a8b1633df" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fill-voids/2.1.2/fill_voids-2.1.2-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:02a044ec78f630155fb4eab8bbaa6f935c915472e5d4b6ed0cbe643dd026dc73" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/fill-voids/2.1.2/fill_voids-2.1.2-cp314-cp314t-win_amd64.whl", hash = "sha256:883695c30048660ef043ee8a48e5a15b0e70e5db792aa2207c9b3812472dfaf5" },
 ]
 
 [[package]]
@@ -970,6 +1122,15 @@ wheels = [
 ]
 
 [[package]]
+name = "natsort"
+version = "8.4.0"
+source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }
+sdist = { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/natsort/8.4.0/natsort-8.4.0.tar.gz", hash = "sha256:45312c4a0e5507593da193dedd04abb1469253b601ecaf63445ad80f0a1ea581" }
+wheels = [
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/natsort/8.4.0/natsort-8.4.0-py3-none-any.whl", hash = "sha256:4732914fb471f56b5cce04d7bae6f164a592c7712e1c85f9ef585e197299521c" },
+]
+
+[[package]]
 name = "ndindex"
 version = "1.10.1"
 source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }
@@ -1440,6 +1601,26 @@ source = { registry = "http://package-cache-pypi.query.consul-tech/repository/py
 wheels = [
     { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/nvidia-nvtx-cu12/12.6.77/nvidia_nvtx_cu12-12.6.77-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:b90bed3df379fa79afbd21be8e04a0314336b8ae16768b58f2d34cb1d04cd7d2" },
     { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/nvidia-nvtx-cu12/12.6.77/nvidia_nvtx_cu12-12.6.77-py3-none-manylinux2014_x86_64.whl", hash = "sha256:6574241a3ec5fdc9334353ab8c479fe75841dbe8f4532a8fc97ce63503330ba1" },
+]
+
+[[package]]
+name = "opencv-python-headless"
+version = "5.0.0.93"
+source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }
+dependencies = [
+    { name = "numpy", version = "2.4.6", source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.2", source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }, marker = "python_full_version >= '3.12'" },
+]
+sdist = { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/opencv-python-headless/5.0.0.93/opencv_python_headless-5.0.0.93.tar.gz", hash = "sha256:b82f9831daab90b725c7c1ee1b36cb5732c367096ac76d119e64e14eb70d5f3c" }
+wheels = [
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/opencv-python-headless/5.0.0.93/opencv_python_headless-5.0.0.93-cp37-abi3-macosx_13_0_arm64.whl", hash = "sha256:030ca5e0837a2963ab36ef896baa9767eb8d2b83353fb28af5a521e40dd8756f" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/opencv-python-headless/5.0.0.93/opencv_python_headless-5.0.0.93-cp37-abi3-macosx_14_0_x86_64.whl", hash = "sha256:1e55af3abfb462eeeabe5c775f12bdb36216d8a93a3583d69e6bd6e1d6ba7d00" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/opencv-python-headless/5.0.0.93/opencv_python_headless-5.0.0.93-cp37-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:10818d91510e05c04568ae12b5cd120779c70c01bf897b001a6221fe430df80f" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/opencv-python-headless/5.0.0.93/opencv_python_headless-5.0.0.93-cp37-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:09a872a157c1376ab922a69bbf22f9a95bcc7b658a9d8b436a60212b02b2eeb4" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/opencv-python-headless/5.0.0.93/opencv_python_headless-5.0.0.93-cp37-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:840bd717c21e5c11cadadc022a823315ea417f961213d06b4df010e019eb16f4" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/opencv-python-headless/5.0.0.93/opencv_python_headless-5.0.0.93-cp37-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:ed709fdf9aa0bd1f2ed8549e71d19449b03a675bb581eb292285f6861953be37" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/opencv-python-headless/5.0.0.93/opencv_python_headless-5.0.0.93-cp37-abi3-win32.whl", hash = "sha256:c6bcd96b185975ea240d22cfdb15a1f6d080cc95264cfbe2621f21bb144d89b9" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/opencv-python-headless/5.0.0.93/opencv_python_headless-5.0.0.93-cp37-abi3-win_amd64.whl", hash = "sha256:829717b6a95554f273e49e357cee3b3a2a26b6f4842fbc1bed2b45bdd8f87e0e" },
 ]
 
 [[package]]
@@ -1990,6 +2171,37 @@ wheels = [
 ]
 
 [[package]]
+name = "roifile"
+version = "2026.2.10"
+source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }
+resolution-markers = [
+    "python_full_version < '3.12'",
+]
+dependencies = [
+    { name = "numpy", version = "2.4.6", source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }, marker = "python_full_version < '3.12'" },
+]
+sdist = { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/roifile/2026.2.10/roifile-2026.2.10.tar.gz", hash = "sha256:87d2b685b00a4ca15125187727e634ae5c00b902362de302b592f892259f3751" }
+wheels = [
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/roifile/2026.2.10/roifile-2026.2.10-py3-none-any.whl", hash = "sha256:5928a616b58a8ff1c9f89a0590db3616ccbf069c6692f8ecec2a7349f8bbb6ec" },
+]
+
+[[package]]
+name = "roifile"
+version = "2026.7.30"
+source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }
+resolution-markers = [
+    "python_full_version >= '3.13'",
+    "python_full_version == '3.12.*'",
+]
+dependencies = [
+    { name = "numpy", version = "2.5.2", source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }, marker = "python_full_version >= '3.12'" },
+]
+sdist = { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/roifile/2026.7.30/roifile-2026.7.30.tar.gz", hash = "sha256:9da29d1ef8088522636e951c93a634a41308f03392c3c96e24f5371491807a41" }
+wheels = [
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/roifile/2026.7.30/roifile-2026.7.30-py3-none-any.whl", hash = "sha256:109e86078ba056b35fc2b6d2dcfac8942408202223b0ef5c4aa6f8047a94d68b" },
+]
+
+[[package]]
 name = "rstar-python"
 version = "0.2.0"
 source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }
@@ -2329,6 +2541,15 @@ wheels = [
 ]
 
 [[package]]
+name = "segment-anything"
+version = "1.0"
+source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }
+sdist = { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/segment-anything/1.0/segment_anything-1.0.tar.gz", hash = "sha256:ed0c9f6fb07bbef9c6238a7028a13c8272f1ba6b6305ca73e3e064266503736b" }
+wheels = [
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/segment-anything/1.0/segment_anything-1.0-py3-none-any.whl", hash = "sha256:86f67d417a915823c3302098effe9008b688945772517310956bb49de0e7f02e" },
+]
+
+[[package]]
 name = "setuptools"
 version = "84.0.0"
 source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }
@@ -2534,6 +2755,35 @@ wheels = [
     { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/torch/2.7.1/torch-2.7.1-cp313-cp313t-manylinux_2_28_x86_64.whl", hash = "sha256:30207f672328a42df4f2174b8f426f354b2baa0b7cca3a0adb3d6ab5daf00dc8" },
     { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/torch/2.7.1/torch-2.7.1-cp313-cp313t-win_amd64.whl", hash = "sha256:79042feca1c634aaf6603fe6feea8c6b30dfa140a6bbc0b973e2260c7e79a22e" },
     { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/torch/2.7.1/torch-2.7.1-cp313-none-macosx_11_0_arm64.whl", hash = "sha256:988b0cbc4333618a1056d2ebad9eb10089637b659eb645434d0809d8d937b946" },
+]
+
+[[package]]
+name = "torchvision"
+version = "0.22.1"
+source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }
+dependencies = [
+    { name = "numpy", version = "2.4.6", source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.2", source = { registry = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "pillow" },
+    { name = "torch" },
+]
+wheels = [
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/torchvision/0.22.1/torchvision-0.22.1-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:4addf626e2b57fc22fd6d329cf1346d474497672e6af8383b7b5b636fba94a53" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/torchvision/0.22.1/torchvision-0.22.1-cp311-cp311-manylinux_2_28_aarch64.whl", hash = "sha256:8b4a53a6067d63adba0c52f2b8dd2290db649d642021674ee43c0c922f0c6a69" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/torchvision/0.22.1/torchvision-0.22.1-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:b7866a3b326413e67724ac46f1ee594996735e10521ba9e6cdbe0fa3cd98c2f2" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/torchvision/0.22.1/torchvision-0.22.1-cp311-cp311-win_amd64.whl", hash = "sha256:bb3f6df6f8fd415ce38ec4fd338376ad40c62e86052d7fc706a0dd51efac1718" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/torchvision/0.22.1/torchvision-0.22.1-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:153f1790e505bd6da123e21eee6e83e2e155df05c0fe7d56347303067d8543c5" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/torchvision/0.22.1/torchvision-0.22.1-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:964414eef19459d55a10e886e2fca50677550e243586d1678f65e3f6f6bac47a" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/torchvision/0.22.1/torchvision-0.22.1-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:699c2d70d33951187f6ed910ea05720b9b4aaac1dcc1135f53162ce7d42481d3" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/torchvision/0.22.1/torchvision-0.22.1-cp312-cp312-win_amd64.whl", hash = "sha256:75e0897da7a8e43d78632f66f2bdc4f6e26da8d3f021a7c0fa83746073c2597b" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/torchvision/0.22.1/torchvision-0.22.1-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:9c3ae3319624c43cc8127020f46c14aa878406781f0899bb6283ae474afeafbf" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/torchvision/0.22.1/torchvision-0.22.1-cp313-cp313-manylinux_2_28_aarch64.whl", hash = "sha256:4a614a6a408d2ed74208d0ea6c28a2fbb68290e9a7df206c5fef3f0b6865d307" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/torchvision/0.22.1/torchvision-0.22.1-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:7ee682be589bb1a002b7704f06b8ec0b89e4b9068f48e79307d2c6e937a9fdf4" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/torchvision/0.22.1/torchvision-0.22.1-cp313-cp313-win_amd64.whl", hash = "sha256:2566cafcfa47ecfdbeed04bab8cef1307c8d4ef75046f7624b9e55f384880dfe" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/torchvision/0.22.1/torchvision-0.22.1-cp313-cp313t-macosx_11_0_arm64.whl", hash = "sha256:043d9e35ed69c2e586aff6eb9e2887382e7863707115668ac9d140da58f42cba" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/torchvision/0.22.1/torchvision-0.22.1-cp313-cp313t-manylinux_2_28_aarch64.whl", hash = "sha256:27142bcc8a984227a6dcf560985e83f52b82a7d3f5fe9051af586a2ccc46ef26" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/torchvision/0.22.1/torchvision-0.22.1-cp313-cp313t-manylinux_2_28_x86_64.whl", hash = "sha256:ef46e065502f7300ad6abc98554131c35dc4c837b978d91306658f1a65c00baa" },
+    { url = "http://package-cache-pypi.query.consul-tech/repository/pypi-public/packages/torchvision/0.22.1/torchvision-0.22.1-cp313-cp313t-win_amd64.whl", hash = "sha256:7414eeacfb941fa21acddcd725f1617da5630ec822e498660a4b864d7d998075" },
 ]
 
 [[package]]

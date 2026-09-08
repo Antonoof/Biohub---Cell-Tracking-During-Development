@@ -1,5 +1,6 @@
-import numpy as np
 import torch
+
+from biohub.augmentations.proba import AugmentRng, skip_augment
 
 
 def flip_augment(
@@ -7,8 +8,11 @@ def flip_augment(
     coords: torch.Tensor,
     masks: torch.Tensor,
     *,
-    rng: np.random.Generator,
+    rng: AugmentRng,
+    proba: float = 1.0,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    if skip_augment(rng, proba):
+        return imgs, coords, masks
     flip_mask = rng.random(3) < 0.5
     dims_to_flip = [1 + dim for dim, flip in enumerate(flip_mask) if flip]
     if not dims_to_flip:
