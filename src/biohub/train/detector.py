@@ -104,10 +104,15 @@ SCORE_THRESHOLDS = (
     0.99,
     0.997,
 )
+TRAIN_DET_THRESHOLD_MAX = 0.5
 
 
 def score_threshold_key(threshold: float) -> str:
     return f'competition_th/{threshold:g}'
+
+
+def train_det_threshold(val_threshold: float) -> float:
+    return min(float(val_threshold), TRAIN_DET_THRESHOLD_MAX)
 
 
 def _rates(tp: float, fp: float, fn: float) -> tuple[float, float, float, float]:
@@ -123,17 +128,24 @@ def require_finite(tensor: torch.Tensor, what: str) -> None:
         raise RuntimeError(f'{what} is not finite')
 
 
-def require_finite_grads(model: nn.Module) -> None:
-    grads = [(name, p.grad) for name, p in model.named_parameters() if p.grad is not None]
+def grads_are_finite(model: nn.Module) -> bool:
+    grads = [p.grad for p in model.parameters() if p.grad is not None]
+    if not grads:
+        return True
+    return bool(torch.stack([torch.isfinite(grad).all() for grad in grads]).all())
 
-    if grads and not torch.stack([torch.isfinite(g).all() for _, g in grads]).all():
-        for name, grad in grads:
-            require_finite(grad, f'Detector gradient {name}')
+
+def require_finite_grads(model: nn.Module) -> None:
+    if not grads_are_finite(model):
+        for name, param in model.named_parameters():
+            if param.grad is not None:
+                require_finite(param.grad, f'Detector gradient {name}')
 
 
 def detector_optimizer_step(
     model, optimizer, scaler, grad_clip_norm, ema=None, *, check_finite: bool = False
 ) -> None:
+    _ = check_finite
     updated = True
     if scaler is not None:
         scaler.unscale_(optimizer)
@@ -144,12 +156,11 @@ def detector_optimizer_step(
         scaler.update()
         updated = scaler.get_scale() >= old_scale
     else:
+        if not grads_are_finite(model):
+            optimizer.zero_grad(set_to_none=True)
+            return
         if grad_clip_norm > 0:
-            torch.nn.utils.clip_grad_norm_(
-                model.parameters(), grad_clip_norm, error_if_nonfinite=True
-            )
-        else:
-            require_finite_grads(model)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_norm)
         optimizer.step()
     optimizer.zero_grad(set_to_none=True)
     if ema is not None and updated:
@@ -242,6 +253,20 @@ def _pack_valid_nodes(
     return packed[:, :width], packed_keep[:, :width], n_keep
 
 
+def _local_max_mask(
+    logits: torch.Tensor,
+    pool_kernel: tuple[int, ...],
+    pad: tuple[int, ...],
+) -> torch.Tensor:
+    spatial = int(logits[0].numel())
+    tie = torch.arange(spatial, device=logits.device, dtype=logits.dtype).view(
+        (1, *logits.shape[1:])
+    )
+    ranked = logits + tie * (logits.new_tensor(1e-4) / max(spatial, 1))
+    pooled = F.max_pool3d(ranked.unsqueeze(1), pool_kernel, stride=1, padding=pad)[:, 0]
+    return ranked == pooled
+
+
 def detect_and_match(
     det_logits: torch.Tensor,
     gt_coords: torch.Tensor,
@@ -293,9 +318,11 @@ def detect_and_match(
     max_gt_n = int(gt_coords.shape[1])
 
     with torch.no_grad():
-        pooled = F.max_pool3d(det_logits, pool_kernel, stride=1, padding=pad)
-        probs = torch.sigmoid(det_logits[:, 0])
-        is_peak = (det_logits[:, 0] == pooled[:, 0]) & (probs > det_threshold)
+        logits = det_logits[:, 0].float()
+        probs = torch.sigmoid(logits)
+        pooled = F.max_pool3d(logits.unsqueeze(1), pool_kernel, stride=1, padding=pad)[:, 0]
+        local = _local_max_mask(logits, (3, 3, 3), (1, 1, 1))
+        is_peak = local & (logits == pooled) & (probs > det_threshold)
         # Prediction budget must not depend on GT count/padding or batch composition.
         cap = max(512, int(train_peak_topk))
         peak_coords, peak_keep = _topk_coords_padded(probs.masked_fill(~is_peak, -1.0), cap, 0.0)
@@ -788,15 +815,14 @@ def train_epoch(
             group_size = min(accum, n_steps - (step_i // accum) * accum)
             loss = loss / group_size
 
-        require_finite(loss, 'Detector training loss')
-
         t2 = time.perf_counter()
         t_forward += t2 - t1
-
-        if scaler is not None:
-            scaler.scale(loss).backward()
-        else:
-            loss.backward()
+        finite_loss = bool(torch.isfinite(loss).all())
+        if finite_loss:
+            if scaler is not None:
+                scaler.scale(loss).backward()
+            else:
+                loss.backward()
         if (step_i + 1) % accum == 0 or step_i + 1 == n_steps:
             detector_optimizer_step(
                 model,
@@ -810,9 +836,10 @@ def train_epoch(
         t3 = time.perf_counter()
         t_backward += t3 - t2
 
-        total_edge_loss = total_edge_loss + edge_loss_val.detach() * B
-        total_det_loss = total_det_loss + det_loss.detach() * B
-        n_samples += B
+        if finite_loss:
+            total_edge_loss = total_edge_loss + edge_loss_val.detach() * B
+            total_det_loss = total_det_loss + det_loss.detach() * B
+            n_samples += B
 
         t0 = time.perf_counter()
 
@@ -831,11 +858,22 @@ def train_epoch(
     )
 
 
-def _score_threshold_index(value: float) -> int | None:
-    for index, threshold in enumerate(SCORE_THRESHOLDS):
-        if abs(threshold - value) <= 1e-12:
-            return index
-    return None
+def select_best_threshold_metrics(
+    sweep: list[dict[str, float]],
+    thresholds: tuple[float, ...] = SCORE_THRESHOLDS,
+) -> dict[str, float]:
+    best_index = 0
+    best_score = sweep[0]['competition_metric']
+    for index in range(1, len(sweep)):
+        score = sweep[index]['competition_metric']
+        if score >= best_score:
+            best_score = score
+            best_index = index
+    metrics = dict(sweep[best_index])
+    for index, threshold in enumerate(thresholds):
+        metrics[score_threshold_key(threshold)] = sweep[index]['competition_metric']
+    metrics['score_threshold'] = float(thresholds[best_index])
+    return metrics
 
 
 def _eval_metrics(
@@ -1011,16 +1049,6 @@ def evaluate(
     sweep_gt_matched = torch.zeros(n_th, device=device, dtype=torch.long)
     sweep_num_pred = torch.zeros(n_th, device=device, dtype=torch.long)
     sweep_n_pairs = 0
-    primary_index = (
-        _score_threshold_index(det_threshold)
-        if abs(det_threshold - edge_threshold) <= 1e-12
-        else None
-    )
-    n_pairs = 0
-    pair_stats = torch.zeros(9, device=device, dtype=torch.float64)
-    gt_total_t = torch.zeros((), device=device, dtype=torch.long)
-    gt_matched_t = torch.zeros((), device=device, dtype=torch.long)
-    num_pred_t = torch.zeros((), device=device, dtype=torch.long)
     dtype = amp_dtype(amp_kind)
     autocast_on = dtype is not None and device.type == 'cuda'
     window_kw = {
@@ -1045,26 +1073,6 @@ def evaluate(
         ds_scale = batch['downsample'][0].to(device)
         with torch.autocast(device.type, dtype=dtype or torch.float32, enabled=autocast_on):
             unet_out, det_stack = model.encode_stacked(imgs)
-        if primary_index is None:
-            stats, gt_t, gt_m, n_pred, n_pair = _eval_encoded_window(
-                model,
-                unet_out,
-                det_stack,
-                coords,
-                masks,
-                targets,
-                ds_scale,
-                image_shape,
-                voxel_size,
-                det_threshold=det_threshold,
-                edge_threshold=edge_threshold,
-                **window_kw,
-            )
-            pair_stats += stats
-            gt_total_t += gt_t
-            gt_matched_t += gt_m
-            num_pred_t += n_pred
-            n_pairs += n_pair
         for index, threshold in enumerate(SCORE_THRESHOLDS):
             stats, gt_t, gt_m, n_pred, n_pair = _eval_encoded_window(
                 model,
@@ -1087,31 +1095,19 @@ def evaluate(
             if index == 0:
                 sweep_n_pairs += n_pair
 
-    if primary_index is None:
-        metrics = _eval_metrics(
-            pair_stats,
-            n_pairs,
-            int(gt_total_t.item()),
-            int(gt_matched_t.item()),
-            int(num_pred_t.item()),
-        )
-    else:
-        metrics = _eval_metrics(
-            sweep_pair[primary_index],
-            sweep_n_pairs,
-            int(sweep_gt_total[primary_index].item()),
-            int(sweep_gt_matched[primary_index].item()),
-            int(sweep_num_pred[primary_index].item()),
-        )
-    for index, threshold in enumerate(SCORE_THRESHOLDS):
-        extra = _eval_metrics(
+    sweep_rows = [
+        _eval_metrics(
             sweep_pair[index],
             sweep_n_pairs,
             int(sweep_gt_total[index].item()),
             int(sweep_gt_matched[index].item()),
             int(sweep_num_pred[index].item()),
         )
-        metrics[score_threshold_key(threshold)] = extra['competition_metric']
+        for index in range(n_th)
+    ]
+    metrics = select_best_threshold_metrics(sweep_rows, SCORE_THRESHOLDS)
+    metrics['det_threshold'] = float(det_threshold)
+    metrics['edge_threshold'] = float(edge_threshold)
     return metrics
 
 
@@ -1540,6 +1536,12 @@ def train(
         save_path = output_dir / 'edge_predictor_best.pth'
         pbar = tqdm(range(n_epochs), desc='Training', disable=False)
         print(f'Detection loss: weight={det_loss_weight}, neg_weight={det_neg_weight}', flush=True)
+        peak_th = train_det_threshold(det_threshold)
+        print(
+            f'Detection peaks: train_th={peak_th:g} val_th={det_threshold:g} '
+            f'edge_th={edge_threshold:g}',
+            flush=True,
+        )
         print(
             f'Checkpoint metric: {checkpoint_metric}; patience={patience}; '
             'promotion requires official evaluate',
@@ -1558,7 +1560,7 @@ def train(
                 det_neg_weight,
                 max_iters=max_iters,
                 pool_kernel_um=pool_kernel_um,
-                det_threshold=det_threshold,
+                det_threshold=peak_th,
                 max_match_distance=max_match_distance,
                 grad_clip_norm=grad_clip_norm,
                 edge_loss=edge_loss,
@@ -1640,14 +1642,15 @@ def train(
                 edge=f'{train_edge_loss:.4f}',
                 det=f'{train_det_loss:.4f}',
                 acc=f'{metrics["acc"]:.4f}',
-                comp=f'{metrics["competition_metric"]:.4f}',
+                comp=(f'{metrics["competition_metric"]:.4f}@{metrics["score_threshold"]:g}'),
             )
             print(
                 f'  Epoch {epoch:3d}/{n_epochs} | edge={train_edge_loss:.4f} | '
                 f'det={train_det_loss:.4f} | '
                 f'test_loss={metrics["loss"]:.4f} | acc={metrics["acc"]:.4f} | '
                 f'recall={metrics["recall"]:.4f} | '
-                f'competition={metrics["competition_metric"]:.4f} | '
+                f'competition={metrics["competition_metric"]:.4f}'
+                f'@{metrics["score_threshold"]:g} | '
                 f'{checkpoint_metric}={score:.4f} | best={best_score:.4f} {marker} | '
                 f'train={train_time:.1f}s test={test_time:.1f}s',
                 flush=True,

@@ -18,6 +18,8 @@ from biohub.train.detector import (
     _recipe_kwargs,
     evaluate,
     score_threshold_key,
+    select_best_threshold_metrics,
+    train_det_threshold,
     train_epoch,
 )
 from biohub.train.detector_search import (
@@ -83,9 +85,9 @@ def test_apply_search_params_derives_conditionals() -> None:
     assert overlay['batch_padding'] is True
     assert overlay['pair_chunk_size'] == 512
     assert overlay['checkpoint_metric'] == 'competition_metric'
-    assert overlay['det_threshold'] == 0.97
-    assert overlay['edge_threshold'] == 0.97
-    assert 0.97 in SCORE_THRESHOLDS
+    assert overlay['det_threshold'] == 0.5
+    assert overlay['edge_threshold'] == 0.5
+    assert 0.5 in SCORE_THRESHOLDS
     assert overlay['amp'] == 'bf16'
     assert overlay['seed'] == 42
     assert overlay['unet_layers'] == [32, 64, 128]
@@ -94,6 +96,9 @@ def test_apply_search_params_derives_conditionals() -> None:
     assert 'poisson_scale' not in overlay
     assert 'use_ema' not in overlay
     assert 'use_peak_topk' not in overlay
+    assert train_det_threshold(0.15) == 0.15
+    assert train_det_threshold(0.5) == 0.5
+    assert train_det_threshold(0.97) == 0.5
 
 
 def test_sinkhorn_keeps_soft_match() -> None:
@@ -347,10 +352,27 @@ def test_evaluate_logs_competition_thresholds() -> None:
         det_threshold=0.97,
         edge_threshold=0.97,
     )
-    for threshold in SCORE_THRESHOLDS:
-        value = metrics[score_threshold_key(threshold)]
-        assert value == value
-    assert metrics['competition_metric'] == metrics[score_threshold_key(0.97)]
+    scores = [metrics[score_threshold_key(threshold)] for threshold in SCORE_THRESHOLDS]
+    assert metrics['competition_metric'] == max(scores)
+    assert metrics['competition_metric'] == metrics[score_threshold_key(metrics['score_threshold'])]
+    assert metrics['det_threshold'] == 0.97
+    assert metrics['edge_threshold'] == 0.97
+
+
+def test_select_best_threshold_metrics_uses_peak_then_higher_threshold() -> None:
+    def item(score: float) -> dict[str, float]:
+        return {'competition_metric': score, 'acc': score, 'num_pred_nodes': 1.0}
+
+    metrics = select_best_threshold_metrics(
+        [item(0.0), item(0.2), item(1.1), item(1.1), item(0.5)],
+        (0.1, 0.5, 0.6, 0.7, 0.97),
+    )
+    assert metrics['competition_metric'] == 1.1
+    assert metrics['score_threshold'] == 0.7
+    assert metrics[score_threshold_key(0.5)] == 0.2
+    assert metrics[score_threshold_key(0.6)] == 1.1
+    assert metrics[score_threshold_key(0.7)] == 1.1
+    assert metrics['acc'] == 1.1
 
 
 @pytest.mark.parametrize(

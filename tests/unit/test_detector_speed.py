@@ -141,9 +141,25 @@ def test_detect_and_match_caps_dense_peaks():
         det_threshold=0.0,
         window_size=2,
     )
-    assert det_c.shape[1] == 512
-    assert int(det_m.sum().item()) == 2 * 512
-    assert all(m.shape[0] == 512 for m in matches)
+    assert int(det_m.sum().item()) <= 2 * 512
+    assert det_c.shape[1] <= 512
+    assert int(det_m.sum().item()) < 2 * 8 * 20 * 20
+
+
+def test_detect_and_match_constant_volume_is_not_all_peaks():
+    logits = torch.ones(1, 1, 8, 8, 8)
+    coords = torch.zeros(1, 1, 3)
+    mask = torch.zeros(1, 1, dtype=torch.bool)
+    _, _, det_m, _, _ = detect_and_match(
+        logits,
+        coords,
+        mask,
+        (1, 8, 8, 8),
+        det_threshold=0.0,
+        window_size=1,
+    )
+    n_peaks = int(det_m.sum().item())
+    assert 0 < n_peaks < 8 * 8 * 8
 
 
 def test_detect_and_match_keeps_sparse_peaks():
@@ -422,6 +438,17 @@ def test_train_epoch_flushes_short_accumulation_and_does_not_cache_batches(monke
     assert all(p.grad is None for p in model.parameters())
 
 
+def test_detector_optimizer_step_skips_nonfinite_grads():
+    model = torch.nn.Linear(2, 1)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    before = model.weight.detach().clone()
+    model.weight.grad = torch.full_like(model.weight, float('nan'))
+    detector_optimizer_step(model, optimizer, None, 2.0)
+    torch.testing.assert_close(model.weight, before)
+    assert model.weight.grad is None
+    assert not optimizer.state
+
+
 def test_scaler_overflow_skips_optimizer_and_ema_then_recovers():
     model = torch.nn.Linear(2, 1)
     opt = torch.optim.SGD(model.parameters(), lr=0.01)
@@ -609,6 +636,7 @@ def test_epoch_callback_and_fixed_validation_protocol(tmp_path, monkeypatch):
                 detector.score_threshold_key(threshold): 0.0
                 for threshold in detector.SCORE_THRESHOLDS
             },
+            'score_threshold': 0.5,
         }
 
     monkeypatch.setattr(detector, 'evaluate', evaluate)

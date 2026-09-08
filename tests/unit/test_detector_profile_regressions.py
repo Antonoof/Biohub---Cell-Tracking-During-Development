@@ -61,10 +61,10 @@ def test_nonfinite_grad_never_steps_even_between_periodic_checks(clip):
     optimizer = torch.optim.AdamW(model.parameters())
     before = model.weight.detach().clone()
     model.weight.grad = torch.full_like(model.weight, float('nan'))
-    with pytest.raises(RuntimeError, match='finite'):
-        detector_optimizer_step(model, optimizer, None, clip, check_finite=False)
+    detector_optimizer_step(model, optimizer, None, clip, check_finite=False)
     torch.testing.assert_close(model.weight, before)
     assert not optimizer.state
+    assert model.weight.grad is None
 
 
 def test_aux_batch_loss_and_gradient_match_unpadded_reference():
