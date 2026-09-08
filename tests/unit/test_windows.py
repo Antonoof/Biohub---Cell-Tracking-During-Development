@@ -10,6 +10,7 @@ from biohub.data.windows import (
     VideoGroupedSampler,
     VideoMeta,
     collate_windows,
+    pad_window,
 )
 
 
@@ -67,6 +68,13 @@ def test_getitem_omits_unused_pos_feats(monkeypatch) -> None:
     assert sample['imgs'].dtype == torch.float32
     batch = collate_windows([sample, sample])
     assert 'pos_feats' not in batch
+
+
+def test_pad_window_omits_pos_feats() -> None:
+    padded = pad_window(_window(), 2)
+    assert 'pos_feats' not in padded
+    assert padded['coords'].shape == (2, 2, 3)
+    assert padded['targets'].shape == (1, 2, 2)
 
 
 def test_video_grouped_sampler_covers_all_indices() -> None:

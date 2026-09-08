@@ -14,7 +14,6 @@ import zarr
 from torch.utils.data import Dataset, Sampler, default_collate
 
 from biohub.data.volume import invert_time_graph, open_dataset
-from biohub.features.position import extract_pos_features
 from biohub.losses.association import compute_gt_transition_matrix
 from biohub.losses.detection import gaussian_heatmap_target
 from biohub.utils.seed import SharedEpoch, sample_numpy_rng
@@ -41,6 +40,7 @@ class VideoMeta:
 
 
 _ZARR_ARRAYS: dict[str, Any] = {}
+_MASK_MUTATING_AUGS = frozenset({'translate_augment', 'scale_augment'})
 
 
 def _zarr_array(path: Path):
@@ -73,16 +73,14 @@ def get_window_data(
     transitions = {} if transition_cache is None else transition_cache
 
     per_frame_ids: list[np.ndarray] = []
-    pos_feats: list[torch.Tensor] = []
     coords_list: list[torch.Tensor] = []
     node_counts: list[int] = []
 
     for i in range(window_size):
         t = t_start + i
         if t in frames:
-            ids, pos, coords = frames[t]
+            ids, coords = frames[t]
             per_frame_ids.append(ids)
-            pos_feats.append(pos)
             coords_list.append(coords)
             node_counts.append(len(ids))
             continue
@@ -93,14 +91,10 @@ def get_window_data(
         gt_coords_t = gt_t.select(['z', 'y', 'x']).to_numpy().astype(np.float32) / ds
         gt_ids = gt_t['node_id'].to_numpy()
         n_gt = len(gt_coords_t)
-
-        full_coords = np.column_stack([np.full(n_gt, t, dtype=np.float32), gt_coords_t])
-
-        pos_feats.append(torch.from_numpy(extract_pos_features(full_coords, image_shape)))
         coords_list.append(torch.from_numpy(gt_coords_t))
         per_frame_ids.append(gt_ids)
         node_counts.append(n_gt)
-        frames[t] = (gt_ids, pos_feats[-1], coords_list[-1])
+        frames[t] = (gt_ids, coords_list[-1])
 
     targets: list[torch.Tensor] = []
     for i in range(window_size - 1):
@@ -116,7 +110,7 @@ def get_window_data(
     return FrameWindowData(
         t_start=t_start,
         n_frames=window_size,
-        pos_feats=pos_feats,
+        pos_feats=[coord.new_empty((coord.shape[0], 0)) for coord in coords_list],
         coords=coords_list,
         node_counts=node_counts,
         targets=targets,
@@ -128,17 +122,14 @@ def pad_window(
     max_nodes: int,
 ) -> dict[str, Any]:
     W = window.n_frames
-    D = window.pos_feats[0].shape[1]
     M = max_nodes
 
-    pos_feats = torch.zeros(W, M, D, dtype=torch.float32)
     coords = torch.zeros(W, M, 3, dtype=torch.float32)
     masks = torch.zeros(W, M, dtype=torch.bool)
     node_counts = torch.zeros(W, dtype=torch.long)
 
     for i in range(W):
         n = window.node_counts[i]
-        pos_feats[i, :n] = window.pos_feats[i]
         coords[i, :n] = window.coords[i]
         masks[i, :n] = True
         node_counts[i] = n
@@ -152,7 +143,6 @@ def pad_window(
     return {
         't_start': window.t_start,
         'n_frames': W,
-        'pos_feats': pos_feats,
         'coords': coords,
         'masks': masks,
         'targets': targets,
@@ -161,11 +151,13 @@ def pad_window(
 
 
 def collate_windows(samples: list[dict]) -> dict:
-    """Pad node axes to this batch, not the largest movie in the entire fold."""
     size = max(sample['coords'].shape[1] for sample in samples)
     padded = []
     for sample in samples:
         n = size - sample['coords'].shape[1]
+        if n <= 0:
+            padded.append(sample)
+            continue
         extra = {
             'coords': F.pad(sample['coords'], (0, 0, 0, n)),
             'masks': F.pad(sample['masks'], (0, n)),
@@ -178,27 +170,29 @@ def collate_windows(samples: list[dict]) -> dict:
 
 
 def compact_window(meta: dict, coords: torch.Tensor, masks: torch.Tensor) -> dict:
-    """Keep the prefix-mask contract and reindex both ends of every GT edge."""
     ids = [mask.nonzero(as_tuple=True)[0] for mask in masks]
     out_coords = torch.zeros_like(coords)
-    out_pos = torch.zeros_like(meta['pos_feats'])
     out_masks = torch.zeros_like(masks)
     out_targets = torch.zeros_like(meta['targets'])
+    out_pos = torch.zeros_like(meta['pos_feats']) if 'pos_feats' in meta else None
     for i, idx in enumerate(ids):
         n = len(idx)
         out_coords[i, :n] = coords[i, idx]
-        out_pos[i, :n] = meta['pos_feats'][i, idx]
+        if out_pos is not None:
+            out_pos[i, :n] = meta['pos_feats'][i, idx]
         out_masks[i, :n] = True
         if i < len(ids) - 1:
             out_targets[i, :n, : len(ids[i + 1])] = meta['targets'][i][idx][:, ids[i + 1]]
-    return {
+    packed = {
         **meta,
         'coords': out_coords,
-        'pos_feats': out_pos,
         'masks': out_masks,
         'targets': out_targets,
         'node_counts': masks.sum(dim=1),
     }
+    if out_pos is not None:
+        packed['pos_feats'] = out_pos
+    return packed
 
 
 class FrameWindowDataset(Dataset):
@@ -225,9 +219,21 @@ class FrameWindowDataset(Dataset):
         self._frames: OrderedDict[tuple, torch.Tensor] = OrderedDict()
         self._frame_bytes = 0
         self.heatmap_sigma = heatmap_sigma
+        self._repack_masks = any(
+            getattr(getattr(aug, 'func', aug), '__name__', '') in _MASK_MUTATING_AUGS
+            for aug in self.augmentations
+        )
+        self._meta_tensors: dict[str, tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = {}
 
         self._data: list[tuple[FrameWindowData, VideoMeta]] = []
         for video_meta, windows in video_data:
+            key = str(video_meta.zarr_path)
+            if key not in self._meta_tensors:
+                self._meta_tensors[key] = (
+                    torch.tensor(video_meta.image_shape, dtype=torch.long),
+                    torch.tensor(video_meta.voxel_size, dtype=torch.float32),
+                    torch.tensor(video_meta.downsample, dtype=torch.float32),
+                )
             for window in windows:
                 self._data.append((window, video_meta))
 
@@ -252,14 +258,15 @@ class FrameWindowDataset(Dataset):
         dz, dy, dx = vm.downsample
 
         z: Any = _zarr_array(vm.zarr_path)
-        target_shape = list(vm.image_shape[1:])
+        target_shape = vm.image_shape[1:]
+        image_shape_t, voxel_t, ds_t = self._meta_tensors[str(vm.zarr_path)]
 
         def normalize(raw):
             tensor = torch.from_numpy(np.ascontiguousarray(raw))
             if tensor.dtype != torch.float32:
                 tensor = tensor.to(dtype=torch.float32)
             result = ((tensor - vm.q_low) / (vm.q_high - vm.q_low + 1e-6)).clamp(min=0.0)
-            if list(result.shape[1:]) != target_shape:
+            if result.shape[1:] != target_shape:
                 result = F.interpolate(
                     result[:, None], size=target_shape, mode='trilinear', align_corners=False
                 )[:, 0]
@@ -284,7 +291,7 @@ class FrameWindowDataset(Dataset):
                 else:
                     self._frames.move_to_end(key)
                 frames.append(frame)
-            # Own storage: an in-place augmentation must never modify cached frames.
+
             imgs = torch.stack(frames)
 
         if self.augmentations:
@@ -292,7 +299,7 @@ class FrameWindowDataset(Dataset):
             c, m = meta['coords'], meta['masks']
             for aug in self.augmentations:
                 imgs, c, m = aug(imgs, c, m, rng=rng)
-            if not torch.equal(m, meta['masks']):
+            if self._repack_masks and not torch.equal(m, meta['masks']):
                 meta = compact_window(meta, c, m)
             else:
                 meta = {**meta, 'coords': c, 'masks': m}
@@ -303,10 +310,10 @@ class FrameWindowDataset(Dataset):
             )
         sample = {
             **meta,
-            'imgs': imgs.contiguous(),
-            'image_shape': torch.tensor(vm.image_shape, dtype=torch.long),
-            'voxel_size': torch.tensor(vm.voxel_size, dtype=torch.float32),
-            'downsample': torch.tensor(vm.downsample, dtype=torch.float32),
+            'imgs': imgs if imgs.is_contiguous() else imgs.contiguous(),
+            'image_shape': image_shape_t,
+            'voxel_size': voxel_t,
+            'downsample': ds_t,
         }
         sample.pop('pos_feats', None)
         return sample
@@ -399,10 +406,8 @@ def load_dataset_windows(
         if data is not None:
             windows.append(data)
 
-    # Diagnose quantization collisions once per movie, not with torch.unique
-    # and GPU -> CPU synchronization on every training batch.
     collisions = 0
-    for _, _, coords in frame_cache.values():
+    for _, coords in frame_cache.values():
         voxels = np.clip(coords.numpy().astype(np.int64), 0, np.asarray(image_shape[1:]) - 1)
         collisions += len(voxels) - len(np.unique(voxels, axis=0))
     if collisions:

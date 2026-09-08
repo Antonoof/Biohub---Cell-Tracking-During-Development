@@ -37,7 +37,7 @@ def scale_augment(
     dx = max((width - new_w) // 2, 0)
     canvas[:, :, dy : dy + (y1 - y0), dx : dx + (x1 - x0)] = scaled[:, :, y0:y1, x0:x1]
     out = coords.clone()
-    # interpolate uses the rounded output dimensions and half-pixel centres.
+
     out[..., 1] = (coords[..., 1] + 0.5) * (new_h / height) - 0.5 - y0 + dy
     out[..., 2] = (coords[..., 2] + 0.5) * (new_w / width) - 0.5 - x0 + dx
     valid = masks.clone()

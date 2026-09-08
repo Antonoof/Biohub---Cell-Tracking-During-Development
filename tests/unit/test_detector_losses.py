@@ -29,6 +29,14 @@ def test_div_weight_increases_division_row() -> None:
     assert float(heavy) > float(base)
 
 
+def test_gaussian_heatmap_empty_nodes() -> None:
+    logits = torch.zeros(2, 1, 3, 3, 3)
+    coords = torch.zeros(2, 0, 3)
+    mask = torch.zeros(2, 0, dtype=torch.bool)
+    loss = detection_loss('gaussian_heatmap', logits, coords, mask)
+    assert torch.isfinite(loss).all()
+
+
 def test_gaussian_heatmap_peaks_on_gt() -> None:
     logits = torch.zeros(1, 1, 4, 4, 4)
     coords = torch.tensor([[[1.0, 2.0, 1.0]]])
@@ -207,3 +215,34 @@ def test_compute_batch_loss_matches_per_sample_loop() -> None:
             atol=1e-5,
             rtol=1e-5,
         )
+
+
+def test_compute_batch_loss_flat_pairs_matches_mean_over_pairs() -> None:
+    torch.manual_seed(1)
+    batch, pairs, nodes = 3, 4, 5
+    logits = torch.randn(batch, pairs, nodes, nodes)
+    target = torch.zeros(batch, pairs, nodes, nodes)
+    target[0, 0, 0, 1] = 1.0
+    target[1, 2, 1, 0] = 1.0
+    target[2, 3, 2, 2] = 1.0
+    mask = torch.zeros(batch, pairs + 1, nodes, dtype=torch.bool)
+    mask[:, :, :3] = True
+    mask[:, 0, 3] = True
+    per = [
+        compute_batch_loss(
+            logits[:, i],
+            target[:, i],
+            mask[:, i],
+            mask[:, i + 1],
+            kind='focal_softmax',
+        )
+        for i in range(pairs)
+    ]
+    flat = compute_batch_loss(
+        logits.reshape(batch * pairs, nodes, nodes),
+        target.reshape(batch * pairs, nodes, nodes),
+        mask[:, :-1].reshape(batch * pairs, nodes),
+        mask[:, 1:].reshape(batch * pairs, nodes),
+        kind='focal_softmax',
+    )
+    torch.testing.assert_close(flat, torch.stack(per).mean(), atol=1e-5, rtol=1e-5)

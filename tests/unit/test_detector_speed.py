@@ -161,6 +161,32 @@ def test_detect_and_match_keeps_sparse_peaks():
     assert found == {(1.0, 2.0, 3.0), (2.0, 4.0, 5.0)}
 
 
+def test_detect_and_match_packed_skips_couplings():
+    logits = torch.full((1, 1, 4, 8, 8), -10.0)
+    logits[0, 0, 1, 2, 3] = 5.0
+    logits[0, 0, 2, 4, 5] = 5.0
+    coords = torch.tensor([[[1.0, 2.0, 3.0], [2.0, 4.0, 5.0]]])
+    mask = torch.ones(1, 2, dtype=torch.bool)
+    det_c, _, det_m, matches, couplings = detect_and_match(
+        logits,
+        coords,
+        mask,
+        (2, 4, 8, 8),
+        det_threshold=0.5,
+        window_size=2,
+        packed_matches=True,
+        return_couplings=False,
+    )
+    assert torch.is_tensor(matches)
+    assert matches.shape == det_m.shape
+    assert couplings == []
+    assert int((matches[0, : int(det_m[0].sum())] >= 0).sum()) == 2
+    cropped = detect_and_match(
+        logits, coords, mask, (2, 4, 8, 8), det_threshold=0.5, window_size=2
+    )[3]
+    assert cropped[0].shape[0] == 2
+
+
 def test_detect_and_match_tensor_frame_index_matches_int():
     logits = torch.full((2, 1, 4, 8, 8), -10.0)
     logits[0, 0, 1, 2, 3] = 5.0
@@ -337,6 +363,31 @@ def test_train_matched_sinkhorn_soft_with_aux_losses(kind):
     assert all(np.isfinite(losses))
 
 
+def test_gaussian_heatmap_train_without_precomputed_target():
+    torch.manual_seed(8)
+    unet = TemporalUNet3D(1, 4, layers=(4, 8), temporal_mix='none')
+    model = UNetNodeTransformer(unet, 4, 32, hidden_dim=8, n_heads=2, n_blocks=1, dropout=0)
+    sample = {
+        **pad_window(_window(2), 7),
+        'imgs': torch.rand(2, 4, 8, 8),
+        'image_shape': torch.tensor([2, 4, 8, 8]),
+        'voxel_size': torch.ones(3),
+        'downsample': torch.ones(3),
+    }
+    assert 'heatmap_target' not in sample
+    opt = torch.optim.AdamW(model.parameters(), lr=0.001)
+    losses = train_epoch(
+        model,
+        DataLoader(RepeatedSample(sample), batch_size=1),
+        opt,
+        torch.device('cpu'),
+        det_loss_kind='gaussian_heatmap',
+        match_assign='greedy',
+        match_soft=False,
+    )
+    assert all(np.isfinite(losses))
+
+
 def test_train_epoch_flushes_short_accumulation_and_does_not_cache_batches(monkeypatch):
     torch.manual_seed(3)
     unet = TemporalUNet3D(1, 4, layers=(4, 8), temporal_mix='none')
@@ -366,7 +417,7 @@ def test_train_epoch_flushes_short_accumulation_and_does_not_cache_batches(monke
         model, loader, opt, torch.device('cpu'), max_iters=3, accum_steps=2, target_mode='gt_nodes'
     )
     assert len(steps) == 2
-    assert ds.reads == 3  # cycle(loader) used to reuse its first cached batch.
+    assert ds.reads == 3
     assert all(np.isfinite(losses))
     assert all(p.grad is None for p in model.parameters())
 

@@ -64,7 +64,7 @@ from biohub.validation.splits import detector_fold_names, detector_validation_ro
 
 DEFAULT_METHOD = 'unet_transformer'
 DEFAULT_AUGMENTATIONS = [brightness_augment, flip_augment]
-# Matching is a measurement rule, not a tunable model parameter.
+
 VALIDATION_MATCH_DISTANCE = 5.0
 VALIDATION_MATCH_ASSIGN = 'greedy'
 CHECKPOINT_METRICS = (
@@ -101,28 +101,28 @@ def require_finite(tensor: torch.Tensor, what: str) -> None:
 
 def require_finite_grads(model: nn.Module) -> None:
     grads = [(name, p.grad) for name, p in model.named_parameters() if p.grad is not None]
-    # One host synchronization on the healthy path, not one per parameter.
+
     if grads and not torch.stack([torch.isfinite(g).all() for _, g in grads]).all():
         for name, grad in grads:
             require_finite(grad, f'Detector gradient {name}')
 
 
-def detector_optimizer_step(model, optimizer, scaler, grad_clip_norm, ema=None) -> None:
+def detector_optimizer_step(
+    model, optimizer, scaler, grad_clip_norm, ema=None, *, check_finite: bool = False
+) -> None:
     updated = True
     if scaler is not None:
         scaler.unscale_(optimizer)
         if grad_clip_norm > 0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_norm)
         old_scale = scaler.get_scale()
-        scaler.step(optimizer)  # Non-finite scaled gradients are handled by GradScaler.
+        scaler.step(optimizer)
         scaler.update()
         updated = scaler.get_scale() >= old_scale
     else:
         if grad_clip_norm > 0:
-            torch.nn.utils.clip_grad_norm_(
-                model.parameters(), grad_clip_norm, error_if_nonfinite=True
-            )
-        else:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_norm)
+        if check_finite:
             require_finite_grads(model)
         optimizer.step()
     optimizer.zero_grad(set_to_none=True)
@@ -174,19 +174,6 @@ def checkpoint_score(metric: str, values: dict[str, float]) -> float:
     return float(values[metric])
 
 
-def _frame_node_counts(
-    frame: tuple,
-    node_counts: torch.Tensor | None,
-    frame_index: int,
-) -> list[int] | None:
-    matches = frame[3]
-    if matches is not None:
-        return [int(matched.shape[0]) for matched in matches]
-    if node_counts is None:
-        return None
-    return [int(value) for value in node_counts[:, frame_index]]
-
-
 def _topk_coords_padded(
     scores: torch.Tensor,
     k: int,
@@ -208,18 +195,18 @@ def _topk_coords_padded(
 def _pack_valid_nodes(
     coords: torch.Tensor,
     keep: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor, list[int]]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     batch = coords.shape[0]
     if coords.shape[1] == 0:
         packed = coords.new_zeros(batch, 1, 3)
         mask = torch.zeros(batch, 1, dtype=torch.bool, device=coords.device)
-        return packed, mask, [0] * batch
+        return packed, mask, torch.zeros(batch, dtype=torch.long, device=coords.device)
     order = keep.to(dtype=torch.int64).argsort(dim=1, descending=True, stable=True)
     packed = coords.gather(1, order.unsqueeze(-1).expand_as(coords))
     packed_keep = keep.gather(1, order)
-    counts = [int(v) for v in packed_keep.sum(dim=1).tolist()]
-    width = max(max(counts), 1)
-    return packed[:, :width], packed_keep[:, :width], counts
+    n_keep = packed_keep.sum(dim=1)
+    width = max(int(n_keep.max().item()), 1)
+    return packed[:, :width], packed_keep[:, :width], n_keep
 
 
 def detect_and_match(
@@ -238,7 +225,15 @@ def detect_and_match(
     sinkhorn_iters: int = 20,
     train_peak_topk: int = 0,
     gt_counts: list[int] | None = None,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, list[torch.Tensor], list[torch.Tensor]]:
+    return_couplings: bool = True,
+    packed_matches: bool = False,
+) -> tuple[
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    list[torch.Tensor] | torch.Tensor,
+    list[torch.Tensor],
+]:
     B = det_logits.shape[0]
     device = det_logits.device
     vs = (
@@ -257,15 +252,18 @@ def detect_and_match(
         pool_kernel = (k if k % 2 == 1 else k + 1,) * 3
 
     pad = tuple(k // 2 for k in pool_kernel)
-    nt_per_sample = (
-        [int(v) for v in gt_counts] if gt_counts is not None else mask.sum(dim=1).tolist()
+    gt_n = (
+        torch.as_tensor(gt_counts, device=device, dtype=torch.long)
+        if gt_counts is not None
+        else mask.sum(dim=1).long()
     )
+    max_gt_n = int(gt_coords.shape[1])
 
     with torch.no_grad():
         pooled = F.max_pool3d(det_logits, pool_kernel, stride=1, padding=pad)
         probs = torch.sigmoid(det_logits[:, 0])
         is_peak = (det_logits[:, 0] == pooled[:, 0]) & (probs > det_threshold)
-        cap = max(512, max(nt_per_sample) * 4, int(train_peak_topk))
+        cap = max(512, max_gt_n * 4, int(train_peak_topk))
         peak_coords, peak_keep = _topk_coords_padded(probs.masked_fill(~is_peak, -1.0), cap, 0.0)
         if train_peak_topk > 0:
             extra_c, extra_k = _topk_coords_padded(
@@ -273,31 +271,36 @@ def detect_and_match(
             )
             peak_coords = torch.cat([peak_coords, extra_c], dim=1)
             peak_keep = torch.cat([peak_keep, extra_k], dim=1)
-        padded_coords, padded_mask, det_counts = _pack_valid_nodes(peak_coords, peak_keep)
+        padded_coords, padded_mask, det_counts_t = _pack_valid_nodes(peak_coords, peak_keep)
 
     max_det = padded_coords.shape[1]
-    max_gt = max(max(nt_per_sample), 1)
-    gt_n = torch.as_tensor(nt_per_sample, device=device, dtype=torch.long)
+    max_gt = max(max_gt_n, 1)
+    if gt_coords.shape[1] < max_gt:
+        gt_coords = F.pad(gt_coords, (0, 0, 0, max_gt - gt_coords.shape[1]))
     gt_valid = torch.arange(max_gt, device=device).unsqueeze(0) < gt_n.unsqueeze(1)
     det_valid = padded_mask
+    need_counts = match_assign != 'greedy' or return_couplings or not packed_matches
+    det_counts = [int(v) for v in det_counts_t.tolist()] if need_counts else None
+    nt_per_sample = [int(v) for v in gt_n.tolist()] if need_counts else None
 
-    sample_matches: list[torch.Tensor] = []
     sample_couplings: list[torch.Tensor] = []
+    matched_pad = torch.full((B, max_det), -1, device=device, dtype=torch.long)
     if match_assign == 'greedy':
         left = padded_coords if vs is None else padded_coords * vs
         right = gt_coords[:, :max_gt] if vs is None else gt_coords[:, :max_gt] * vs
         dists = torch.cdist(left, right)
         far = (~det_valid).unsqueeze(-1) | (~gt_valid).unsqueeze(1)
         dists = dists.masked_fill(far, 1e6)
-        matched_b = greedy_assign_batched(dists, max_match_distance)
-        matched_b = matched_b.masked_fill(~det_valid, -1)
-        for b in range(B):
-            n = det_counts[b]
-            nt = int(nt_per_sample[b])
-            matched = matched_b[b, :n]
-            sample_matches.append(matched)
-            sample_couplings.append(hard_coupling(matched, nt).to(dtype=dists.dtype))
+        matched_pad = greedy_assign_batched(dists, max_match_distance)
+        matched_pad = matched_pad.masked_fill(~det_valid, -1)
+        if return_couplings:
+            assert nt_per_sample is not None and det_counts is not None
+            for b in range(B):
+                n = det_counts[b]
+                nt = int(nt_per_sample[b])
+                sample_couplings.append(hard_coupling(matched_pad[b, :n], nt).to(dtype=dists.dtype))
     else:
+        assert nt_per_sample is not None and det_counts is not None
         for b in range(B):
             n_det = det_counts[b]
             nt = int(nt_per_sample[b])
@@ -318,8 +321,10 @@ def detect_and_match(
             else:
                 matched = torch.full((n_det,), -1, dtype=torch.long, device=device)
                 coupling = torch.zeros(n_det, nt, device=device)
-            sample_matches.append(matched)
-            sample_couplings.append(coupling)
+            if n_det:
+                matched_pad[b, :n_det] = matched
+            if return_couplings:
+                sample_couplings.append(coupling)
 
     if torch.is_tensor(frame_index):
         t_col = frame_index.to(device=device, dtype=torch.float32).reshape(B).view(B, 1, 1)
@@ -329,8 +334,13 @@ def detect_and_match(
     full_coords = torch.cat([t_col, padded_coords], dim=-1)
     pos_shape = (window_size,) + image_shape[1:] if window_size is not None else image_shape
     padded_pos = pos_embed_torch(full_coords, pos_shape)
-
-    return padded_coords, padded_pos, padded_mask, sample_matches, sample_couplings
+    matches_out: list[torch.Tensor] | torch.Tensor
+    if packed_matches:
+        matches_out = matched_pad
+    else:
+        assert det_counts is not None
+        matches_out = [matched_pad[b, : det_counts[b]] for b in range(B)]
+    return padded_coords, padded_pos, padded_mask, matches_out, sample_couplings
 
 
 def _as_coupling(matched: torch.Tensor, n_gt: int) -> torch.Tensor:
@@ -346,10 +356,18 @@ def _as_coupling(matched: torch.Tensor, n_gt: int) -> torch.Tensor:
 
 
 def _stack_match_indices(
-    rows: list[torch.Tensor],
+    rows: list[torch.Tensor] | torch.Tensor,
     width: int,
     device: torch.device,
 ) -> torch.Tensor:
+    if torch.is_tensor(rows):
+        if rows.shape[1] == width and rows.device == device:
+            return rows
+        out = torch.full((rows.shape[0], width), -1, device=device, dtype=torch.long)
+        n = min(int(rows.shape[1]), width)
+        if n:
+            out[:, :n] = rows[:, :n].to(device=device)
+        return out
     out = torch.full((len(rows), width), -1, device=device, dtype=torch.long)
     for b, row in enumerate(rows):
         n = min(int(row.shape[0]), width)
@@ -359,8 +377,8 @@ def _stack_match_indices(
 
 
 def build_matched_edge_targets(
-    match_t: list[torch.Tensor],
-    match_t1: list[torch.Tensor],
+    match_t: list[torch.Tensor] | torch.Tensor,
+    match_t1: list[torch.Tensor] | torch.Tensor,
     gt_target: torch.Tensor,
     max_det_t: int,
     max_det_t1: int,
@@ -404,6 +422,45 @@ def build_matched_edge_targets(
     return gathered.masked_fill(~valid, 0)
 
 
+def _pair_edge_targets(
+    *,
+    use_gt: bool,
+    match_soft: bool,
+    matches_w: torch.Tensor | None,
+    targets: torch.Tensor,
+    nodes: int,
+    couplings_w: list[list[torch.Tensor]] | None,
+) -> torch.Tensor:
+    pair_batch = int(targets.shape[0] * targets.shape[1])
+    if use_gt:
+        return targets.reshape(pair_batch, targets.shape[2], targets.shape[3])
+    assert matches_w is not None
+    if not match_soft:
+        match_nodes = matches_w.shape[2]
+        return build_matched_edge_targets(
+            matches_w[:, :-1].reshape(pair_batch, match_nodes),
+            matches_w[:, 1:].reshape(pair_batch, match_nodes),
+            targets.reshape(pair_batch, targets.shape[2], targets.shape[3]),
+            nodes,
+            nodes,
+        )
+    pairs = int(targets.shape[1])
+    stacked = [
+        build_matched_edge_targets(
+            matches_w[:, i],
+            matches_w[:, i + 1],
+            targets[:, i],
+            nodes,
+            nodes,
+            match_soft=True,
+            couplings_t=None if couplings_w is None else couplings_w[i],
+            couplings_t1=None if couplings_w is None else couplings_w[i + 1],
+        )
+        for i in range(pairs)
+    ]
+    return torch.stack(stacked, dim=1).reshape(pair_batch, nodes, nodes)
+
+
 def _split_per_frame(
     values: list[torch.Tensor], batch: int, frames: int
 ) -> list[list[torch.Tensor]]:
@@ -413,7 +470,7 @@ def _split_per_frame(
 def _window_detections(
     model: UNetNodeTransformer,
     unet_out: torch.Tensor,
-    det_logits: list[torch.Tensor],
+    det_logits: list[torch.Tensor] | torch.Tensor,
     coords: torch.Tensor,
     masks: torch.Tensor,
     image_shape: tuple[int, ...],
@@ -427,12 +484,12 @@ def _window_detections(
     sinkhorn_tau: float,
     sinkhorn_iters: int,
     train_peak_topk: int,
-    node_counts: torch.Tensor | None,
+    match_soft: bool = False,
 ) -> tuple[
     torch.Tensor,
     torch.Tensor,
     torch.Tensor,
-    list[list[torch.Tensor]] | None,
+    torch.Tensor | None,
     torch.Tensor,
     list[list[torch.Tensor]] | None,
 ]:
@@ -454,9 +511,8 @@ def _window_detections(
         ).view(batch, frames, nodes, -1)
         return coords, pos, masks, None, feat, None
 
-    det_stack = torch.stack(det_logits, dim=1)
+    det_stack = det_logits if torch.is_tensor(det_logits) else torch.stack(det_logits, dim=1)
     frame_index = torch.arange(frames, device=device).unsqueeze(0).expand(batch, frames).reshape(-1)
-    gt_counts = None if node_counts is None else [int(v) for v in node_counts.reshape(-1)]
     det_c, det_p, det_m, matches, couplings = detect_and_match(
         det_stack.reshape(flat, *det_stack.shape[2:]),
         coords.reshape(flat, *coords.shape[2:]),
@@ -472,7 +528,8 @@ def _window_detections(
         sinkhorn_tau=sinkhorn_tau,
         sinkhorn_iters=sinkhorn_iters,
         train_peak_topk=train_peak_topk,
-        gt_counts=gt_counts,
+        return_couplings=match_soft,
+        packed_matches=True,
     )
     nodes = det_c.shape[1]
     det_c = det_c.view(batch, frames, nodes, 3)
@@ -483,14 +540,10 @@ def _window_detections(
         det_c.reshape(flat, nodes, 3),
         det_m.reshape(flat, nodes),
     ).view(batch, frames, nodes, -1)
-    return (
-        det_c,
-        det_p,
-        det_m,
-        _split_per_frame(matches, batch, frames),
-        feat,
-        _split_per_frame(couplings, batch, frames),
-    )
+    assert torch.is_tensor(matches)
+    matches_w = matches.view(batch, frames, nodes)
+    couplings_w = _split_per_frame(couplings, batch, frames) if couplings else None
+    return det_c, det_p, det_m, matches_w, feat, couplings_w
 
 
 def train_epoch(
@@ -565,9 +618,6 @@ def train_epoch(
         image_shape = tuple(batch['image_shape'][0].tolist())
         voxel_size = tuple(batch['voxel_size'][0].tolist())
         ds_scale = batch['downsample'][0].to(device)
-        node_counts = batch.get('node_counts')
-        if node_counts is not None and torch.is_tensor(node_counts):
-            node_counts = node_counts.detach().cpu()
 
         t1 = time.perf_counter()
         t_data += t1 - t0
@@ -576,14 +626,17 @@ def train_epoch(
         if target_mode == 'gt_nodes':
             use_gt = True
         elif target_mode == 'mixed':
-            use_gt = float(torch.rand(()).item()) < target_gt_frac
-        else:
+            use_gt = float(torch.rand((), device='cpu').item()) < target_gt_frac
+        elif target_mode == 'matched_det':
             use_gt = False
+        else:
+            raise ValueError(
+                f'Unknown target_mode {target_mode!r}; expected gt_nodes, mixed, or matched_det'
+            )
 
         with torch.autocast(device.type, dtype=dtype or torch.float32, enabled=autocast_on):
-            unet_out, det_logits = model.encode(imgs)
+            unet_out, det_stack = model.encode_stacked(imgs)
 
-            det_stack = torch.stack(det_logits, dim=1)
             flat = B * W
             det_loss = detection_loss(
                 det_loss_kind,
@@ -603,7 +656,7 @@ def train_epoch(
             det_c, det_p, det_m, matches_w, feat, couplings_w = _window_detections(
                 model,
                 unet_out,
-                det_logits,
+                det_stack,
                 coords,
                 masks,
                 image_shape,
@@ -616,16 +669,16 @@ def train_epoch(
                 sinkhorn_tau=sinkhorn_tau,
                 sinkhorn_iters=sinkhorn_iters,
                 train_peak_topk=train_peak_topk,
-                node_counts=node_counts,
+                match_soft=match_soft,
             )
 
-            block_losses = []
             aux_div = []
             aux_con = []
             pairs = W - 1
             query: torch.Tensor | None = None
             key: torch.Tensor | None = None
             edge_logits: torch.Tensor | None = None
+            pair_target: torch.Tensor | None = None
             if pairs > 0:
                 pair_batch = B * pairs
                 nodes = feat.shape[2]
@@ -647,105 +700,82 @@ def train_epoch(
                     edge_logits = model.predict_edges(
                         src_feat, tgt_feat, src_c, tgt_c, src_p, tgt_p, src_m, tgt_m
                     )
-                edge_logits = edge_logits.view(B, pairs, nodes, nodes)
-            for i in range(pairs):
-                ns = det_c[:, i].shape[1]
-                nt = det_c[:, i + 1].shape[1]
-                if use_gt:
-                    pair_target = targets[:, i]
-                    matches_t = None
-                    matches_t1 = None
-                    couplings_t = None
-                    couplings_t1 = None
-                else:
-                    assert matches_w is not None and couplings_w is not None
-                    matches_t = matches_w[i]
-                    matches_t1 = matches_w[i + 1]
-                    couplings_t = couplings_w[i]
-                    couplings_t1 = couplings_w[i + 1]
-                    pair_target = build_matched_edge_targets(
-                        matches_t,
-                        matches_t1,
-                        targets[:, i],
-                        ns,
-                        nt,
-                        match_soft=match_soft,
-                        couplings_t=couplings_t,
-                        couplings_t1=couplings_t1,
-                    )
+                pair_target = _pair_edge_targets(
+                    use_gt=use_gt,
+                    match_soft=match_soft,
+                    matches_w=matches_w,
+                    targets=targets,
+                    nodes=nodes,
+                    couplings_w=couplings_w,
+                )
                 assert edge_logits is not None
-                frame_i = (det_c[:, i], det_p[:, i], det_m[:, i], matches_t)
-                frame_j = (det_c[:, i + 1], det_p[:, i + 1], det_m[:, i + 1], matches_t1)
-                block_losses.append(
-                    compute_batch_loss(
-                        edge_logits[:, i],
-                        pair_target,
-                        det_m[:, i],
-                        det_m[:, i + 1],
-                        kind=edge_loss,
-                        focal_gamma=edge_focal_gamma,
-                        div_weight=edge_div_weight,
-                        coords_src=det_c[:, i] * ds_scale,
-                        coords_tgt=det_c[:, i + 1] * ds_scale,
-                        gate_distance=edge_gate_distance,
-                        source_counts=_frame_node_counts(frame_i, node_counts, i),
-                        target_counts=_frame_node_counts(frame_j, node_counts, i + 1),
-                    )
+                edge_loss_val = compute_batch_loss(
+                    edge_logits,
+                    pair_target,
+                    src_m,
+                    tgt_m,
+                    kind=edge_loss,
+                    focal_gamma=edge_focal_gamma,
+                    div_weight=edge_div_weight,
+                    coords_src=src_c,
+                    coords_tgt=tgt_c,
+                    gate_distance=edge_gate_distance,
                 )
                 if aux_division_weight > 0 or aux_contrastive_weight > 0:
-                    src_counts = _frame_node_counts(frame_i, node_counts, i)
-                    tgt_counts = _frame_node_counts(frame_j, node_counts, i + 1)
-                    if src_counts is None:
+                    edge_w = edge_logits.view(B, pairs, nodes, nodes)
+                    target_w = pair_target.view(B, pairs, nodes, nodes)
+                    for i in range(pairs):
                         src_counts = det_m[:, i].sum(dim=1).tolist()
-                    if tgt_counts is None:
                         tgt_counts = det_m[:, i + 1].sum(dim=1).tolist()
-                if aux_division_weight > 0:
-                    for b in range(B):
-                        ns_b = int(src_counts[b])
-                        nt_b = int(tgt_counts[b])
-                        aux_div.append(
-                            division_aux_loss(
-                                edge_logits[b, i, :ns_b, :nt_b],
-                                pair_target[b, :ns_b, :nt_b],
-                            )
-                        )
-                if aux_contrastive_weight > 0 and query is not None and key is not None:
-                    for b in range(B):
-                        ns_b = int(src_counts[b])
-                        nt_b = int(tgt_counts[b])
-                        aux_con.append(
-                            contrastive_aux_loss(
-                                query[b, i, :ns_b],
-                                key[b, i, :nt_b],
-                                pair_target[b, :ns_b, :nt_b],
-                                temperature=aux_contrastive_temp,
-                            )
-                        )
-            edge_loss_val = (
-                torch.stack(block_losses).mean() if block_losses else torch.zeros((), device=device)
-            )
+                        if aux_division_weight > 0:
+                            for b in range(B):
+                                ns_b = int(src_counts[b])
+                                nt_b = int(tgt_counts[b])
+                                aux_div.append(
+                                    division_aux_loss(
+                                        edge_w[b, i, :ns_b, :nt_b],
+                                        target_w[b, i, :ns_b, :nt_b],
+                                    )
+                                )
+                        if aux_contrastive_weight > 0 and query is not None and key is not None:
+                            for b in range(B):
+                                ns_b = int(src_counts[b])
+                                nt_b = int(tgt_counts[b])
+                                aux_con.append(
+                                    contrastive_aux_loss(
+                                        query[b, i, :ns_b],
+                                        key[b, i, :nt_b],
+                                        target_w[b, i, :ns_b, :nt_b],
+                                        temperature=aux_contrastive_temp,
+                                    )
+                                )
+            else:
+                edge_loss_val = torch.zeros((), device=device)
             loss = edge_loss_val + det_loss_weight * det_loss
             if aux_div:
                 loss = loss + aux_division_weight * (sum(aux_div) / len(aux_div))
             if aux_con:
                 loss = loss + aux_contrastive_weight * (sum(aux_con) / len(aux_con))
             if aux_offset_weight > 0:
-                offset_terms = [
-                    offset_aux_loss(
-                        model.offset_head(unet_out[:, i]),
-                        coords[:, i],
-                        masks[:, i],
-                        target=offset_target,
-                        det_logits=det_logits[i],
-                    )
-                    for i in range(W)
-                ]
-                loss = loss + aux_offset_weight * (sum(offset_terms) / W)
-            # Average the final short accumulation group by its actual size.
+                offset_pred = model.offset_head(unet_out.reshape(flat, *unet_out.shape[2:]))
+                offset_det = (
+                    None
+                    if offset_target != 'parabolic'
+                    else det_stack.reshape(flat, *det_stack.shape[2:])
+                )
+                loss = loss + aux_offset_weight * offset_aux_loss(
+                    offset_pred,
+                    coords.reshape(flat, *coords.shape[2:]),
+                    masks.reshape(flat, *masks.shape[2:]),
+                    target=offset_target,
+                    det_logits=offset_det,
+                )
+
             group_size = min(accum, n_steps - (step_i // accum) * accum)
             loss = loss / group_size
 
-        if step_i == 0 or (step_i + 1) % 32 == 0:
+        check_finite = step_i == 0 or (step_i + 1) % 32 == 0
+        if check_finite:
             require_finite(loss, 'Detector training loss')
 
         t2 = time.perf_counter()
@@ -756,7 +786,14 @@ def train_epoch(
         else:
             loss.backward()
         if (step_i + 1) % accum == 0 or step_i + 1 == n_steps:
-            detector_optimizer_step(model, optimizer, scaler, grad_clip_norm, ema)
+            detector_optimizer_step(
+                model,
+                optimizer,
+                scaler,
+                grad_clip_norm,
+                ema,
+                check_finite=check_finite and scaler is None,
+            )
 
         t3 = time.perf_counter()
         t_backward += t3 - t2
@@ -800,8 +837,9 @@ def evaluate(
 ) -> dict[str, float]:
     model.eval()
     total_loss, correct, total, n_pairs = 0.0, 0, 0, 0
-    gt_matched, gt_total = 0, 0
-    num_pred_nodes = 0
+    gt_total_t = torch.zeros((), device=device, dtype=torch.long)
+    gt_matched_t = torch.zeros((), device=device, dtype=torch.long)
+    num_pred_t = torch.zeros((), device=device, dtype=torch.long)
     edge_tp = edge_fp = edge_fn = 0
     division_tp = division_fp = division_fn = 0
     dtype = amp_dtype(amp_kind)
@@ -815,17 +853,14 @@ def evaluate(
         image_shape = tuple(batch['image_shape'][0].tolist())
         voxel_size = tuple(batch['voxel_size'][0].tolist())
         ds_scale = batch['downsample'][0].to(device)
-        node_counts = batch.get('node_counts')
-        if node_counts is not None and torch.is_tensor(node_counts):
-            node_counts = node_counts.detach().cpu()
 
         B, W = imgs.shape[:2]
         with torch.autocast(device.type, dtype=dtype or torch.float32, enabled=autocast_on):
-            unet_out, det_logits = model.encode(imgs)
+            unet_out, det_stack = model.encode_stacked(imgs)
         det_c, det_p, det_m, matches_w, feat, couplings_w = _window_detections(
             model,
             unet_out,
-            det_logits,
+            det_stack,
             coords,
             masks,
             image_shape,
@@ -838,17 +873,14 @@ def evaluate(
             sinkhorn_tau=sinkhorn_tau,
             sinkhorn_iters=sinkhorn_iters,
             train_peak_topk=train_peak_topk,
-            node_counts=node_counts,
+            match_soft=match_soft,
         )
-        for i in range(W):
-            assert matches_w is not None
-            matches = matches_w[i]
-            gt_total += int(masks[:, i].sum().item())
-            gt_matched += int(torch.stack([(m >= 0).sum() for m in matches]).sum().item())
-            num_pred_nodes += int(det_m[:, i].sum().item())
+        assert matches_w is not None
+        gt_total_t += masks.sum().long()
+        gt_matched_t += (matches_w >= 0).sum()
+        num_pred_t += det_m.sum().long()
 
         pairs = W - 1
-        pair_logits_all = None
         if pairs > 0:
             pair_batch = B * pairs
             nodes = feat.shape[2]
@@ -862,40 +894,24 @@ def evaluate(
                     det_p[:, 1:].reshape(pair_batch, nodes, det_p.shape[-1]),
                     det_m[:, :-1].reshape(pair_batch, nodes),
                     det_m[:, 1:].reshape(pair_batch, nodes),
-                ).view(B, pairs, nodes, nodes)
-        for i in range(pairs):
-            assert matches_w is not None and couplings_w is not None
-            matches_t = matches_w[i]
-            matches_t1 = matches_w[i + 1]
-            ns = det_c[:, i].shape[1]
-            nt = det_c[:, i + 1].shape[1]
-            pair_target = build_matched_edge_targets(
-                matches_t,
-                matches_t1,
-                targets[:, i],
-                ns,
-                nt,
+                )
+            pair_target = _pair_edge_targets(
+                use_gt=False,
                 match_soft=match_soft,
-                couplings_t=couplings_w[i],
-                couplings_t1=couplings_w[i + 1],
+                matches_w=matches_w,
+                targets=targets,
+                nodes=nodes,
+                couplings_w=couplings_w,
             )
-            assert pair_logits_all is not None
-            pair_logits = pair_logits_all[:, i]
-            frame_i = (det_c[:, i], det_p[:, i], det_m[:, i], matches_t)
-            frame_j = (det_c[:, i + 1], det_p[:, i + 1], det_m[:, i + 1], matches_t1)
-            src_counts = _frame_node_counts(frame_i, node_counts, i)
-            tgt_counts = _frame_node_counts(frame_j, node_counts, i + 1)
-            if src_counts is None:
-                src_counts = [int(v) for v in det_m[:, i].sum(dim=1).tolist()]
-            if tgt_counts is None:
-                tgt_counts = [int(v) for v in det_m[:, i + 1].sum(dim=1).tolist()]
-            pair_logits_cpu = pair_logits.detach().float().cpu()
+            src_counts = det_m[:, :-1].reshape(pair_batch, nodes).sum(dim=1).cpu()
+            tgt_counts = det_m[:, 1:].reshape(pair_batch, nodes).sum(dim=1).cpu()
+            pair_logits_cpu = pair_logits_all.detach().float().cpu()
             pair_target_cpu = pair_target.detach().float().cpu()
-            for b in range(B):
-                ns_b = int(src_counts[b])
-                nt_b = int(tgt_counts[b])
-                logits_b = pair_logits_cpu[b, :ns_b, :nt_b]
-                target_b = pair_target_cpu[b, :ns_b, :nt_b]
+            for i in range(pair_batch):
+                ns_b = int(src_counts[i])
+                nt_b = int(tgt_counts[i])
+                logits_b = pair_logits_cpu[i, :ns_b, :nt_b]
+                target_b = pair_target_cpu[i, :ns_b, :nt_b]
                 pair_loss, pair_correct, pair_total = evaluate_pair(
                     logits_b,
                     target_b,
@@ -913,6 +929,9 @@ def evaluate(
                 division_fp += counts[4]
                 division_fn += counts[5]
 
+    gt_total = int(gt_total_t.item())
+    gt_matched = int(gt_matched_t.item())
+    num_pred_nodes = int(num_pred_t.item())
     node_recall = gt_matched / max(gt_total, 1)
     acc = correct / max(total, 1)
     loss = total_loss / max(n_pairs, 1)
@@ -1054,10 +1073,11 @@ def train(
     epoch_callback: Callable[[int, dict[str, float]], bool | None] | None = None,
 ) -> UNetNodeTransformer:
     if seed is not None:
-        # Direct train() and CLI calls must seed model initialization as well as workers.
         seed_everything(int(seed), deterministic=torch.are_deterministic_algorithms_enabled())
     if unet_layers is None:
         unet_layers = [32, 64, 128]
+    if int(window_size) < 1:
+        raise ValueError('window_size must be >= 1')
     checkpoint_score(checkpoint_metric, {name: 0.0 for name in CHECKPOINT_METRICS})
 
     if debug_video is not None:
@@ -1201,7 +1221,6 @@ def train(
         seed=dataset_seed,
         batch_padding=batch_padding,
         frame_cache_mb=frame_cache_mb,
-        heatmap_sigma=det_heatmap_sigma if det_loss == 'gaussian_heatmap' else None,
     )
     test_ds = FrameWindowDataset(
         test_video_data,
@@ -1462,8 +1481,6 @@ def train(
             try:
                 keep_training = epoch_callback(epoch, dict(metrics))
             except BaseException:
-                # Optuna TrialPruned must not retain live persistent workers in
-                # the traceback of a long-lived search process.
                 writer.close()
                 del train_loader, test_loader
                 raise
@@ -1513,113 +1530,128 @@ def _augmentations_from_cfg(cfg: dict) -> list:
             'disable time_stretch_aug and time_warp_aug for detector training'
         )
     augs = []
-    if cfg.get('brightness_aug', True):
+    brightness_p = float(cfg.get('brightness_aug_proba', 1.0))
+    if cfg.get('brightness_aug', True) and brightness_p > 0.0:
         augs.append(
             partial(
                 brightness_augment,
                 shift_range=float(cfg.get('brightness_shift', 0.1)),
-                proba=float(cfg.get('brightness_aug_proba', 1.0)),
+                proba=brightness_p,
             )
         )
-    if cfg.get('flip_aug', True):
-        augs.append(partial(flip_augment, proba=float(cfg.get('flip_aug_proba', 1.0))))
-    if cfg.get('noise_aug', False):
+    flip_p = float(cfg.get('flip_aug_proba', 1.0))
+    if cfg.get('flip_aug', True) and flip_p > 0.0:
+        augs.append(partial(flip_augment, proba=flip_p))
+    noise_p = float(cfg.get('noise_aug_proba', 0.5))
+    if cfg.get('noise_aug', False) and noise_p > 0.0:
         augs.append(
             partial(
                 noise_augment,
                 std=float(cfg.get('noise_aug_std', 0.05)),
-                proba=float(cfg.get('noise_aug_proba', 0.5)),
+                proba=noise_p,
             )
         )
-    if cfg.get('contrast_aug', False):
+    contrast_p = float(cfg.get('contrast_aug_proba', 0.5))
+    if cfg.get('contrast_aug', False) and contrast_p > 0.0:
         augs.append(
             partial(
                 contrast_augment,
                 contrast_range=float(cfg.get('contrast_aug_range', 0.2)),
-                proba=float(cfg.get('contrast_aug_proba', 0.5)),
+                proba=contrast_p,
             )
         )
-    if cfg.get('gamma_aug', False):
+    gamma_p = float(cfg.get('gamma_aug_proba', 0.5))
+    if cfg.get('gamma_aug', False) and gamma_p > 0.0:
         augs.append(
             partial(
                 gamma_augment,
                 gamma_range=float(cfg.get('gamma_aug_range', 0.2)),
-                proba=float(cfg.get('gamma_aug_proba', 0.5)),
+                proba=gamma_p,
             )
         )
-    if cfg.get('rot90_aug', False):
-        augs.append(partial(rot90_augment, proba=float(cfg.get('rot90_aug_proba', 0.5))))
-    if cfg.get('translate_aug', False):
+    rot90_p = float(cfg.get('rot90_aug_proba', 0.5))
+    if cfg.get('rot90_aug', False) and rot90_p > 0.0:
+        augs.append(partial(rot90_augment, proba=rot90_p))
+    translate_p = float(cfg.get('translate_aug_proba', 0.5))
+    if cfg.get('translate_aug', False) and translate_p > 0.0:
         augs.append(
             partial(
                 translate_augment,
                 px=int(cfg.get('translate_aug_px', 4)),
-                proba=float(cfg.get('translate_aug_proba', 0.5)),
+                proba=translate_p,
             )
         )
-    if cfg.get('cutout_aug', False):
+    cutout_p = float(cfg.get('cutout_aug_proba', 0.5))
+    if cfg.get('cutout_aug', False) and cutout_p > 0.0:
         augs.append(
             partial(
                 cutout_augment,
                 holes=int(cfg.get('cutout_holes', 1)),
                 size=int(cfg.get('cutout_size', 4)),
-                proba=float(cfg.get('cutout_aug_proba', 0.5)),
+                proba=cutout_p,
             )
         )
-    if cfg.get('time_stretch_aug', False):
+    time_stretch_p = float(cfg.get('time_stretch_aug_proba', 0.5))
+    if cfg.get('time_stretch_aug', False) and time_stretch_p > 0.0:
         augs.append(
             partial(
                 time_stretch_augment,
                 scale=float(cfg.get('time_stretch_scale', 0.25)),
-                proba=float(cfg.get('time_stretch_aug_proba', 0.5)),
+                proba=time_stretch_p,
             )
         )
-    if cfg.get('time_warp_aug', False):
+    time_warp_p = float(cfg.get('time_warp_aug_proba', 0.5))
+    if cfg.get('time_warp_aug', False) and time_warp_p > 0.0:
         augs.append(
             partial(
                 time_warp_augment,
                 magnitude=float(cfg.get('time_warp_magnitude', 0.2)),
-                proba=float(cfg.get('time_warp_aug_proba', 0.5)),
+                proba=time_warp_p,
             )
         )
-    if cfg.get('blur_aug', False):
+    blur_p = float(cfg.get('blur_aug_proba', 0.5))
+    if cfg.get('blur_aug', False) and blur_p > 0.0:
         augs.append(
             partial(
                 blur_augment,
                 sigma=float(cfg.get('blur_sigma', 0.8)),
-                proba=float(cfg.get('blur_aug_proba', 0.5)),
+                proba=blur_p,
             )
         )
-    if cfg.get('scale_aug', False):
+    scale_p = float(cfg.get('scale_aug_proba', 0.5))
+    if cfg.get('scale_aug', False) and scale_p > 0.0:
         augs.append(
             partial(
                 scale_augment,
                 scale_range=float(cfg.get('scale_aug_range', 0.15)),
-                proba=float(cfg.get('scale_aug_proba', 0.5)),
+                proba=scale_p,
             )
         )
-    if cfg.get('bleach_aug', False):
+    bleach_p = float(cfg.get('bleach_aug_proba', 0.5))
+    if cfg.get('bleach_aug', False) and bleach_p > 0.0:
         augs.append(
             partial(
                 bleach_augment,
                 strength=float(cfg.get('bleach_strength', 0.4)),
-                proba=float(cfg.get('bleach_aug_proba', 0.5)),
+                proba=bleach_p,
             )
         )
-    if cfg.get('poisson_aug', False):
+    poisson_p = float(cfg.get('poisson_aug_proba', 0.5))
+    if cfg.get('poisson_aug', False) and poisson_p > 0.0:
         augs.append(
             partial(
                 poisson_augment,
                 scale=float(cfg.get('poisson_scale', 30.0)),
-                proba=float(cfg.get('poisson_aug_proba', 0.5)),
+                proba=poisson_p,
             )
         )
-    if cfg.get('haze_aug', False):
+    haze_p = float(cfg.get('haze_aug_proba', 0.5))
+    if cfg.get('haze_aug', False) and haze_p > 0.0:
         augs.append(
             partial(
                 haze_augment,
                 amount=float(cfg.get('haze_amount', 0.1)),
-                proba=float(cfg.get('haze_aug_proba', 0.5)),
+                proba=haze_p,
             )
         )
     return augs

@@ -22,7 +22,7 @@ def blur_augment(
     kernel_1d = torch.exp(-0.5 * (x / sigma) ** 2)
     kernel_1d = kernel_1d / kernel_1d.sum()
     spatial = imgs.reshape(-1, 1, imgs.shape[-2], imgs.shape[-1])
-    # Gaussian is separable: 2*K taps instead of K*K, same replicate boundary.
+
     horizontal = F.conv2d(
         F.pad(spatial, (radius, radius, 0, 0), mode='replicate'), kernel_1d.view(1, 1, 1, -1)
     )

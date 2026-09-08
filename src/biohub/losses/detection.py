@@ -2,6 +2,7 @@ import torch
 import torch.nn.functional as F
 
 DET_LOSSES = ('weighted_bce', 'focal', 'gaussian_heatmap')
+_HEATMAP_GRIDS: dict[tuple, torch.Tensor] = {}
 
 
 def _binary_target(
@@ -70,32 +71,33 @@ def focal_detection_loss(
 
 
 def gaussian_heatmap_target(coords, mask, spatial, sigma=1.0) -> torch.Tensor:
-    """Exact max of isotropic Gaussians via nearest GT distance."""
     coords_f = coords.detach().float()
     mask_b = mask.bool()
     depth, height, width = (int(v) for v in spatial)
     device = coords_f.device
-    zz = torch.arange(depth, device=device, dtype=torch.float32)
-    yy = torch.arange(height, device=device, dtype=torch.float32)
-    xx = torch.arange(width, device=device, dtype=torch.float32)
-    grid = torch.stack(torch.meshgrid(zz, yy, xx, indexing='ij'), dim=-1).reshape(-1, 3)
-    points = coords_f.masked_fill(~mask_b.unsqueeze(-1), 1.0e6)
-    batch, size = coords_f.shape[0], grid.shape[0]
-    n_points = max(int(points.shape[1]), 1)
-    if batch * size * n_points <= 8_000_000:
-        delta = grid.view(1, size, 1, 3) - points.unsqueeze(1)
-        nearest_sq = delta.square().sum(dim=-1).min(dim=-1).values
-    else:
-        nearest_sq = coords_f.new_zeros(batch, size)
-        chunk = 65536
+    with torch.autocast(device.type, enabled=False):
+        if coords_f.shape[1] == 0:
+            return coords_f.new_zeros(coords_f.shape[0], depth, height, width)
+        key = (depth, height, width, device.type, device.index)
+        grid = _HEATMAP_GRIDS.get(key)
+        if grid is None or grid.device != device:
+            zz = torch.arange(depth, device=device, dtype=torch.float32)
+            yy = torch.arange(height, device=device, dtype=torch.float32)
+            xx = torch.arange(width, device=device, dtype=torch.float32)
+            grid = torch.stack(torch.meshgrid(zz, yy, xx, indexing='ij'), dim=-1).reshape(-1, 3)
+            _HEATMAP_GRIDS[key] = grid
+        points = coords_f.masked_fill(~mask_b.unsqueeze(-1), 1.0e6)
+        batch, size = coords_f.shape[0], grid.shape[0]
+        nearest_sq = coords_f.new_empty(batch, size)
+        chunk = 32768
         for start in range(0, size, chunk):
             stop = min(start + chunk, size)
             delta = grid[start:stop].view(1, -1, 1, 3) - points.unsqueeze(1)
             nearest_sq[:, start:stop] = delta.square().sum(dim=-1).min(dim=-1).values
-    empty = ~mask_b.any(dim=1)
-    nearest_sq = nearest_sq.masked_fill(empty.unsqueeze(-1), 0)
-    sigma2 = 2.0 * max(float(sigma), 1e-6) ** 2
-    return torch.exp(-nearest_sq / sigma2).reshape(batch, depth, height, width)
+        empty = ~mask_b.any(dim=1)
+        nearest_sq = nearest_sq.masked_fill(empty.unsqueeze(-1), 0)
+        sigma2 = 2.0 * max(float(sigma), 1e-6) ** 2
+        return torch.exp(-nearest_sq / sigma2).reshape(batch, depth, height, width)
 
 
 def gaussian_heatmap_loss(
@@ -106,12 +108,13 @@ def gaussian_heatmap_loss(
     heatmap_sigma: float = 1.0,
     heatmap_target: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    spatial = det_logits.shape[2:]
-    logits = det_logits[:, 0].float()
-    if heatmap_target is None:
-        heatmap_target = gaussian_heatmap_target(coords, mask, spatial, heatmap_sigma)
-    target = heatmap_target.to(device=logits.device, dtype=torch.float32, non_blocking=True)
-    return F.mse_loss(torch.sigmoid(logits), target)
+    with torch.autocast(det_logits.device.type, enabled=False):
+        spatial = det_logits.shape[2:]
+        logits = det_logits[:, 0].float()
+        if heatmap_target is None:
+            heatmap_target = gaussian_heatmap_target(coords, mask, spatial, heatmap_sigma)
+        target = heatmap_target.to(device=logits.device, dtype=torch.float32, non_blocking=True)
+        return F.mse_loss(torch.sigmoid(logits), target)
 
 
 def detection_loss(

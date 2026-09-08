@@ -359,29 +359,31 @@ class SimpleNodeTransformer(nn.Module):
 
         N_t = q.shape[1]
         chunk = self.pair_chunk_size or N_t
-        chunks = []
+        if int(chunk) <= 0 or int(chunk) >= N_t:
+            logits = self._pair_scores(q, k, coords_t, coords_t1)
+        else:
+            chunks = []
+            for i in range(0, N_t, chunk):
+                q_c = q[:, i : i + chunk, :]
+                coords_c = coords_t[:, i : i + chunk, :]
 
-        for i in range(0, N_t, chunk):
-            q_c = q[:, i : i + chunk, :]
-            coords_c = coords_t[:, i : i + chunk, :]
+                def _chunk_fn(
+                    qc: torch.Tensor,
+                    kk: torch.Tensor,
+                    cc: torch.Tensor,
+                    cc1: torch.Tensor,
+                    _self: SimpleNodeTransformer = self,
+                ) -> torch.Tensor:
+                    return _self._pair_scores(qc, kk, cc, cc1)
 
-            def _chunk_fn(
-                qc: torch.Tensor,
-                kk: torch.Tensor,
-                cc: torch.Tensor,
-                cc1: torch.Tensor,
-                _self: SimpleNodeTransformer = self,
-            ) -> torch.Tensor:
-                return _self._pair_scores(qc, kk, cc, cc1)
+                if self.gradient_checkpointing and torch.is_grad_enabled():
+                    out = grad_ckpt(_chunk_fn, q_c, k, coords_c, coords_t1, use_reentrant=False)
+                else:
+                    out = _chunk_fn(q_c, k, coords_c, coords_t1)
 
-            if self.gradient_checkpointing and torch.is_grad_enabled():
-                out = grad_ckpt(_chunk_fn, q_c, k, coords_c, coords_t1, use_reentrant=False)
-            else:
-                out = _chunk_fn(q_c, k, coords_c, coords_t1)
+                chunks.append(out)
 
-            chunks.append(out)
-
-        logits = torch.cat(chunks, dim=1)
+            logits = torch.cat(chunks, dim=1)
 
         if unbatched:
             logits = logits.squeeze(0)

@@ -148,6 +148,6 @@ def test_scale_aug_rounded_identity_preserves_coords() -> None:
             return high
 
     out_i, out_c, _ = scale_augment(imgs, coords, masks, rng=_HighRng(), proba=1.0, scale_range=0.2)
-    # floor(4 * 1.2) == 4: interpolate is identity, so labels must not move.
+
     torch.testing.assert_close(out_i, imgs)
     torch.testing.assert_close(out_c, coords)

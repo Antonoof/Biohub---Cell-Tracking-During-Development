@@ -81,6 +81,9 @@ def test_apply_search_params_derives_conditionals() -> None:
     assert overlay['amp'] == 'bf16'
     assert overlay['seed'] == 42
     assert overlay['unet_layers'] == [32, 64, 128]
+    assert overlay['poisson_aug'] is False
+    assert overlay['poisson_aug_proba'] == 0.0
+    assert 'poisson_scale' not in overlay
     assert 'use_ema' not in overlay
     assert 'use_peak_topk' not in overlay
 
@@ -253,6 +256,18 @@ def test_search_architecture_combos_backward(knobs: dict[str, object]) -> None:
     loss.backward()
     assert torch.isfinite(loss).all()
     assert any(param.grad is not None for param in model.parameters() if param.requires_grad)
+
+
+def test_encode_stacked_matches_encode_list() -> None:
+    torch.manual_seed(1)
+    model = _tiny_detector()
+    model.eval()
+    imgs = torch.rand(2, 3, 4, 8, 8)
+    with torch.no_grad():
+        unet_out, det_list = model.encode(imgs)
+        stacked_out, stacked = model.encode_stacked(imgs)
+    torch.testing.assert_close(unet_out, stacked_out)
+    torch.testing.assert_close(stacked, torch.stack(det_list, dim=1))
 
 
 class _Once(Dataset):
@@ -456,6 +471,10 @@ def test_search_trial_config_recipe_and_augmentations(tmp_path: Path) -> None:
     assert recipe['batch_padding'] is True
     assert recipe['match_soft'] is False
     assert cfg['batch_size'] == 16
+    assert cfg['poisson_aug'] is False
+    assert cfg['poisson_aug_proba'] == 0.0
+    names = [getattr(aug, 'func', aug).__name__ for aug in augs]
+    assert 'poisson_augment' not in names
     assert len(augs) >= 2
 
 
@@ -548,3 +567,45 @@ def test_search_last_choice_overlay_train_step() -> None:
         offset_target=str(overlay['offset_target']),
     )
     assert all(np.isfinite(losses))
+
+
+def test_search_disables_poisson_even_for_last_choice() -> None:
+    params = sample_search_params(_LastTrial())
+    overlay = apply_search_params(params)
+    assert overlay['poisson_aug'] is False
+    assert overlay['poisson_aug_proba'] == 0.0
+    names = [getattr(aug, 'func', aug).__name__ for aug in _augmentations_from_cfg(overlay)]
+    assert 'poisson_augment' not in names
+
+
+def test_zero_proba_augs_are_omitted() -> None:
+    augs = _augmentations_from_cfg(
+        {
+            'brightness_aug': True,
+            'brightness_aug_proba': 0.0,
+            'flip_aug': True,
+            'flip_aug_proba': 1.0,
+            'noise_aug': True,
+            'noise_aug_proba': 0.0,
+            'contrast_aug': True,
+            'contrast_aug_proba': 0.0,
+            'gamma_aug': True,
+            'gamma_aug_proba': 0.0,
+            'rot90_aug': True,
+            'rot90_aug_proba': 0.0,
+            'translate_aug': True,
+            'translate_aug_proba': 0.0,
+            'cutout_aug': True,
+            'cutout_aug_proba': 0.0,
+            'blur_aug': True,
+            'blur_aug_proba': 0.0,
+            'bleach_aug': True,
+            'bleach_aug_proba': 0.0,
+            'poisson_aug': True,
+            'poisson_aug_proba': 0.0,
+            'haze_aug': True,
+            'haze_aug_proba': 0.0,
+        }
+    )
+    names = [getattr(aug, 'func', aug).__name__ for aug in augs]
+    assert names == ['flip_augment']

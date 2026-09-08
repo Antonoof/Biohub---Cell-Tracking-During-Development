@@ -15,7 +15,10 @@ def poisson_augment(
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     if skip_augment(rng, proba) or scale <= 0:
         return imgs, coords, masks
-    lam = np.clip(imgs.detach().cpu().numpy(), 0.0, None) * float(scale)
-    sampled = np.asarray(rng.poisson(lam), dtype=np.float32)
-    noisy = torch.from_numpy(sampled / float(scale))
+    array = np.array(imgs.detach().cpu().numpy(), dtype=np.float64, copy=True)
+    np.maximum(array, 0.0, out=array)
+    array *= float(scale)
+    sampled = np.asarray(rng.poisson(array), dtype=np.float32)
+    noisy = torch.from_numpy(sampled)
+    noisy.mul_(1.0 / float(scale))
     return noisy.to(device=imgs.device, dtype=imgs.dtype), coords, masks

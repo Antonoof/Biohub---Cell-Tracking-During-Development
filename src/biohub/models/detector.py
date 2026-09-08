@@ -174,13 +174,10 @@ class UNetNodeTransformer(nn.Module):
         frame: torch.Tensor,
     ) -> torch.Tensor:
         imgs = torch.stack([frame, frame], dim=0).unsqueeze(0)
-        _unet_out, det_logits = self.encode(imgs)
-        return det_logits[0][0, 0]
+        _unet_out, stacked = self.encode_stacked(imgs)
+        return stacked[0, 0, 0]
 
-    def encode(
-        self,
-        imgs: torch.Tensor,
-    ) -> tuple[torch.Tensor, list[torch.Tensor]]:
+    def encode_stacked(self, imgs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         window = self._unet_input(imgs)
         unet = getattr(self.unet, 'module', self.unet)
         if (
@@ -194,8 +191,14 @@ class UNetNodeTransformer(nn.Module):
         unet_out = self.unet(window)
         batch, frames, channels = unet_out.shape[:3]
         logits = self.detect_head(unet_out.reshape(batch * frames, channels, *unet_out.shape[3:]))
-        det_logits = list(logits.reshape(batch, frames, *logits.shape[1:]).unbind(1))
-        return unet_out, det_logits
+        return unet_out, logits.reshape(batch, frames, *logits.shape[1:])
+
+    def encode(
+        self,
+        imgs: torch.Tensor,
+    ) -> tuple[torch.Tensor, list[torch.Tensor]]:
+        unet_out, stacked = self.encode_stacked(imgs)
+        return unet_out, list(stacked.unbind(1))
 
     def predict_edges(
         self,

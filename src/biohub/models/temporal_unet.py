@@ -70,6 +70,7 @@ class DeformConv3d(nn.Module):
             groups=groups,
         )
         self._grid: torch.Tensor | None = None
+        self._scale: torch.Tensor | None = None
         self._grid_key: tuple | None = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -77,13 +78,15 @@ class DeformConv3d(nn.Module):
         n, _c, depth, height, width = x.shape
         key = (n, depth, height, width, x.device, x.dtype)
         grid = self._grid
-        if grid is None or self._grid_key != key:
+        scale = self._scale
+        if grid is None or scale is None or self._grid_key != key:
             grid = _identity_grid(x)
+            scale = x.new_tensor(
+                [max(width - 1, 1) / 2.0, max(height - 1, 1) / 2.0, max(depth - 1, 1) / 2.0]
+            ).view(1, 3, 1, 1, 1)
             self._grid = grid
+            self._scale = scale
             self._grid_key = key
-        scale = x.new_tensor(
-            [max(width - 1, 1) / 2.0, max(height - 1, 1) / 2.0, max(depth - 1, 1) / 2.0]
-        ).view(1, 3, 1, 1, 1)
         warped = grid + (offset.permute(0, 2, 3, 4, 1) / scale.permute(0, 2, 3, 4, 1))
         sampled = F.grid_sample(
             x, warped, mode='bilinear', padding_mode='border', align_corners=True

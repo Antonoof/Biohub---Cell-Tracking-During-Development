@@ -104,8 +104,6 @@ SEARCH_PARAM_NAMES = (
     'blur_aug_proba',
     'bleach_strength',
     'bleach_aug_proba',
-    'poisson_scale',
-    'poisson_aug_proba',
     'haze_amount',
     'haze_aug_proba',
 )
@@ -166,7 +164,8 @@ FIXED_TRAIN_KEYS = {
     'cutout_aug': True,
     'blur_aug': True,
     'bleach_aug': True,
-    'poisson_aug': True,
+    'poisson_aug': False,
+    'poisson_aug_proba': 0.0,
     'haze_aug': True,
     'scale_aug': False,
     'time_stretch_aug': False,
@@ -333,8 +332,6 @@ def sample_search_params(trial: TrialLike) -> dict[str, Any]:
         'blur_aug_proba': trial.suggest_float('blur_aug_proba', 0.0, 0.5),
         'bleach_strength': trial.suggest_float('bleach_strength', 0.2, 0.5),
         'bleach_aug_proba': trial.suggest_float('bleach_aug_proba', 0.0, 0.3),
-        'poisson_scale': trial.suggest_float('poisson_scale', 15.0, 50.0),
-        'poisson_aug_proba': trial.suggest_float('poisson_aug_proba', 0.0, 0.3),
         'haze_amount': trial.suggest_float('haze_amount', 0.05, 0.2),
         'haze_aug_proba': trial.suggest_float('haze_aug_proba', 0.0, 0.3),
     }
@@ -467,10 +464,6 @@ def params_from_config(cfg: dict[str, Any]) -> dict[str, Any]:
         'bleach_strength': float(cfg.get('bleach_strength', 0.4)),
         'bleach_aug_proba': (
             float(cfg.get('bleach_aug_proba', 0.0)) if cfg.get('bleach_aug', False) else 0.0
-        ),
-        'poisson_scale': float(cfg.get('poisson_scale', 30.0)),
-        'poisson_aug_proba': (
-            float(cfg.get('poisson_aug_proba', 0.0)) if cfg.get('poisson_aug', False) else 0.0
         ),
         'haze_amount': float(cfg.get('haze_amount', 0.1)),
         'haze_aug_proba': (

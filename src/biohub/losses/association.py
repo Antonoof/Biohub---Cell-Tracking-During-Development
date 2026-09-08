@@ -86,8 +86,6 @@ def association_loss(
     focal_gamma: float = 2.0,
     div_weight: float = 1.0,
 ) -> torch.Tensor:
-    # BCE(probabilities) is forbidden inside CUDA autocast. Keep probability
-    # reductions in FP32 even when the encoder/attention run in BF16/FP16.
     with torch.autocast(logits.device.type, enabled=False):
         return _association_loss_fp32(
             kind, logits.float(), target.float(), focal_gamma=focal_gamma, div_weight=div_weight
