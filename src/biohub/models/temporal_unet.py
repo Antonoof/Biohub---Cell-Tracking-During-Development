@@ -1,4 +1,3 @@
-import math
 from collections.abc import Sequence
 from contextlib import contextmanager, nullcontext
 
@@ -6,6 +5,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint as grad_ckpt
+
+from biohub.models.attention import divisible_heads
 
 
 class SqueezeExcite(nn.Module):
@@ -68,16 +69,41 @@ class DeformConv3d(nn.Module):
             bias=False,
             groups=groups,
         )
+        self._grid: torch.Tensor | None = None
+        self._grid_key: tuple | None = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         offset = self.offset(x)
-        depth, height, width = x.shape[2:]
+        n, _c, depth, height, width = x.shape
+        key = (n, depth, height, width, x.device, x.dtype)
+        grid = self._grid
+        if grid is None or self._grid_key != key:
+            grid = _identity_grid(x)
+            self._grid = grid
+            self._grid_key = key
         scale = x.new_tensor(
             [max(width - 1, 1) / 2.0, max(height - 1, 1) / 2.0, max(depth - 1, 1) / 2.0]
         ).view(1, 3, 1, 1, 1)
-        grid = _identity_grid(x) + (offset.permute(0, 2, 3, 4, 1) / scale.permute(0, 2, 3, 4, 1))
-        sampled = F.grid_sample(x, grid, mode='bilinear', padding_mode='border', align_corners=True)
+        warped = grid + (offset.permute(0, 2, 3, 4, 1) / scale.permute(0, 2, 3, 4, 1))
+        sampled = F.grid_sample(
+            x, warped, mode='bilinear', padding_mode='border', align_corners=True
+        )
         return self.conv(sampled)
+
+
+def pack_conv3d_channels_last(module: nn.Module) -> None:
+    skip = {
+        id(param)
+        for child in module.modules()
+        if type(child).__name__ == '_TemporalConv'
+        for param in child.parameters()
+    }
+    with torch.no_grad():
+        for param in module.parameters():
+            if id(param) in skip:
+                continue
+            if param.ndim == 5 and param.is_cuda:
+                param.data = param.data.contiguous(memory_format=torch.channels_last_3d)
 
 
 def _spatial_conv(
@@ -216,22 +242,44 @@ def make_stage_block(
     raise ValueError(f'Unknown unet_block {unet_block!r}')
 
 
+class _TemporalIdentity(nn.Module):
+    def forward(self, x: torch.Tensor, batch: int, frames: int) -> torch.Tensor:
+        return x
+
+
 class _TemporalAttention(nn.Module):
     def __init__(self, channels: int, n_heads: int = 4) -> None:
         super().__init__()
+        heads = divisible_heads(channels, n_heads)
+        self.heads = heads
+        self.head_dim = channels // heads
+        self.scale = self.head_dim**-0.5
         self.norm = nn.LayerNorm(channels)
-        self.attn = nn.MultiheadAttention(channels, n_heads, batch_first=True)
+        self.qkv = nn.Conv3d(channels, 3 * channels, kernel_size=1)
+        self.proj = nn.Conv3d(channels, channels, kernel_size=1)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        B, T, C = x.shape[:3]
-        spatial = x.shape[3:]
-        S = math.prod(spatial)
-
-        h = x.reshape(B, T, C, S).permute(0, 3, 1, 2).reshape(B * S, T, C)
-        h = self.norm(h)
-        h, _ = self.attn(h, h, h, need_weights=False)
-        h = h.reshape(B, S, T, C).permute(0, 2, 3, 1).reshape(B, T, C, *spatial)
-        return x + h
+    def forward(self, x: torch.Tensor, batch: int, frames: int) -> torch.Tensor:
+        spatial = x.shape[2:]
+        h = x
+        if (
+            h.is_cuda
+            and not h.is_contiguous(memory_format=torch.channels_last_3d)
+            and self.qkv.weight.is_contiguous(memory_format=torch.channels_last_3d)
+        ):
+            h = h.contiguous(memory_format=torch.channels_last_3d)
+        h = self.norm(h.movedim(1, -1)).movedim(-1, 1)
+        qkv = self.qkv(h).movedim(1, -1).reshape(batch, frames, -1, 3, self.heads, self.head_dim)
+        query, key, value = qkv.unbind(3)
+        query = query.permute(0, 3, 2, 1, 4)
+        key = key.permute(0, 3, 2, 1, 4)
+        value = value.permute(0, 3, 2, 1, 4)
+        attn = (query @ key.transpose(-1, -2) * self.scale).softmax(dim=-1)
+        out = (attn @ value).permute(0, 3, 2, 1, 4)
+        out = out.reshape(batch * frames, *spatial, self.heads * self.head_dim)
+        out = self.proj(out.movedim(-1, 1))
+        if out.is_cuda and not out.is_contiguous(memory_format=torch.channels_last_3d):
+            out = out.contiguous(memory_format=torch.channels_last_3d)
+        return x + out
 
 
 class _TemporalConv(nn.Module):
@@ -240,13 +288,27 @@ class _TemporalConv(nn.Module):
         self.norm = nn.GroupNorm(1, channels)
         self.conv = nn.Conv3d(channels, channels, kernel_size=3, padding=1, bias=False)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        B, T, C, Z = x.shape[:4]
-        spatial = x.shape[4:]
-        h = x.permute(0, 3, 2, 1, 4, 5).reshape(B * Z, C, T, *spatial)
+    def forward(self, x: torch.Tensor, batch: int, frames: int) -> torch.Tensor:
+        _, channels, depth, height, width = x.shape
+        h = x.reshape(batch, frames, channels, depth, height, width)
+        h = h.permute(0, 3, 2, 1, 4, 5).reshape(batch * depth, channels, frames, height, width)
         h = self.conv(self.norm(h))
-        h = h.reshape(B, Z, C, T, *spatial).permute(0, 3, 2, 1, 4, 5)
+        h = h.reshape(batch, depth, channels, frames, height, width)
+        h = h.permute(0, 3, 2, 1, 4, 5).reshape_as(x)
+        if x.is_cuda and x.is_contiguous(memory_format=torch.channels_last_3d):
+            h = h.contiguous(memory_format=torch.channels_last_3d)
         return x + h
+
+
+class _TemporalStack(nn.Module):
+    def __init__(self, *blocks: nn.Module) -> None:
+        super().__init__()
+        self.blocks = nn.ModuleList(blocks)
+
+    def forward(self, x: torch.Tensor, batch: int, frames: int) -> torch.Tensor:
+        for block in self.blocks:
+            x = block(x, batch, frames)
+        return x
 
 
 def make_temporal_block(
@@ -257,13 +319,15 @@ def make_temporal_block(
     skip: bool,
 ) -> nn.Module:
     if skip or temporal_mix == 'none':
-        return nn.Identity()
+        return _TemporalIdentity()
     if temporal_mix == 'attn':
         return _TemporalAttention(channels, n_heads=n_heads)
     if temporal_mix == 'conv':
         return _TemporalConv(channels)
     if temporal_mix == 'both':
-        return nn.Sequential(_TemporalConv(channels), _TemporalAttention(channels, n_heads=n_heads))
+        return _TemporalStack(
+            _TemporalConv(channels), _TemporalAttention(channels, n_heads=n_heads)
+        )
     raise ValueError(f'Unknown temporal_mix {temporal_mix!r}')
 
 
@@ -379,6 +443,8 @@ class TemporalUNet3D(nn.Module):
             )
 
         self.head = nn.Conv3d(stage_widths[0], out_channels, kernel_size=1)
+        self._channels_last = not bool(unet_deform)
+        self._channels_last_applied = False
 
     def _run(self, block: nn.Module, x: torch.Tensor) -> torch.Tensor:
         if self.gradient_checkpointing and self.training:
@@ -390,24 +456,36 @@ class TemporalUNet3D(nn.Module):
             )
         return block(x)
 
+    def _as_channels_last(self, volume: torch.Tensor) -> torch.Tensor:
+        if not (self._channels_last and volume.is_cuda):
+            return volume
+        if not self._channels_last_applied:
+            pack_conv3d_channels_last(self)
+            self._channels_last_applied = True
+        if volume.is_contiguous(memory_format=torch.channels_last_3d):
+            return volume
+        return volume.contiguous(memory_format=torch.channels_last_3d)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, T = x.shape[:2]
-        x = x.reshape(B * T, *x.shape[2:])
+        x = self._as_channels_last(x.reshape(B * T, *x.shape[2:]))
 
         skips: list[torch.Tensor] = []
         for i, (block, temporal) in enumerate(zip(self.encoder_blocks, self.temporal_blocks)):
             if i > 0:
                 x = self.pool(x)
             x = self._run(block, x)
-            x = temporal(x.reshape(B, T, *x.shape[1:])).reshape(B * T, *x.shape[1:])
+            x = temporal(x, B, T)
             if i < len(self.encoder_blocks) - 1:
                 skips.append(x)
 
         for up, block, skip in zip(self.upsamples, self.decoder_blocks, skips[::-1]):
-            x = up(x)
+            x = up(x.contiguous())
             if x.shape[2:] != skip.shape[2:]:
                 x = F.interpolate(x, size=skip.shape[2:], mode='trilinear', align_corners=False)
-            x = torch.cat([x, skip], dim=1)
+            x = self._as_channels_last(
+                torch.cat([self._as_channels_last(x), self._as_channels_last(skip)], dim=1)
+            )
             x = self._run(block, x)
 
         x = self.head(x)

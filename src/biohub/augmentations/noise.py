@@ -15,5 +15,10 @@ def noise_augment(
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     if skip_augment(rng, proba):
         return imgs, coords, masks
-    noise = rng.normal(0.0, std, size=tuple(imgs.shape)).astype(np.float32)
+    if isinstance(rng, np.random.Generator):
+        generator = torch.Generator(device='cpu')
+        generator.manual_seed(int(rng.integers(0, 2**31 - 1)))
+        noise = torch.randn(imgs.shape, generator=generator, dtype=torch.float32) * float(std)
+        return imgs + noise.to(device=imgs.device, dtype=imgs.dtype), coords, masks
+    noise = np.asarray(rng.normal(0.0, std, size=tuple(imgs.shape)), dtype=np.float32)
     return imgs + torch.from_numpy(noise).to(device=imgs.device, dtype=imgs.dtype), coords, masks

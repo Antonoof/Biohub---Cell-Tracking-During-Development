@@ -1,6 +1,6 @@
 import torch
 
-from biohub.losses.association import association_loss, compute_loss
+from biohub.losses.association import association_loss, compute_batch_loss, compute_loss
 from biohub.losses.aux import contrastive_aux_loss, division_aux_loss, offset_aux_loss
 from biohub.losses.detection import detection_loss
 
@@ -68,3 +68,142 @@ def test_offset_aux_is_finite() -> None:
     loss = offset_aux_loss(pred, coords, mask)
     assert torch.isfinite(loss).all()
     assert float(loss) > 0
+
+
+def test_offset_aux_empty_sample_is_zero() -> None:
+    pred = torch.zeros(2, 3, 4, 4, 4)
+    coords = torch.tensor([[[1.2, 2.4, 1.1], [0.0, 0.0, 0.0]], [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]])
+    mask = torch.tensor([[True, False], [False, False]])
+    loss = offset_aux_loss(pred, coords, mask)
+    assert torch.isfinite(loss).all()
+    only = offset_aux_loss(pred[:1], coords[:1], mask[:1])
+    torch.testing.assert_close(loss, only / 2)
+
+
+def _gate_pair(logits, coords_src, coords_tgt, gate_distance):
+    if gate_distance <= 0 or logits.numel() == 0:
+        return logits
+    dists = torch.cdist(coords_src, coords_tgt)
+    keep = dists <= gate_distance
+    if logits.shape[1] > 0:
+        nearest = dists.argmin(dim=0)
+        keep[nearest, torch.arange(logits.shape[1], device=logits.device)] = True
+    return logits.masked_fill(~keep, -1.0e4)
+
+
+def _loop_batch_loss(
+    logits,
+    target,
+    mask_t,
+    mask_t1,
+    *,
+    kind='focal_softmax',
+    focal_gamma=2.0,
+    div_weight=1.0,
+    coords_src=None,
+    coords_tgt=None,
+    gate_distance=0.0,
+    source_counts=None,
+    target_counts=None,
+):
+    if source_counts is None:
+        source_counts = [int(v) for v in mask_t.sum(dim=1).tolist()]
+    if target_counts is None:
+        target_counts = [int(v) for v in mask_t1.sum(dim=1).tolist()]
+    losses = []
+    for b in range(logits.shape[0]):
+        nt = int(source_counts[b])
+        nt1 = int(target_counts[b])
+        pair = logits[b, :nt, :nt1]
+        if coords_src is not None and coords_tgt is not None:
+            pair = _gate_pair(pair, coords_src[b, :nt], coords_tgt[b, :nt1], gate_distance)
+        losses.append(
+            association_loss(
+                kind,
+                pair,
+                target[b, :nt, :nt1],
+                focal_gamma=focal_gamma,
+                div_weight=div_weight,
+            )
+        )
+    return torch.stack(losses).mean()
+
+
+def test_compute_batch_loss_matches_per_sample_loop() -> None:
+    torch.manual_seed(0)
+    logits = torch.randn(4, 5, 6)
+    target = torch.zeros(4, 5, 6)
+    target[0, 0, 1] = 1.0
+    target[0, 2, 3] = 1.0
+    target[1, 1, 0] = 1.0
+    target[1, 1, 2] = 1.0
+    target[3, 0, 0] = 1.0
+    mask_t = torch.tensor(
+        [
+            [True, True, True, False, False],
+            [True, True, True, True, False],
+            [False, False, False, False, False],
+            [True, True, False, False, False],
+        ]
+    )
+    mask_t1 = torch.tensor(
+        [
+            [True, True, True, True, False, False],
+            [True, True, True, False, False, False],
+            [True, False, False, False, False, False],
+            [True, True, True, True, True, False],
+        ]
+    )
+    src = torch.randn(4, 5, 3)
+    tgt = torch.randn(4, 6, 3)
+    for kind in ('focal_softmax', 'ce_softmax', 'asl_softmax'):
+        torch.testing.assert_close(
+            compute_batch_loss(
+                logits,
+                target,
+                mask_t,
+                mask_t1,
+                kind=kind,
+                focal_gamma=1.5,
+                div_weight=2.0,
+            ),
+            _loop_batch_loss(
+                logits,
+                target,
+                mask_t,
+                mask_t1,
+                kind=kind,
+                focal_gamma=1.5,
+                div_weight=2.0,
+            ),
+            atol=1e-5,
+            rtol=1e-5,
+        )
+        torch.testing.assert_close(
+            compute_batch_loss(
+                logits,
+                target,
+                mask_t,
+                mask_t1,
+                kind=kind,
+                focal_gamma=1.5,
+                div_weight=2.0,
+                coords_src=src,
+                coords_tgt=tgt,
+                gate_distance=1.5,
+            ),
+            _loop_batch_loss(
+                logits,
+                target,
+                mask_t,
+                mask_t1,
+                kind=kind,
+                focal_gamma=1.5,
+                div_weight=2.0,
+                coords_src=src,
+                coords_tgt=tgt,
+                gate_distance=1.5,
+            ),
+            atol=1e-5,
+            rtol=1e-5,
+        )

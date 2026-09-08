@@ -8,6 +8,7 @@ from biohub.models.extra_encoder import (
     make_extra_encoder,
 )
 from biohub.models.node_transformer import SimpleNodeTransformer
+from biohub.models.temporal_unet import pack_conv3d_channels_last
 
 
 def _index_nearest(
@@ -15,14 +16,19 @@ def _index_nearest(
     coords: torch.Tensor,
     mask: torch.Tensor,
 ) -> torch.Tensor:
-    B = feat_maps.shape[0]
-    spatial = feat_maps.shape[2:]
-    z = coords[..., 0].long().clamp(0, spatial[0] - 1)
-    y = coords[..., 1].long().clamp(0, spatial[1] - 1)
-    x = coords[..., 2].long().clamp(0, spatial[2] - 1)
-    batch = torch.arange(B, device=feat_maps.device)[:, None]
-    out = feat_maps.permute(0, 2, 3, 4, 1)[batch, z, y, x]
-    return out.masked_fill(~mask[..., None], 0)
+    batch, channels, depth, height, width = feat_maps.shape
+    z = coords[..., 0].long().clamp(0, depth - 1)
+    y = coords[..., 1].long().clamp(0, height - 1)
+    x = coords[..., 2].long().clamp(0, width - 1)
+    index = (z * height + y) * width + x
+    if feat_maps.is_contiguous(memory_format=torch.channels_last_3d):
+        spatial = feat_maps.permute(0, 2, 3, 4, 1).reshape(batch, -1, channels)
+        gathered = spatial.gather(1, index.unsqueeze(-1).expand(-1, -1, channels))
+        return gathered.masked_fill(~mask[..., None], 0)
+    gathered = feat_maps.reshape(batch, channels, -1).gather(
+        2, index.unsqueeze(1).expand(-1, channels, -1)
+    )
+    return gathered.transpose(1, 2).masked_fill(~mask[..., None], 0)
 
 
 def _index_trilinear(
@@ -97,6 +103,8 @@ class UNetNodeTransformer(nn.Module):
             freeze=extra_encoder_freeze,
             weights=extra_encoder_weights,
         )
+        self._coord_key: tuple | None = None
+        self._coord_cache: torch.Tensor | None = None
 
         self.detect_head = nn.Conv3d(unet_out_channels, 1, kernel_size=1)
 
@@ -121,6 +129,7 @@ class UNetNodeTransformer(nn.Module):
             pair_geom=pair_geom,
         )
         self.offset_head = nn.Conv3d(unet_out_channels, 3, kernel_size=1)
+        self._heads_channels_last = False
         self.register_buffer(
             '_arch',
             torch.tensor([int(hidden_dim), int(n_heads), int(n_blocks)], dtype=torch.int64),
@@ -131,7 +140,19 @@ class UNetNodeTransformer(nn.Module):
         window = imgs.unsqueeze(2)
         parts = [window]
         if self.coord_kind != 'none':
-            parts.append(coord_channels(imgs, self.coord_kind, self.fourier_bands))
+            key = (
+                imgs.shape[0],
+                imgs.shape[1],
+                *imgs.shape[2:],
+                imgs.device,
+                imgs.dtype,
+                self.coord_kind,
+                self.fourier_bands,
+            )
+            if self._coord_cache is None or self._coord_key != key:
+                self._coord_cache = coord_channels(imgs, self.coord_kind, self.fourier_bands)
+                self._coord_key = key
+            parts.append(self._coord_cache)
         if self.flow_input != 'none':
             parts.append(flow_channels(imgs, self.flow_input))
         if self.extra_encoder is not None:
@@ -161,9 +182,19 @@ class UNetNodeTransformer(nn.Module):
         imgs: torch.Tensor,
     ) -> tuple[torch.Tensor, list[torch.Tensor]]:
         window = self._unet_input(imgs)
+        unet = getattr(self.unet, 'module', self.unet)
+        if (
+            imgs.is_cuda
+            and getattr(unet, '_channels_last', False)
+            and not self._heads_channels_last
+        ):
+            pack_conv3d_channels_last(self.detect_head)
+            pack_conv3d_channels_last(self.offset_head)
+            self._heads_channels_last = True
         unet_out = self.unet(window)
-        W = unet_out.shape[1]
-        det_logits = [self.detect_head(unet_out[:, i]) for i in range(W)]
+        batch, frames, channels = unet_out.shape[:3]
+        logits = self.detect_head(unet_out.reshape(batch * frames, channels, *unet_out.shape[3:]))
+        det_logits = list(logits.reshape(batch, frames, *logits.shape[1:]).unbind(1))
         return unet_out, det_logits
 
     def predict_edges(

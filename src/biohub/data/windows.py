@@ -1,5 +1,6 @@
 import warnings
 from collections import OrderedDict
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -10,7 +11,7 @@ import torch
 import torch.nn.functional as F
 import tracksdata as td
 import zarr
-from torch.utils.data import Dataset, default_collate
+from torch.utils.data import Dataset, Sampler, default_collate
 
 from biohub.data.volume import invert_time_graph, open_dataset
 from biohub.features.position import extract_pos_features
@@ -165,15 +166,14 @@ def collate_windows(samples: list[dict]) -> dict:
     padded = []
     for sample in samples:
         n = size - sample['coords'].shape[1]
-        padded.append(
-            {
-                **sample,
-                'coords': F.pad(sample['coords'], (0, 0, 0, n)),
-                'pos_feats': F.pad(sample['pos_feats'], (0, 0, 0, n)),
-                'masks': F.pad(sample['masks'], (0, n)),
-                'targets': F.pad(sample['targets'], (0, n, 0, n)),
-            }
-        )
+        extra = {
+            'coords': F.pad(sample['coords'], (0, 0, 0, n)),
+            'masks': F.pad(sample['masks'], (0, n)),
+            'targets': F.pad(sample['targets'], (0, n, 0, n)),
+        }
+        if 'pos_feats' in sample:
+            extra['pos_feats'] = F.pad(sample['pos_feats'], (0, 0, 0, n))
+        padded.append({**sample, **extra})
     return default_collate(padded)
 
 
@@ -234,6 +234,12 @@ class FrameWindowDataset(Dataset):
     def __len__(self) -> int:
         return len(self._data)
 
+    def video_index_groups(self) -> list[list[int]]:
+        groups: dict[str, list[int]] = {}
+        for i, (_, vm) in enumerate(self._data):
+            groups.setdefault(str(vm.zarr_path), []).append(i)
+        return list(groups.values())
+
     def set_epoch(self, epoch: int) -> None:
         self.epoch.set(epoch)
 
@@ -249,8 +255,10 @@ class FrameWindowDataset(Dataset):
         target_shape = list(vm.image_shape[1:])
 
         def normalize(raw):
-            raw = raw.astype(np.float32)
-            result = torch.from_numpy((raw - vm.q_low) / (vm.q_high - vm.q_low + 1e-6)).clamp(0.0)
+            tensor = torch.from_numpy(np.ascontiguousarray(raw))
+            if tensor.dtype != torch.float32:
+                tensor = tensor.to(dtype=torch.float32)
+            result = ((tensor - vm.q_low) / (vm.q_high - vm.q_low + 1e-6)).clamp(min=0.0)
             if list(result.shape[1:]) != target_shape:
                 result = F.interpolate(
                     result[:, None], size=target_shape, mode='trilinear', align_corners=False
@@ -293,13 +301,47 @@ class FrameWindowDataset(Dataset):
             meta['heatmap_target'] = gaussian_heatmap_target(
                 meta['coords'], meta['masks'], imgs.shape[1:], self.heatmap_sigma
             )
-        return {
+        sample = {
             **meta,
-            'imgs': imgs.half(),
+            'imgs': imgs.contiguous(),
             'image_shape': torch.tensor(vm.image_shape, dtype=torch.long),
             'voxel_size': torch.tensor(vm.voxel_size, dtype=torch.float32),
             'downsample': torch.tensor(vm.downsample, dtype=torch.float32),
         }
+        sample.pop('pos_feats', None)
+        return sample
+
+
+class VideoGroupedSampler(Sampler[int]):
+    def __init__(
+        self,
+        dataset: FrameWindowDataset,
+        generator: torch.Generator | None = None,
+        num_workers: int = 0,
+    ) -> None:
+        self._groups = dataset.video_index_groups()
+        self._length = len(dataset)
+        self.generator = generator
+        self.num_workers = max(int(num_workers), 1)
+
+    def __len__(self) -> int:
+        return self._length
+
+    def __iter__(self) -> Iterator[int]:
+        order = torch.randperm(len(self._groups), generator=self.generator).tolist()
+        groups = [self._groups[i] for i in order]
+        workers = self.num_workers
+        if workers <= 1:
+            for group in groups:
+                yield from group
+            return
+        for start in range(0, len(groups), workers):
+            lanes = groups[start : start + workers]
+            longest = max((len(lane) for lane in lanes), default=0)
+            for step in range(longest):
+                for lane in lanes:
+                    if step < len(lane):
+                        yield lane[step]
 
 
 def load_dataset_windows(

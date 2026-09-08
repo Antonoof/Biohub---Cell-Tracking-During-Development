@@ -5,6 +5,7 @@ from typing import Any, Protocol
 import yaml
 
 from biohub.metrics.aggregation import competition_score
+from biohub.models.attention import divisible_heads
 from biohub.paths import PROJECT_ROOT
 
 BASE_CONFIG = PROJECT_ROOT / 'configs' / '01_p1.yaml'
@@ -140,7 +141,7 @@ FIXED_TRAIN_KEYS = {
     'seed': 42,
     'patience': 5,
     'checkpoint_metric': 'competition_metric',
-    'batch_size': 32,
+    'batch_size': 16,
     'accum_steps': 1,
     'grad_clip_norm': 2.0,
     'amp': 'bf16',
@@ -149,7 +150,7 @@ FIXED_TRAIN_KEYS = {
     'unet_gn_groups': 8,
     'extra_encoder_freeze': False,
     'extra_encoder_weights': None,
-    'pair_chunk_size': 32,
+    'pair_chunk_size': 256,
     'gradient_checkpointing': False,
     'downsample': [1, 4, 4],
     'det_threshold': 0.5,
@@ -181,7 +182,10 @@ FIXED_TRAIN_KEYS = {
     'debug_video': None,
     'max_frames': None,
     'unet_weights': None,
+    'batch_padding': True,
+    'frame_cache_mb': 256.0,
 }
+SEARCH_META_KEYS = ('use_ema', 'use_layer_scale', 'use_peak_topk', 'use_edge_gate')
 
 
 class TrialLike(Protocol):
@@ -359,6 +363,13 @@ def apply_search_params(params: dict[str, Any]) -> dict[str, Any]:
     )
     overlay['unet_layers'] = list(UNET_LAYERS[str(overlay['unet_layers'])])
     overlay.update(FIXED_TRAIN_KEYS)
+    overlay['n_heads'] = divisible_heads(int(overlay['hidden_dim']), int(overlay['n_heads']))
+    overlay['unet_n_heads'] = divisible_heads(
+        min(int(width) for width in overlay['unet_layers']),
+        int(overlay['unet_n_heads']),
+    )
+    for key in SEARCH_META_KEYS:
+        overlay.pop(key, None)
     return overlay
 
 

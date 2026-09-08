@@ -20,13 +20,18 @@ from biohub.features.position import POS_EMBED_DIM
 from biohub.losses.association import association_loss
 from biohub.losses.aux import division_aux_loss
 from biohub.losses.detection import _binary_target, gaussian_heatmap_target
-from biohub.models.detector import UNetNodeTransformer
+from biohub.models.detector import UNetNodeTransformer, _index_nearest
 from biohub.models.node_transformer import SimpleNodeTransformer
-from biohub.models.temporal_unet import TemporalUNet3D
+from biohub.models.temporal_unet import TemporalUNet3D, pack_conv3d_channels_last
 from biohub.train.assign import greedy_assign, match_peaks
-from biohub.train.detector import build_matched_edge_targets, detector_optimizer_step, train_epoch
+from biohub.train.detector import (
+    build_matched_edge_targets,
+    detect_and_match,
+    detector_optimizer_step,
+    train_epoch,
+)
 from biohub.train.optim import _muon_update
-from biohub.train.schedule import ModelEma
+from biohub.train.schedule import ModelEma, build_optimizer
 
 
 def _window(n=3, start=0):
@@ -116,6 +121,70 @@ def test_vectorized_greedy_matches_loop_including_ties():
         assert torch.equal(greedy_assign(dists, 4), expected)
 
 
+def test_batched_greedy_matches_per_sample_loop():
+    torch.manual_seed(11)
+    dists = torch.rand(5, 9, 6)
+    dists[0, 3:] = 1e6
+    expected = torch.stack([greedy_assign(row, 0.4) for row in dists])
+    assert torch.equal(greedy_assign(dists, 0.4), expected)
+
+
+def test_detect_and_match_caps_dense_peaks():
+    logits = torch.ones(2, 1, 8, 20, 20)
+    coords = torch.rand(2, 3, 3)
+    mask = torch.ones(2, 3, dtype=torch.bool)
+    det_c, _, det_m, matches, _ = detect_and_match(
+        logits,
+        coords,
+        mask,
+        (2, 8, 20, 20),
+        det_threshold=0.0,
+        window_size=2,
+    )
+    assert det_c.shape[1] == 512
+    assert int(det_m.sum().item()) == 2 * 512
+    assert all(m.shape[0] == 512 for m in matches)
+
+
+def test_detect_and_match_keeps_sparse_peaks():
+    logits = torch.full((1, 1, 4, 8, 8), -10.0)
+    logits[0, 0, 1, 2, 3] = 5.0
+    logits[0, 0, 2, 4, 5] = 5.0
+    coords = torch.tensor([[[1.0, 2.0, 3.0], [2.0, 4.0, 5.0]]])
+    mask = torch.ones(1, 2, dtype=torch.bool)
+    det_c, _, det_m, matches, _ = detect_and_match(
+        logits, coords, mask, (2, 4, 8, 8), det_threshold=0.5, window_size=2
+    )
+    assert int(det_m.sum().item()) == 2
+    assert matches[0].shape[0] == 2
+    found = {tuple(row.tolist()) for row in det_c[0, :2]}
+    assert found == {(1.0, 2.0, 3.0), (2.0, 4.0, 5.0)}
+
+
+def test_detect_and_match_tensor_frame_index_matches_int():
+    logits = torch.full((2, 1, 4, 8, 8), -10.0)
+    logits[0, 0, 1, 2, 3] = 5.0
+    logits[1, 0, 2, 4, 5] = 5.0
+    coords = torch.tensor([[[1.0, 2.0, 3.0]], [[2.0, 4.0, 5.0]]])
+    mask = torch.ones(2, 1, dtype=torch.bool)
+    frame_ids = torch.tensor([0, 3])
+    per_sample = []
+    for i in range(2):
+        _, pos_i, _, _, _ = detect_and_match(
+            logits[i : i + 1],
+            coords[i : i + 1],
+            mask[i : i + 1],
+            (4, 4, 8, 8),
+            window_size=4,
+            frame_index=int(frame_ids[i]),
+        )
+        per_sample.append(pos_i[0])
+    _, pos, _, _, _ = detect_and_match(
+        logits, coords, mask, (4, 4, 8, 8), window_size=4, frame_index=frame_ids
+    )
+    torch.testing.assert_close(pos, torch.stack(per_sample))
+
+
 @pytest.mark.parametrize('kind', ['mlp', 'bilinear'])
 @pytest.mark.parametrize('geom', ['rel', 'dist', 'rel_dist'])
 def test_factorized_pair_head_output_and_gradients(kind, geom):
@@ -141,6 +210,14 @@ def test_factorized_pair_head_output_and_gradients(kind, geom):
         strict=True,
     ):
         torch.testing.assert_close(a.grad, b.grad, atol=3e-6, rtol=2e-5)
+
+
+def test_temporal_attention_window_five_backward():
+    torch.manual_seed(12)
+    model = TemporalUNet3D(1, 4, layers=(8, 16), temporal_mix='attn')
+    loss = model(torch.randn(1, 5, 1, 4, 8, 8)).square().mean()
+    loss.backward()
+    assert torch.isfinite(loss).all()
 
 
 def test_checkpoint_batchnorm_buffers_and_gradients_match():
@@ -340,6 +417,129 @@ def test_cuda_amp_bce_losses_backward(dtype):
     loss.backward()
     assert logits.grad is not None
     assert torch.isfinite(logits.grad).all()
+
+
+def test_train_epoch_mixed_targets_peak_topk_and_edge_gate():
+    torch.manual_seed(5)
+    unet = TemporalUNet3D(1, 4, layers=(4, 8), temporal_mix='attn')
+    model = UNetNodeTransformer(unet, 4, 32, hidden_dim=8, n_heads=2, n_blocks=1, dropout=0)
+    sample = {
+        **pad_window(_window(2), 7),
+        'imgs': torch.rand(2, 4, 8, 8),
+        'image_shape': torch.tensor([2, 4, 8, 8]),
+        'voxel_size': torch.ones(3),
+        'downsample': torch.ones(3),
+    }
+    opt = torch.optim.AdamW(model.parameters(), lr=0.001)
+    losses = train_epoch(
+        model,
+        DataLoader(RepeatedSample(sample), batch_size=1),
+        opt,
+        torch.device('cpu'),
+        target_mode='mixed',
+        target_gt_frac=0.5,
+        train_peak_topk=3,
+        edge_gate_distance=20.0,
+        match_assign='hungarian',
+    )
+    assert all(np.isfinite(losses))
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason='requires CUDA')
+def test_cuda_bf16_short_temporal_and_node_attention():
+    if not torch.cuda.is_bf16_supported():
+        pytest.skip()
+    torch.manual_seed(0)
+    unet = TemporalUNet3D(
+        1, 8, layers=(8, 16), temporal_mix='attn', skip_fullres_temporal=True
+    ).cuda()
+    volume = torch.randn(2, 2, 1, 8, 32, 32, device='cuda')
+    with torch.autocast('cuda', dtype=torch.bfloat16):
+        encoded = unet(volume)
+        loss = encoded.float().pow(2).mean()
+    loss.backward()
+    assert torch.isfinite(loss).all()
+
+    transformer = SimpleNodeTransformer(8, 32, 4, 1, dropout=0).cuda()
+    feat = torch.randn(2, 1, 8, device='cuda')
+    coords = torch.rand(2, 1, 3, device='cuda')
+    with torch.autocast('cuda', dtype=torch.bfloat16):
+        scores = transformer(feat, feat, coords, coords)
+        node_loss = scores.float().pow(2).mean()
+    node_loss.backward()
+    assert torch.isfinite(node_loss).all()
+
+    sample = {
+        **pad_window(_window(2), 4),
+        'imgs': torch.rand(2, 4, 8, 8),
+        'image_shape': torch.tensor([2, 4, 8, 8]),
+        'voxel_size': torch.ones(3),
+        'downsample': torch.ones(3),
+    }
+    model = UNetNodeTransformer(
+        TemporalUNet3D(1, 8, layers=(8, 16), temporal_mix='attn').cuda(),
+        8,
+        4 * POS_EMBED_DIM,
+        hidden_dim=32,
+        n_heads=4,
+        n_blocks=1,
+        dropout=0,
+        use_self_attn=True,
+    ).cuda()
+    opt = torch.optim.AdamW(model.parameters(), lr=0.001)
+    losses = train_epoch(
+        model,
+        DataLoader(RepeatedSample(sample), batch_size=1),
+        opt,
+        torch.device('cuda'),
+        amp_kind='bf16',
+        match_assign='sinkhorn',
+        match_soft=True,
+        train_peak_topk=4,
+    )
+    assert all(np.isfinite(losses))
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason='requires CUDA')
+def test_cuda_bf16_temporal_attn_huge_spatial_batch():
+    if not torch.cuda.is_bf16_supported():
+        pytest.skip()
+    torch.manual_seed(0)
+    unet = TemporalUNet3D(
+        1, 8, layers=(8, 16), temporal_mix='attn', skip_fullres_temporal=False
+    ).cuda()
+    volume = torch.randn(2, 2, 1, 16, 64, 64, device='cuda')
+    with torch.autocast('cuda', dtype=torch.bfloat16):
+        encoded = unet(volume)
+        loss = encoded.float().pow(2).mean()
+    loss.backward()
+    assert torch.isfinite(loss).all()
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason='requires CUDA')
+def test_channels_last_nearest_index_matches_nchw():
+    torch.manual_seed(8)
+    feat = torch.randn(2, 4, 3, 5, 6, device='cuda')
+    coords = torch.tensor([[[1.2, 2.4, 3.1], [0.1, 4.8, 5.2]]], device='cuda').expand(2, -1, -1)
+    mask = torch.ones(2, 2, dtype=torch.bool, device='cuda')
+    expected = _index_nearest(feat.contiguous(), coords, mask)
+    actual = _index_nearest(feat.contiguous(memory_format=torch.channels_last_3d), coords, mask)
+    torch.testing.assert_close(actual, expected)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason='requires CUDA')
+@pytest.mark.parametrize('name', ['adamp', 'muonwithauxadam'])
+def test_adamp_muon_step_channels_last_conv3d(name):
+    torch.manual_seed(9)
+    conv = torch.nn.Conv3d(2, 4, 3, padding=1).cuda()
+    pack_conv3d_channels_last(conv)
+    opt = build_optimizer(conv, name=name, lr=0.05, weight_decay=0.0)
+    x = torch.randn(1, 2, 4, 5, 6, device='cuda').contiguous(memory_format=torch.channels_last_3d)
+    loss = conv(x).float().pow(2).mean()
+    loss.backward()
+    before = conv.weight.detach().clone()
+    opt.step()
+    assert not torch.equal(conv.weight, before)
 
 
 def test_epoch_callback_and_fixed_validation_protocol(tmp_path, monkeypatch):

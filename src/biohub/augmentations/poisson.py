@@ -16,6 +16,6 @@ def poisson_augment(
     if skip_augment(rng, proba) or scale <= 0:
         return imgs, coords, masks
     lam = np.clip(imgs.detach().cpu().numpy(), 0.0, None) * float(scale)
-    sampled = rng.poisson(lam).astype(np.float32) / float(scale)
-    noisy = torch.from_numpy(sampled).to(device=imgs.device, dtype=imgs.dtype)
-    return noisy, coords, masks
+    sampled = np.asarray(rng.poisson(lam), dtype=np.float32)
+    noisy = torch.from_numpy(sampled / float(scale))
+    return noisy.to(device=imgs.device, dtype=imgs.dtype), coords, masks

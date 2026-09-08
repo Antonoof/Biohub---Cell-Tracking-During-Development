@@ -45,26 +45,37 @@ def offset_aux_loss(
 ) -> torch.Tensor:
     B = offset_pred.shape[0]
     spatial = offset_pred.shape[2:]
-    losses = []
-    nt = mask.sum(dim=1).long()
-    for b in range(B):
-        n_gt = int(nt[b].item())
-        if n_gt <= 0:
-            losses.append(offset_pred[b].sum() * 0)
-            continue
-        gt = coords[b, :n_gt]
-        zi = gt[:, 0].long().clamp(0, spatial[0] - 1)
-        yi = gt[:, 1].long().clamp(0, spatial[1] - 1)
-        xi = gt[:, 2].long().clamp(0, spatial[2] - 1)
-        pred = offset_pred[b, :, zi, yi, xi].T
-        if target == 'parabolic':
+    if target == 'parabolic':
+        losses = []
+        nt = mask.sum(dim=1).long()
+        for b in range(B):
+            n_gt = int(nt[b].item())
+            if n_gt <= 0:
+                losses.append(offset_pred[b].sum() * 0)
+                continue
             if det_logits is None:
                 raise ValueError('offset_target=parabolic requires det_logits')
+            gt = coords[b, :n_gt]
+            zi = gt[:, 0].long().clamp(0, spatial[0] - 1)
+            yi = gt[:, 1].long().clamp(0, spatial[1] - 1)
+            xi = gt[:, 2].long().clamp(0, spatial[2] - 1)
+            pred = offset_pred[b, :, zi, yi, xi].T
             peak_idx = torch.stack((zi, yi, xi), dim=-1)
             frac = subvoxel_offsets(det_logits[b, 0], peak_idx)
-        elif target == 'frac':
-            frac = gt - torch.stack([zi, yi, xi], dim=-1).to(dtype=gt.dtype)
-        else:
-            raise ValueError(f'Unknown offset_target {target!r}')
-        losses.append((pred - frac).abs().mean())
-    return torch.stack(losses).mean()
+            losses.append((pred - frac).abs().mean())
+        return torch.stack(losses).mean()
+    if target != 'frac':
+        raise ValueError(f'Unknown offset_target {target!r}')
+    valid = mask.bool()
+    batch_idx = torch.arange(B, device=mask.device).unsqueeze(1).expand_as(mask)[valid]
+    gt = coords[valid]
+    zi = gt[:, 0].long().clamp(0, spatial[0] - 1)
+    yi = gt[:, 1].long().clamp(0, spatial[1] - 1)
+    xi = gt[:, 2].long().clamp(0, spatial[2] - 1)
+    pred = offset_pred[batch_idx, :, zi, yi, xi]
+    frac = gt - torch.stack((zi, yi, xi), dim=-1).to(dtype=gt.dtype)
+    summed = offset_pred.new_zeros(B)
+    if batch_idx.numel():
+        summed.scatter_add_(0, batch_idx, (pred - frac).abs().sum(dim=-1))
+    denom = mask.sum(dim=1).to(dtype=summed.dtype) * offset_pred.shape[1]
+    return (summed / denom.clamp(min=1)).mean()

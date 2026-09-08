@@ -131,10 +131,10 @@ class AdamP(Optimizer):
         )
 
     def _channel_view(self, value: torch.Tensor) -> torch.Tensor:
-        return value.view(value.size(0), -1)
+        return value.reshape(value.size(0), -1)
 
     def _layer_view(self, value: torch.Tensor) -> torch.Tensor:
-        return value.view(1, -1)
+        return value.reshape(1, -1)
 
     def _cosine_similarity(
         self,
@@ -237,7 +237,7 @@ def _muon_update(
     # Conv2d and Conv3d: orthogonalize output channels against flattened inputs,
     # not independent spatial kernel matrices for every channel pair.
     if update.ndim in (4, 5):
-        update = update.view(len(update), -1)
+        update = update.reshape(len(update), -1)
     update = _zeropower_via_newtonschulz5(update, steps=ns_steps)
     return update * max(1.0, update.size(-2) / update.size(-1)) ** 0.5
 

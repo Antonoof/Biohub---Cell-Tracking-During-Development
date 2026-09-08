@@ -24,9 +24,13 @@ def build_optimizer(
     else:
         params = parameters
     if name == 'adamw':
-        return AdamW(params, lr=lr, weight_decay=weight_decay)
+        param_list = list(params)
+        fused = bool(param_list) and param_list[0].is_cuda
+        return AdamW(param_list, lr=lr, weight_decay=weight_decay, fused=fused)
     if name == 'adam':
-        return Adam(params, lr=lr, weight_decay=weight_decay)
+        param_list = list(params)
+        fused = bool(param_list) and param_list[0].is_cuda
+        return Adam(param_list, lr=lr, weight_decay=weight_decay, fused=fused)
     if name == 'sgd':
         return SGD(params, lr=lr, weight_decay=weight_decay, momentum=0.9)
     if name == 'adan':

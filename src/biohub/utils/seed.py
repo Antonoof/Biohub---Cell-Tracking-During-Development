@@ -44,6 +44,7 @@ def seed_everything(seed: int, *, deterministic: bool = False) -> None:
 
 
 def seed_worker(worker_id: int) -> None:
+    torch.set_num_threads(1)
     worker_seed = torch.initial_seed() % 2**32
     np.random.seed(worker_seed)
     random.seed(worker_seed)

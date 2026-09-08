@@ -31,6 +31,7 @@ from biohub.augmentations import (
 from biohub.data.windows import (
     FrameWindowData,
     FrameWindowDataset,
+    VideoGroupedSampler,
     VideoMeta,
     collate_windows,
     load_dataset_windows,
@@ -47,7 +48,7 @@ from biohub.losses.detection import DET_LOSSES, detection_loss
 from biohub.metrics.aggregation import competition_score
 from biohub.models import TemporalUNet3D, UNetNodeTransformer
 from biohub.models.temporal_unet import unet_in_channels
-from biohub.train.assign import match_peaks
+from biohub.train.assign import greedy_assign_batched, hard_coupling, match_peaks
 from biohub.train.schedule import (
     ModelEma,
     amp_dtype,
@@ -151,6 +152,13 @@ def resolve_train_device(spec: str) -> torch.device:
     raise ValueError(f'Unknown device {spec!r}')
 
 
+def configure_cuda_backends() -> None:
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    torch.set_float32_matmul_precision('high')
+    torch.backends.cudnn.benchmark = not torch.are_deterministic_algorithms_enabled()
+
+
 def optional_positive_int(value) -> int | None:
     if value is None:
         return None
@@ -166,6 +174,54 @@ def checkpoint_score(metric: str, values: dict[str, float]) -> float:
     return float(values[metric])
 
 
+def _frame_node_counts(
+    frame: tuple,
+    node_counts: torch.Tensor | None,
+    frame_index: int,
+) -> list[int] | None:
+    matches = frame[3]
+    if matches is not None:
+        return [int(matched.shape[0]) for matched in matches]
+    if node_counts is None:
+        return None
+    return [int(value) for value in node_counts[:, frame_index]]
+
+
+def _topk_coords_padded(
+    scores: torch.Tensor,
+    k: int,
+    min_score: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    batch = scores.shape[0]
+    spatial = scores.shape[1:]
+    k = min(max(int(k), 0), int(scores[0].numel()))
+    if k <= 0:
+        coords = scores.new_zeros(batch, 0, 3)
+        keep = torch.zeros(batch, 0, dtype=torch.bool, device=scores.device)
+        return coords, keep
+    vals, idx = torch.topk(scores.reshape(batch, -1), k, dim=1)
+    keep = vals > min_score
+    coords = torch.stack(torch.unravel_index(idx, spatial), dim=-1).to(dtype=torch.float32)
+    return coords.masked_fill(~keep.unsqueeze(-1), 0), keep
+
+
+def _pack_valid_nodes(
+    coords: torch.Tensor,
+    keep: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, list[int]]:
+    batch = coords.shape[0]
+    if coords.shape[1] == 0:
+        packed = coords.new_zeros(batch, 1, 3)
+        mask = torch.zeros(batch, 1, dtype=torch.bool, device=coords.device)
+        return packed, mask, [0] * batch
+    order = keep.to(dtype=torch.int64).argsort(dim=1, descending=True, stable=True)
+    packed = coords.gather(1, order.unsqueeze(-1).expand_as(coords))
+    packed_keep = keep.gather(1, order)
+    counts = [int(v) for v in packed_keep.sum(dim=1).tolist()]
+    width = max(max(counts), 1)
+    return packed[:, :width], packed_keep[:, :width], counts
+
+
 def detect_and_match(
     det_logits: torch.Tensor,
     gt_coords: torch.Tensor,
@@ -175,12 +231,13 @@ def detect_and_match(
     pool_kernel_um: float = 5.0,
     max_match_distance: float = 5.0,
     voxel_size: tuple[float, ...] | None = None,
-    frame_index: int = 0,
+    frame_index: int | torch.Tensor = 0,
     window_size: int | None = None,
     match_assign: str = 'greedy',
     sinkhorn_tau: float = 0.1,
     sinkhorn_iters: int = 20,
     train_peak_topk: int = 0,
+    gt_counts: list[int] | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, list[torch.Tensor], list[torch.Tensor]]:
     B = det_logits.shape[0]
     device = det_logits.device
@@ -200,83 +257,75 @@ def detect_and_match(
         pool_kernel = (k if k % 2 == 1 else k + 1,) * 3
 
     pad = tuple(k // 2 for k in pool_kernel)
+    nt_per_sample = (
+        [int(v) for v in gt_counts] if gt_counts is not None else mask.sum(dim=1).tolist()
+    )
 
     with torch.no_grad():
         pooled = F.max_pool3d(det_logits, pool_kernel, stride=1, padding=pad)
-        is_peak = (det_logits == pooled) & (torch.sigmoid(det_logits) > det_threshold)
-        peak_idx = torch.nonzero(is_peak[:, 0])
+        probs = torch.sigmoid(det_logits[:, 0])
+        is_peak = (det_logits[:, 0] == pooled[:, 0]) & (probs > det_threshold)
+        cap = max(512, max(nt_per_sample) * 4, int(train_peak_topk))
+        peak_coords, peak_keep = _topk_coords_padded(probs.masked_fill(~is_peak, -1.0), cap, 0.0)
+        if train_peak_topk > 0:
+            extra_c, extra_k = _topk_coords_padded(
+                probs.masked_fill(is_peak, -1.0), int(train_peak_topk), 0.0
+            )
+            peak_coords = torch.cat([peak_coords, extra_c], dim=1)
+            peak_keep = torch.cat([peak_keep, extra_k], dim=1)
+        padded_coords, padded_mask, det_counts = _pack_valid_nodes(peak_coords, peak_keep)
 
-    batch_ids = peak_idx[:, 0]
-    peak_coords = peak_idx[:, 1:].float()
-    if train_peak_topk > 0:
-        scores = torch.sigmoid(det_logits[:, 0]).masked_fill(is_peak[:, 0], -1.0)
-        extra_b: list[torch.Tensor] = []
-        extra_c: list[torch.Tensor] = []
-        for b in range(B):
-            flat = scores[b].reshape(-1)
-            k = min(int(train_peak_topk), int(flat.numel()))
-            if k <= 0:
-                continue
-            vals, idx = torch.topk(flat, k)
-            idx = idx[vals > 0]
-            if idx.numel() == 0:
-                continue
-            zyx = torch.stack(torch.unravel_index(idx, scores[b].shape), dim=-1).float()
-            extra_b.append(torch.full((zyx.shape[0],), b, device=device, dtype=batch_ids.dtype))
-            extra_c.append(zyx)
-        if extra_c:
-            batch_ids = torch.cat([batch_ids, *extra_b])
-            peak_coords = torch.cat([peak_coords, *extra_c])
-
-    nt_per_sample = mask.sum(dim=1).tolist()
+    max_det = padded_coords.shape[1]
+    max_gt = max(max(nt_per_sample), 1)
+    gt_n = torch.as_tensor(nt_per_sample, device=device, dtype=torch.long)
+    gt_valid = torch.arange(max_gt, device=device).unsqueeze(0) < gt_n.unsqueeze(1)
+    det_valid = padded_mask
 
     sample_matches: list[torch.Tensor] = []
     sample_couplings: list[torch.Tensor] = []
-    sample_coords: list[torch.Tensor] = []
-    max_det = 0
-
-    for b in range(B):
-        sel = batch_ids == b
-        det_b = peak_coords[sel]
-        n_det = det_b.shape[0]
-        nt = int(nt_per_sample[b])
-        gt_b = gt_coords[b, :nt]
-        n_gt = gt_b.shape[0]
-
-        if n_det > 0 and n_gt > 0:
-            if vs is not None:
-                dists = torch.cdist(det_b * vs, gt_b * vs)
+    if match_assign == 'greedy':
+        left = padded_coords if vs is None else padded_coords * vs
+        right = gt_coords[:, :max_gt] if vs is None else gt_coords[:, :max_gt] * vs
+        dists = torch.cdist(left, right)
+        far = (~det_valid).unsqueeze(-1) | (~gt_valid).unsqueeze(1)
+        dists = dists.masked_fill(far, 1e6)
+        matched_b = greedy_assign_batched(dists, max_match_distance)
+        matched_b = matched_b.masked_fill(~det_valid, -1)
+        for b in range(B):
+            n = det_counts[b]
+            nt = int(nt_per_sample[b])
+            matched = matched_b[b, :n]
+            sample_matches.append(matched)
+            sample_couplings.append(hard_coupling(matched, nt).to(dtype=dists.dtype))
+    else:
+        for b in range(B):
+            n_det = det_counts[b]
+            nt = int(nt_per_sample[b])
+            det_b = padded_coords[b, :n_det]
+            gt_b = gt_coords[b, :nt]
+            if n_det > 0 and nt > 0:
+                if vs is not None:
+                    dists = torch.cdist(det_b * vs, gt_b * vs)
+                else:
+                    dists = torch.cdist(det_b, gt_b)
+                matched, coupling = match_peaks(
+                    dists,
+                    max_match_distance,
+                    kind=match_assign,
+                    tau=sinkhorn_tau,
+                    iters=sinkhorn_iters,
+                )
             else:
-                dists = torch.cdist(det_b, gt_b)
-            matched, coupling = match_peaks(
-                dists,
-                max_match_distance,
-                kind=match_assign,
-                tau=sinkhorn_tau,
-                iters=sinkhorn_iters,
-            )
-        else:
-            matched = torch.full((n_det,), -1, dtype=torch.long, device=device)
-            coupling = torch.zeros(n_det, n_gt, device=device)
+                matched = torch.full((n_det,), -1, dtype=torch.long, device=device)
+                coupling = torch.zeros(n_det, nt, device=device)
+            sample_matches.append(matched)
+            sample_couplings.append(coupling)
 
-        sample_matches.append(matched)
-        sample_couplings.append(coupling)
-        sample_coords.append(det_b)
-        if n_det > max_det:
-            max_det = n_det
-
-    max_det = max(max_det, 1)
-
-    padded_coords = torch.zeros(B, max_det, 3, device=device)
-    padded_mask = torch.zeros(B, max_det, dtype=torch.bool, device=device)
-    for b in range(B):
-        n = sample_coords[b].shape[0]
-        if n == 0:
-            continue
-        padded_coords[b, :n] = sample_coords[b]
-        padded_mask[b, :n] = True
-
-    t_col = torch.full((B, max_det, 1), frame_index, device=device, dtype=torch.float32)
+    if torch.is_tensor(frame_index):
+        t_col = frame_index.to(device=device, dtype=torch.float32).reshape(B).view(B, 1, 1)
+        t_col = t_col.expand(B, max_det, 1)
+    else:
+        t_col = torch.full((B, max_det, 1), float(frame_index), device=device, dtype=torch.float32)
     full_coords = torch.cat([t_col, padded_coords], dim=-1)
     pos_shape = (window_size,) + image_shape[1:] if window_size is not None else image_shape
     padded_pos = pos_embed_torch(full_coords, pos_shape)
@@ -289,9 +338,24 @@ def _as_coupling(matched: torch.Tensor, n_gt: int) -> torch.Tensor:
         return matched
     coupling = torch.zeros(matched.shape[0], n_gt, device=matched.device, dtype=torch.float32)
     valid = matched >= 0
-    if valid.any():
-        coupling[torch.arange(matched.shape[0], device=matched.device)[valid], matched[valid]] = 1.0
+    coupling[
+        torch.arange(matched.shape[0], device=matched.device),
+        matched.clamp(min=0),
+    ] = valid.to(dtype=torch.float32)
     return coupling
+
+
+def _stack_match_indices(
+    rows: list[torch.Tensor],
+    width: int,
+    device: torch.device,
+) -> torch.Tensor:
+    out = torch.full((len(rows), width), -1, device=device, dtype=torch.long)
+    for b, row in enumerate(rows):
+        n = min(int(row.shape[0]), width)
+        if n:
+            out[b, :n] = row[:n]
+    return out
 
 
 def build_matched_edge_targets(
@@ -307,32 +371,126 @@ def build_matched_edge_targets(
 ) -> torch.Tensor:
     B = gt_target.shape[0]
     device = gt_target.device
-    target = torch.zeros(B, max_det_t, max_det_t1, device=device)
+    if match_soft:
+        target = torch.zeros(B, max_det_t, max_det_t1, device=device)
+        for b in range(B):
+            gt_trans = gt_target[b]
+            n_gt_t, n_gt_t1 = gt_trans.shape
+            left = couplings_t[b] if couplings_t is not None else match_t[b]
+            right = couplings_t1[b] if couplings_t1 is not None else match_t1[b]
+            c0 = _as_coupling(left, n_gt_t)
+            c1 = _as_coupling(right, n_gt_t1)
+            n_t, n_t1 = c0.shape[0], c1.shape[0]
+            if n_t == 0 or n_t1 == 0:
+                continue
+            with torch.autocast(device.type, enabled=False):
+                target[b, :n_t, :n_t1] = (
+                    c0.float() @ gt_trans[: c0.shape[1], : c1.shape[1]].float() @ c1.float().T
+                )
+        return target
+    if max_det_t == 0 or max_det_t1 == 0:
+        return torch.zeros(B, max_det_t, max_det_t1, device=device)
+    n_gt_t, n_gt_t1 = gt_target.shape[-2], gt_target.shape[-1]
+    if n_gt_t == 0 or n_gt_t1 == 0:
+        return torch.zeros(B, max_det_t, max_det_t1, device=device)
+    left = _stack_match_indices(match_t, max_det_t, device)
+    right = _stack_match_indices(match_t1, max_det_t1, device)
+    gathered = gt_target[
+        torch.arange(B, device=device).view(B, 1, 1),
+        left.clamp(min=0, max=n_gt_t - 1).unsqueeze(-1),
+        right.clamp(min=0, max=n_gt_t1 - 1).unsqueeze(1),
+    ]
+    valid = (left >= 0).unsqueeze(-1) & (right >= 0).unsqueeze(1)
+    return gathered.masked_fill(~valid, 0)
 
-    for b in range(B):
-        gt_trans = gt_target[b]
-        n_gt_t, n_gt_t1 = gt_trans.shape
-        left = couplings_t[b] if match_soft and couplings_t is not None else match_t[b]
-        right = couplings_t1[b] if match_soft and couplings_t1 is not None else match_t1[b]
-        if left.ndim == right.ndim == 1:
-            # Hard matching is indexing, not two dense one-hot GEMMs.
-            if n_gt_t and n_gt_t1:
-                values = gt_trans[left.clamp(min=0)[:, None], right.clamp(min=0)[None, :]]
-                valid = (left >= 0)[:, None] & (right >= 0)[None, :]
-                target[b, : len(left), : len(right)] = values.masked_fill(~valid, 0)
-            continue
-        c0 = _as_coupling(left, n_gt_t)
-        c1 = _as_coupling(right, n_gt_t1)
-        n_t, n_t1 = c0.shape[0], c1.shape[0]
-        if n_t == 0 or n_t1 == 0:
-            continue
-        # Couplings contain actual GT nodes, while gt_trans includes padding.
-        with torch.autocast(device.type, enabled=False):
-            target[b, :n_t, :n_t1] = (
-                c0.float() @ gt_trans[: c0.shape[1], : c1.shape[1]].float() @ c1.float().T
-            )
 
-    return target
+def _split_per_frame(
+    values: list[torch.Tensor], batch: int, frames: int
+) -> list[list[torch.Tensor]]:
+    return [[values[sample * frames + frame] for sample in range(batch)] for frame in range(frames)]
+
+
+def _window_detections(
+    model: UNetNodeTransformer,
+    unet_out: torch.Tensor,
+    det_logits: list[torch.Tensor],
+    coords: torch.Tensor,
+    masks: torch.Tensor,
+    image_shape: tuple[int, ...],
+    voxel_size: tuple[float, ...],
+    *,
+    use_gt: bool,
+    det_threshold: float,
+    pool_kernel_um: float,
+    max_match_distance: float,
+    match_assign: str,
+    sinkhorn_tau: float,
+    sinkhorn_iters: int,
+    train_peak_topk: int,
+    node_counts: torch.Tensor | None,
+) -> tuple[
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    list[list[torch.Tensor]] | None,
+    torch.Tensor,
+    list[list[torch.Tensor]] | None,
+]:
+    batch, frames = unet_out.shape[:2]
+    device = unet_out.device
+    flat = batch * frames
+    if use_gt:
+        nodes = coords.shape[2]
+        frame_ids = torch.arange(frames, device=device, dtype=coords.dtype).view(1, frames, 1, 1)
+        t_col = frame_ids.expand(batch, frames, nodes, 1)
+        pos = pos_embed_torch(
+            torch.cat([t_col, coords], dim=-1).reshape(flat, nodes, 4),
+            (frames,) + image_shape[1:],
+        ).view(batch, frames, nodes, -1)
+        feat = model.index_features(
+            unet_out.reshape(flat, *unet_out.shape[2:]),
+            coords.reshape(flat, nodes, 3),
+            masks.reshape(flat, nodes),
+        ).view(batch, frames, nodes, -1)
+        return coords, pos, masks, None, feat, None
+
+    det_stack = torch.stack(det_logits, dim=1)
+    frame_index = torch.arange(frames, device=device).unsqueeze(0).expand(batch, frames).reshape(-1)
+    gt_counts = None if node_counts is None else [int(v) for v in node_counts.reshape(-1)]
+    det_c, det_p, det_m, matches, couplings = detect_and_match(
+        det_stack.reshape(flat, *det_stack.shape[2:]),
+        coords.reshape(flat, *coords.shape[2:]),
+        masks.reshape(flat, *masks.shape[2:]),
+        image_shape,
+        det_threshold=det_threshold,
+        voxel_size=voxel_size,
+        pool_kernel_um=pool_kernel_um,
+        max_match_distance=max_match_distance,
+        frame_index=frame_index,
+        window_size=frames,
+        match_assign=match_assign,
+        sinkhorn_tau=sinkhorn_tau,
+        sinkhorn_iters=sinkhorn_iters,
+        train_peak_topk=train_peak_topk,
+        gt_counts=gt_counts,
+    )
+    nodes = det_c.shape[1]
+    det_c = det_c.view(batch, frames, nodes, 3)
+    det_p = det_p.view(batch, frames, nodes, -1)
+    det_m = det_m.view(batch, frames, nodes)
+    feat = model.index_features(
+        unet_out.reshape(flat, *unet_out.shape[2:]),
+        det_c.reshape(flat, nodes, 3),
+        det_m.reshape(flat, nodes),
+    ).view(batch, frames, nodes, -1)
+    return (
+        det_c,
+        det_p,
+        det_m,
+        _split_per_frame(matches, batch, frames),
+        feat,
+        _split_per_frame(couplings, batch, frames),
+    )
 
 
 def train_epoch(
@@ -371,8 +529,8 @@ def train_epoch(
     offset_target: str = 'frac',
 ) -> tuple[float, float]:
     model.train()
-    total_edge_loss = 0.0
-    total_det_loss = 0.0
+    total_edge_loss = torch.zeros((), device=device)
+    total_det_loss = torch.zeros((), device=device)
     n_samples = 0
     accum = max(int(accum_steps), 1)
     dtype = amp_dtype(amp_kind)
@@ -399,9 +557,17 @@ def train_epoch(
         coords = batch['coords'].to(device, non_blocking=True)
         masks = batch['masks'].to(device, non_blocking=True)
         targets = batch['targets'].to(device, non_blocking=True)
+        heatmap_batch = (
+            batch['heatmap_target'].to(device, non_blocking=True)
+            if 'heatmap_target' in batch
+            else None
+        )
         image_shape = tuple(batch['image_shape'][0].tolist())
         voxel_size = tuple(batch['voxel_size'][0].tolist())
         ds_scale = batch['downsample'][0].to(device)
+        node_counts = batch.get('node_counts')
+        if node_counts is not None and torch.is_tensor(node_counts):
+            node_counts = node_counts.detach().cpu()
 
         t1 = time.perf_counter()
         t_data += t1 - t0
@@ -410,81 +576,93 @@ def train_epoch(
         if target_mode == 'gt_nodes':
             use_gt = True
         elif target_mode == 'mixed':
-            use_gt = float(torch.rand((), device=device).item()) < target_gt_frac
+            use_gt = float(torch.rand(()).item()) < target_gt_frac
         else:
             use_gt = False
 
         with torch.autocast(device.type, dtype=dtype or torch.float32, enabled=autocast_on):
             unet_out, det_logits = model.encode(imgs)
 
-            det_losses = [
-                detection_loss(
-                    det_loss_kind,
-                    det_logits[i],
-                    coords[:, i],
-                    masks[:, i],
-                    neg_weight=det_neg_weight,
-                    heatmap_sigma=det_heatmap_sigma,
-                    focal_gamma=edge_focal_gamma,
-                    heatmap_target=(
-                        batch['heatmap_target'][:, i] if 'heatmap_target' in batch else None
-                    ),
-                )
-                for i in range(W)
-            ]
-            det_loss = sum(det_losses) / W
+            det_stack = torch.stack(det_logits, dim=1)
+            flat = B * W
+            det_loss = detection_loss(
+                det_loss_kind,
+                det_stack.reshape(flat, *det_stack.shape[2:]),
+                coords.reshape(flat, *coords.shape[2:]),
+                masks.reshape(flat, *masks.shape[2:]),
+                neg_weight=det_neg_weight,
+                heatmap_sigma=det_heatmap_sigma,
+                focal_gamma=edge_focal_gamma,
+                heatmap_target=(
+                    None
+                    if heatmap_batch is None
+                    else heatmap_batch.reshape(flat, *heatmap_batch.shape[2:])
+                ),
+            )
 
-            frame_det: list[
-                tuple[
-                    torch.Tensor,
-                    torch.Tensor,
-                    torch.Tensor,
-                    list[torch.Tensor] | None,
-                    torch.Tensor,
-                    list[torch.Tensor] | None,
-                ]
-            ] = []
-            for i in range(W):
-                if use_gt:
-                    det_c = coords[:, i]
-                    det_m = masks[:, i]
-                    t_col = torch.full((B, det_c.shape[1], 1), i, device=device, dtype=det_c.dtype)
-                    pos_shape = (W,) + image_shape[1:]
-                    det_p = pos_embed_torch(torch.cat([t_col, det_c], dim=-1), pos_shape)
-                    matches: list[torch.Tensor] | None = None
-                    couplings: list[torch.Tensor] | None = None
-                else:
-                    det_c, det_p, det_m, matches, couplings = detect_and_match(
-                        det_logits[i],
-                        coords[:, i],
-                        masks[:, i],
-                        image_shape,
-                        det_threshold=det_threshold,
-                        voxel_size=voxel_size,
-                        pool_kernel_um=pool_kernel_um,
-                        max_match_distance=max_match_distance,
-                        frame_index=i,
-                        window_size=W,
-                        match_assign=match_assign,
-                        sinkhorn_tau=sinkhorn_tau,
-                        sinkhorn_iters=sinkhorn_iters,
-                        train_peak_topk=train_peak_topk,
-                    )
-                unet_feat = model.index_features(unet_out[:, i], det_c, det_m)
-                frame_det.append((det_c, det_p, det_m, matches, unet_feat, couplings))
+            det_c, det_p, det_m, matches_w, feat, couplings_w = _window_detections(
+                model,
+                unet_out,
+                det_logits,
+                coords,
+                masks,
+                image_shape,
+                voxel_size,
+                use_gt=use_gt,
+                det_threshold=det_threshold,
+                pool_kernel_um=pool_kernel_um,
+                max_match_distance=max_match_distance,
+                match_assign=match_assign,
+                sinkhorn_tau=sinkhorn_tau,
+                sinkhorn_iters=sinkhorn_iters,
+                train_peak_topk=train_peak_topk,
+                node_counts=node_counts,
+            )
 
             block_losses = []
             aux_div = []
             aux_con = []
-            for i in range(W - 1):
-                ns = frame_det[i][0].shape[1]
-                nt = frame_det[i + 1][0].shape[1]
+            pairs = W - 1
+            query: torch.Tensor | None = None
+            key: torch.Tensor | None = None
+            edge_logits: torch.Tensor | None = None
+            if pairs > 0:
+                pair_batch = B * pairs
+                nodes = feat.shape[2]
+                src_feat = feat[:, :-1].reshape(pair_batch, nodes, feat.shape[3])
+                tgt_feat = feat[:, 1:].reshape(pair_batch, nodes, feat.shape[3])
+                src_c = (det_c[:, :-1] * ds_scale).reshape(pair_batch, nodes, 3)
+                tgt_c = (det_c[:, 1:] * ds_scale).reshape(pair_batch, nodes, 3)
+                src_p = det_p[:, :-1].reshape(pair_batch, nodes, det_p.shape[-1])
+                tgt_p = det_p[:, 1:].reshape(pair_batch, nodes, det_p.shape[-1])
+                src_m = det_m[:, :-1].reshape(pair_batch, nodes)
+                tgt_m = det_m[:, 1:].reshape(pair_batch, nodes)
+                if aux_contrastive_weight > 0:
+                    edge_logits, query, key = model.predict_edges_embeddings(
+                        src_feat, tgt_feat, src_c, tgt_c, src_p, tgt_p, src_m, tgt_m
+                    )
+                    query = query.view(B, pairs, nodes, query.shape[-1])
+                    key = key.view(B, pairs, nodes, key.shape[-1])
+                else:
+                    edge_logits = model.predict_edges(
+                        src_feat, tgt_feat, src_c, tgt_c, src_p, tgt_p, src_m, tgt_m
+                    )
+                edge_logits = edge_logits.view(B, pairs, nodes, nodes)
+            for i in range(pairs):
+                ns = det_c[:, i].shape[1]
+                nt = det_c[:, i + 1].shape[1]
                 if use_gt:
                     pair_target = targets[:, i]
+                    matches_t = None
+                    matches_t1 = None
+                    couplings_t = None
+                    couplings_t1 = None
                 else:
-                    matches_t = frame_det[i][3]
-                    matches_t1 = frame_det[i + 1][3]
-                    assert matches_t is not None and matches_t1 is not None
+                    assert matches_w is not None and couplings_w is not None
+                    matches_t = matches_w[i]
+                    matches_t1 = matches_w[i + 1]
+                    couplings_t = couplings_w[i]
+                    couplings_t1 = couplings_w[i + 1]
                     pair_target = build_matched_edge_targets(
                         matches_t,
                         matches_t1,
@@ -492,57 +670,42 @@ def train_epoch(
                         ns,
                         nt,
                         match_soft=match_soft,
-                        couplings_t=frame_det[i][5],
-                        couplings_t1=frame_det[i + 1][5],
+                        couplings_t=couplings_t,
+                        couplings_t1=couplings_t1,
                     )
-                query: torch.Tensor | None = None
-                key: torch.Tensor | None = None
-                if aux_contrastive_weight > 0:
-                    edge_logits, query, key = model.predict_edges_embeddings(
-                        frame_det[i][4],
-                        frame_det[i + 1][4],
-                        frame_det[i][0] * ds_scale,
-                        frame_det[i + 1][0] * ds_scale,
-                        frame_det[i][1],
-                        frame_det[i + 1][1],
-                        frame_det[i][2],
-                        frame_det[i + 1][2],
-                    )
-                else:
-                    edge_logits = model.predict_edges(
-                        frame_det[i][4],
-                        frame_det[i + 1][4],
-                        frame_det[i][0] * ds_scale,
-                        frame_det[i + 1][0] * ds_scale,
-                        frame_det[i][1],
-                        frame_det[i + 1][1],
-                        frame_det[i][2],
-                        frame_det[i + 1][2],
-                    )
+                assert edge_logits is not None
+                frame_i = (det_c[:, i], det_p[:, i], det_m[:, i], matches_t)
+                frame_j = (det_c[:, i + 1], det_p[:, i + 1], det_m[:, i + 1], matches_t1)
                 block_losses.append(
                     compute_batch_loss(
-                        edge_logits,
+                        edge_logits[:, i],
                         pair_target,
-                        frame_det[i][2],
-                        frame_det[i + 1][2],
+                        det_m[:, i],
+                        det_m[:, i + 1],
                         kind=edge_loss,
                         focal_gamma=edge_focal_gamma,
                         div_weight=edge_div_weight,
-                        coords_src=frame_det[i][0] * ds_scale,
-                        coords_tgt=frame_det[i + 1][0] * ds_scale,
+                        coords_src=det_c[:, i] * ds_scale,
+                        coords_tgt=det_c[:, i + 1] * ds_scale,
                         gate_distance=edge_gate_distance,
+                        source_counts=_frame_node_counts(frame_i, node_counts, i),
+                        target_counts=_frame_node_counts(frame_j, node_counts, i + 1),
                     )
                 )
                 if aux_division_weight > 0 or aux_contrastive_weight > 0:
-                    src_counts = frame_det[i][2].sum(dim=1).tolist()
-                    tgt_counts = frame_det[i + 1][2].sum(dim=1).tolist()
+                    src_counts = _frame_node_counts(frame_i, node_counts, i)
+                    tgt_counts = _frame_node_counts(frame_j, node_counts, i + 1)
+                    if src_counts is None:
+                        src_counts = det_m[:, i].sum(dim=1).tolist()
+                    if tgt_counts is None:
+                        tgt_counts = det_m[:, i + 1].sum(dim=1).tolist()
                 if aux_division_weight > 0:
                     for b in range(B):
                         ns_b = int(src_counts[b])
                         nt_b = int(tgt_counts[b])
                         aux_div.append(
                             division_aux_loss(
-                                edge_logits[b, :ns_b, :nt_b],
+                                edge_logits[b, i, :ns_b, :nt_b],
                                 pair_target[b, :ns_b, :nt_b],
                             )
                         )
@@ -552,13 +715,15 @@ def train_epoch(
                         nt_b = int(tgt_counts[b])
                         aux_con.append(
                             contrastive_aux_loss(
-                                query[b, :ns_b],
-                                key[b, :nt_b],
+                                query[b, i, :ns_b],
+                                key[b, i, :nt_b],
                                 pair_target[b, :ns_b, :nt_b],
                                 temperature=aux_contrastive_temp,
                             )
                         )
-            edge_loss_val = sum(block_losses) / len(block_losses)
+            edge_loss_val = (
+                torch.stack(block_losses).mean() if block_losses else torch.zeros((), device=device)
+            )
             loss = edge_loss_val + det_loss_weight * det_loss
             if aux_div:
                 loss = loss + aux_division_weight * (sum(aux_div) / len(aux_div))
@@ -580,7 +745,8 @@ def train_epoch(
             group_size = min(accum, n_steps - (step_i // accum) * accum)
             loss = loss / group_size
 
-        require_finite(loss, 'Detector training loss')
+        if step_i == 0 or (step_i + 1) % 32 == 0:
+            require_finite(loss, 'Detector training loss')
 
         t2 = time.perf_counter()
         t_forward += t2 - t1
@@ -595,8 +761,8 @@ def train_epoch(
         t3 = time.perf_counter()
         t_backward += t3 - t2
 
-        total_edge_loss += float(edge_loss_val) * B
-        total_det_loss += float(det_loss) * B
+        total_edge_loss = total_edge_loss + edge_loss_val.detach() * B
+        total_det_loss = total_det_loss + det_loss.detach() * B
         n_samples += B
 
         t0 = time.perf_counter()
@@ -611,12 +777,12 @@ def train_epoch(
         )
 
     return (
-        total_edge_loss / max(n_samples, 1),
-        total_det_loss / max(n_samples, 1),
+        float(total_edge_loss / max(n_samples, 1)),
+        float(total_det_loss / max(n_samples, 1)),
     )
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def evaluate(
     model: UNetNodeTransformer,
     loader: DataLoader,
@@ -630,6 +796,7 @@ def evaluate(
     sinkhorn_tau: float = 0.1,
     sinkhorn_iters: int = 20,
     train_peak_topk: int = 0,
+    amp_kind: str = 'off',
 ) -> dict[str, float]:
     model.eval()
     total_loss, correct, total, n_pairs = 0.0, 0, 0, 0
@@ -637,6 +804,8 @@ def evaluate(
     num_pred_nodes = 0
     edge_tp = edge_fp = edge_fn = 0
     division_tp = division_fp = division_fn = 0
+    dtype = amp_dtype(amp_kind)
+    autocast_on = dtype is not None and device.type == 'cuda'
 
     for batch in loader:
         imgs = batch['imgs'].to(device, dtype=torch.float32, non_blocking=True)
@@ -646,79 +815,87 @@ def evaluate(
         image_shape = tuple(batch['image_shape'][0].tolist())
         voxel_size = tuple(batch['voxel_size'][0].tolist())
         ds_scale = batch['downsample'][0].to(device)
+        node_counts = batch.get('node_counts')
+        if node_counts is not None and torch.is_tensor(node_counts):
+            node_counts = node_counts.detach().cpu()
 
         B, W = imgs.shape[:2]
-        unet_out, det_logits = model.encode(imgs)
-        frame_det: list[
-            tuple[
-                torch.Tensor,
-                torch.Tensor,
-                torch.Tensor,
-                list[torch.Tensor],
-                torch.Tensor,
-                list[torch.Tensor],
-            ]
-        ] = []
+        with torch.autocast(device.type, dtype=dtype or torch.float32, enabled=autocast_on):
+            unet_out, det_logits = model.encode(imgs)
+        det_c, det_p, det_m, matches_w, feat, couplings_w = _window_detections(
+            model,
+            unet_out,
+            det_logits,
+            coords,
+            masks,
+            image_shape,
+            voxel_size,
+            use_gt=False,
+            det_threshold=det_threshold,
+            pool_kernel_um=pool_kernel_um,
+            max_match_distance=max_match_distance,
+            match_assign=match_assign,
+            sinkhorn_tau=sinkhorn_tau,
+            sinkhorn_iters=sinkhorn_iters,
+            train_peak_topk=train_peak_topk,
+            node_counts=node_counts,
+        )
         for i in range(W):
-            det_c, det_p, det_m, matches, couplings = detect_and_match(
-                det_logits[i],
-                coords[:, i],
-                masks[:, i],
-                image_shape,
-                det_threshold=det_threshold,
-                voxel_size=voxel_size,
-                pool_kernel_um=pool_kernel_um,
-                max_match_distance=max_match_distance,
-                frame_index=i,
-                window_size=W,
-                match_assign=match_assign,
-                sinkhorn_tau=sinkhorn_tau,
-                sinkhorn_iters=sinkhorn_iters,
-                train_peak_topk=train_peak_topk,
-            )
-            unet_feat = model.index_features(
-                unet_out[:, i],
-                det_c,
-                det_m,
-            )
-            frame_det.append((det_c, det_p, det_m, matches, unet_feat, couplings))
+            assert matches_w is not None
+            matches = matches_w[i]
+            gt_total += int(masks[:, i].sum().item())
+            gt_matched += int(torch.stack([(m >= 0).sum() for m in matches]).sum().item())
+            num_pred_nodes += int(det_m[:, i].sum().item())
 
-            for b in range(B):
-                n_gt = int(masks[b, i].sum().item())
-                n_matched = (matches[b] >= 0).sum().item()
-                gt_total += n_gt
-                gt_matched += n_matched
-                num_pred_nodes += int(det_m[b].sum().item())
-
-        for i in range(W - 1):
-            ns = frame_det[i][0].shape[1]
-            nt = frame_det[i + 1][0].shape[1]
+        pairs = W - 1
+        pair_logits_all = None
+        if pairs > 0:
+            pair_batch = B * pairs
+            nodes = feat.shape[2]
+            with torch.autocast(device.type, dtype=dtype or torch.float32, enabled=autocast_on):
+                pair_logits_all = model.predict_edges(
+                    feat[:, :-1].reshape(pair_batch, nodes, feat.shape[3]),
+                    feat[:, 1:].reshape(pair_batch, nodes, feat.shape[3]),
+                    (det_c[:, :-1] * ds_scale).reshape(pair_batch, nodes, 3),
+                    (det_c[:, 1:] * ds_scale).reshape(pair_batch, nodes, 3),
+                    det_p[:, :-1].reshape(pair_batch, nodes, det_p.shape[-1]),
+                    det_p[:, 1:].reshape(pair_batch, nodes, det_p.shape[-1]),
+                    det_m[:, :-1].reshape(pair_batch, nodes),
+                    det_m[:, 1:].reshape(pair_batch, nodes),
+                ).view(B, pairs, nodes, nodes)
+        for i in range(pairs):
+            assert matches_w is not None and couplings_w is not None
+            matches_t = matches_w[i]
+            matches_t1 = matches_w[i + 1]
+            ns = det_c[:, i].shape[1]
+            nt = det_c[:, i + 1].shape[1]
             pair_target = build_matched_edge_targets(
-                frame_det[i][3],
-                frame_det[i + 1][3],
+                matches_t,
+                matches_t1,
                 targets[:, i],
                 ns,
                 nt,
                 match_soft=match_soft,
-                couplings_t=frame_det[i][5],
-                couplings_t1=frame_det[i + 1][5],
+                couplings_t=couplings_w[i],
+                couplings_t1=couplings_w[i + 1],
             )
-            pair_logits = model.predict_edges(
-                frame_det[i][4],
-                frame_det[i + 1][4],
-                frame_det[i][0] * ds_scale,
-                frame_det[i + 1][0] * ds_scale,
-                frame_det[i][1],
-                frame_det[i + 1][1],
-                frame_det[i][2],
-                frame_det[i + 1][2],
-            )
-
+            assert pair_logits_all is not None
+            pair_logits = pair_logits_all[:, i]
+            frame_i = (det_c[:, i], det_p[:, i], det_m[:, i], matches_t)
+            frame_j = (det_c[:, i + 1], det_p[:, i + 1], det_m[:, i + 1], matches_t1)
+            src_counts = _frame_node_counts(frame_i, node_counts, i)
+            tgt_counts = _frame_node_counts(frame_j, node_counts, i + 1)
+            if src_counts is None:
+                src_counts = [int(v) for v in det_m[:, i].sum(dim=1).tolist()]
+            if tgt_counts is None:
+                tgt_counts = [int(v) for v in det_m[:, i + 1].sum(dim=1).tolist()]
+            pair_logits_cpu = pair_logits.detach().float().cpu()
+            pair_target_cpu = pair_target.detach().float().cpu()
             for b in range(B):
-                ns_b = int(frame_det[i][2][b].sum().item())
-                nt_b = int(frame_det[i + 1][2][b].sum().item())
-                logits_b = pair_logits[b, :ns_b, :nt_b]
-                target_b = pair_target[b, :ns_b, :nt_b]
+                ns_b = int(src_counts[b])
+                nt_b = int(tgt_counts[b])
+                logits_b = pair_logits_cpu[b, :ns_b, :nt_b]
+                target_b = pair_target_cpu[b, :ns_b, :nt_b]
                 pair_loss, pair_correct, pair_total = evaluate_pair(
                     logits_b,
                     target_b,
@@ -1033,20 +1210,25 @@ def train(
         batch_padding=batch_padding,
         frame_cache_mb=frame_cache_mb,
     )
-    g = None
-    worker_init_fn = None
-    if seed is not None:
-        g = dataloader_generator(seed)
-        worker_init_fn = seed_worker
+    g = dataloader_generator(seed)
+    worker_init_fn = seed_worker if num_workers > 0 else None
+
+    train_device = resolve_train_device(device)
+    if train_device.type == 'cuda':
+        configure_cuda_backends()
+    n_visible = torch.cuda.device_count() if train_device.type == 'cuda' else 0
+    print(f'Using device: {train_device} | visible CUDA GPUs: {n_visible}', flush=True)
+    prefetch = 4 if num_workers > 0 else None
+    pin_memory = train_device.type == 'cuda'
 
     train_loader = DataLoader(
         train_ds,
         batch_size=batch_size,
-        shuffle=True,
+        sampler=VideoGroupedSampler(train_ds, generator=g, num_workers=num_workers),
         num_workers=num_workers,
-        prefetch_factor=2 if num_workers > 0 else None,
+        prefetch_factor=prefetch,
         persistent_workers=num_workers > 0,
-        pin_memory=True,
+        pin_memory=pin_memory,
         generator=g,
         worker_init_fn=worker_init_fn,
         collate_fn=collate_windows if batch_padding else None,
@@ -1056,17 +1238,13 @@ def train(
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
-        prefetch_factor=2 if num_workers > 0 else None,
+        prefetch_factor=prefetch,
         persistent_workers=num_workers > 0,
-        pin_memory=True,
+        pin_memory=pin_memory,
         generator=g,
         worker_init_fn=worker_init_fn,
         collate_fn=collate_windows if batch_padding else None,
     )
-
-    train_device = resolve_train_device(device)
-    n_visible = torch.cuda.device_count() if train_device.type == 'cuda' else 0
-    print(f'Using device: {train_device} | visible CUDA GPUs: {n_visible}', flush=True)
 
     unet = TemporalUNet3D(
         in_channels=unet_in_channels(
@@ -1227,6 +1405,7 @@ def train(
             sinkhorn_tau=sinkhorn_tau,
             sinkhorn_iters=sinkhorn_iters,
             train_peak_topk=0,
+            amp_kind=amp,
         )
         test_time = time.monotonic() - t0
 

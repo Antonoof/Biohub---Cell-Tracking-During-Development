@@ -25,13 +25,11 @@ def pos_embed_torch(
     image_shape: tuple[int, ...],
     pos_embed_dim: int = POS_EMBED_DIM,
 ) -> torch.Tensor:
-    shape_t = torch.tensor(image_shape, dtype=torch.float32, device=coords.device)
+    shape_t = torch.as_tensor(image_shape, dtype=torch.float32, device=coords.device)
     norms = coords / shape_t.clamp(min=1)
     freqs = (
         2.0 ** torch.arange(pos_embed_dim // 2, device=coords.device, dtype=torch.float32)
     ) * torch.pi
-    parts = []
-    for ax in range(4):
-        angles = norms[..., ax].unsqueeze(-1) * freqs
-        parts.extend([angles.sin(), angles.cos()])
-    return torch.cat(parts, dim=-1)
+    angles = norms.unsqueeze(-1) * freqs
+    sincos = torch.stack((angles.sin(), angles.cos()), dim=-2)
+    return sincos.reshape(*coords.shape[:-1], 4 * pos_embed_dim)
