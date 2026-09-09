@@ -385,10 +385,12 @@ def test_checkpoint_score_selects_configured_metric() -> None:
         'acc_times_recall': 0.2,
         'competition_metric': 0.8,
         'acc': 0.5,
-        'recall': 0.4,
+        'recall': 0.6,
+        'node_ratio': 1.0,
         'neg_loss': -1.5,
     }
     assert checkpoint_score('competition_metric', values) == 0.8
+    assert checkpoint_score('competition_metric', {**values, 'recall': 0.05}) == -1.0
     assert checkpoint_score('acc_times_recall', values) == 0.2
     assert checkpoint_score('edge_f1', {**values, 'edge_f1': 0.7}) == 0.7
     with pytest.raises(ValueError, match='Unknown checkpoint_metric'):

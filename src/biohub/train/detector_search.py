@@ -1,4 +1,5 @@
 import json
+import math
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -14,6 +15,7 @@ UNET_LAYERS = {
     '32-64-128': [32, 64, 128],
     '32-64-128-256': [32, 64, 128, 256],
 }
+MSNT_TRAIN_DET_PROB = 1.0 / (1.0 + math.exp(-0.3))
 OOF_COUNT_KEYS = (
     'edge_tp',
     'edge_fp',
@@ -154,7 +156,7 @@ FIXED_TRAIN_KEYS = {
     'pair_chunk_size': 512,
     'gradient_checkpointing': False,
     'downsample': [1, 4, 4],
-    'det_threshold': 0.5,
+    'det_threshold': MSNT_TRAIN_DET_PROB,
     'edge_threshold': 0.5,
     'target_mode': 'matched_det',
     'target_gt_frac': 0.0,
@@ -292,9 +294,12 @@ def sample_search_params(trial: TrialLike) -> dict[str, Any]:
         'pool_kernel_um': trial.suggest_float('pool_kernel_um', 3.0, 7.0),
         'max_match_distance': trial.suggest_float('max_match_distance', 3.0, 8.0),
         'det_loss_weight': trial.suggest_float('det_loss_weight', 0.5, 2.0),
-        'det_neg_weight': trial.suggest_float('det_neg_weight', 0.003, 0.03, log=True),
+        'det_neg_weight': trial.suggest_float('det_neg_weight', 0.01, 1.0, log=True),
         'det_loss': str(
-            trial.suggest_categorical('det_loss', ['weighted_bce', 'focal', 'gaussian_heatmap'])
+            trial.suggest_categorical(
+                'det_loss',
+                ['weighted_bce', 'focal', 'gaussian_heatmap', 'pu_bce', 'pu_heatmap'],
+            )
         ),
         'det_heatmap_sigma': trial.suggest_float('det_heatmap_sigma', 0.8, 2.0),
         'edge_loss': str(
@@ -492,7 +497,10 @@ def params_from_config(cfg: dict[str, Any]) -> dict[str, Any]:
 
 def seed_trial_params(cfg: dict[str, Any]) -> dict[str, Any]:
     params = params_from_config(cfg)
-    params['det_loss'] = 'gaussian_heatmap'
+    params['det_loss'] = 'weighted_bce'
+    params['det_heatmap_sigma'] = 1.0
+    params['det_neg_weight'] = 0.01
+    params['det_loss_weight'] = 1.0
     return params
 
 

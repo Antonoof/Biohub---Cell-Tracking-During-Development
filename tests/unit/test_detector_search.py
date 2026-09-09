@@ -23,6 +23,7 @@ from biohub.train.detector import (
     train_epoch,
 )
 from biohub.train.detector_search import (
+    MSNT_TRAIN_DET_PROB,
     SEARCH_PARAM_NAMES,
     apply_search_params,
     load_base_config,
@@ -85,7 +86,7 @@ def test_apply_search_params_derives_conditionals() -> None:
     assert overlay['batch_padding'] is True
     assert overlay['pair_chunk_size'] == 512
     assert overlay['checkpoint_metric'] == 'competition_metric'
-    assert overlay['det_threshold'] == 0.5
+    assert overlay['det_threshold'] == pytest.approx(MSNT_TRAIN_DET_PROB)
     assert overlay['edge_threshold'] == 0.5
     assert 0.5 in SCORE_THRESHOLDS
     assert overlay['amp'] == 'bf16'
@@ -98,7 +99,7 @@ def test_apply_search_params_derives_conditionals() -> None:
     assert 'use_peak_topk' not in overlay
     assert train_det_threshold(0.15) == 0.15
     assert train_det_threshold(0.5) == 0.5
-    assert train_det_threshold(0.97) == 0.5
+    assert train_det_threshold(0.97) == 0.97
 
 
 def test_sinkhorn_keeps_soft_match() -> None:
@@ -177,15 +178,18 @@ def test_optuna_enqueues_p1_params() -> None:
     assert study.trials[0].params['optimizer'] == 'adamw'
 
 
-def test_seed_trial_params_uses_heatmap() -> None:
+def test_seed_trial_params_matches_yaml() -> None:
     yaml_params = params_from_config(load_base_config())
     seed = seed_trial_params(load_base_config())
     assert yaml_params['det_loss'] == 'weighted_bce'
-    assert seed['det_loss'] == 'gaussian_heatmap'
+    assert seed['det_loss'] == 'weighted_bce'
+    assert seed['det_heatmap_sigma'] == pytest.approx(1.0)
+    assert seed['det_neg_weight'] == pytest.approx(0.01)
+    assert seed['det_loss_weight'] == pytest.approx(1.0)
     assert set(seed) == set(SEARCH_PARAM_NAMES)
 
 
-def test_optuna_enqueues_heatmap_seed() -> None:
+def test_optuna_enqueues_yaml_seed() -> None:
     import optuna
     from optuna.samplers import TPESampler
 
@@ -194,7 +198,9 @@ def test_optuna_enqueues_heatmap_seed() -> None:
 
     def objective(trial: optuna.Trial) -> float:
         params = sample_search_params(trial)
-        assert params['det_loss'] == 'gaussian_heatmap'
+        assert params['det_loss'] == 'weighted_bce'
+        assert params['det_neg_weight'] == pytest.approx(0.01)
+        assert params['det_loss_weight'] == pytest.approx(1.0)
         return 0.0
 
     study.optimize(objective, n_trials=1)
@@ -350,18 +356,24 @@ def test_evaluate_logs_competition_thresholds() -> None:
         DataLoader(_Once(_combo_sample()), batch_size=1),
         torch.device('cpu'),
         det_threshold=0.97,
-        edge_threshold=0.97,
+        edge_threshold=0.5,
     )
     scores = [metrics[score_threshold_key(threshold)] for threshold in SCORE_THRESHOLDS]
     assert metrics['competition_metric'] == max(scores)
     assert metrics['competition_metric'] == metrics[score_threshold_key(metrics['score_threshold'])]
     assert metrics['det_threshold'] == 0.97
-    assert metrics['edge_threshold'] == 0.97
+    assert metrics['edge_threshold'] == 0.5
 
 
 def test_select_best_threshold_metrics_uses_peak_then_higher_threshold() -> None:
     def item(score: float) -> dict[str, float]:
-        return {'competition_metric': score, 'acc': score, 'num_pred_nodes': 1.0}
+        return {
+            'competition_metric': score,
+            'acc': score,
+            'num_pred_nodes': 1.0,
+            'recall': 0.8,
+            'node_ratio': 1.0,
+        }
 
     metrics = select_best_threshold_metrics(
         [item(0.0), item(0.2), item(1.1), item(1.1), item(0.5)],
@@ -373,6 +385,29 @@ def test_select_best_threshold_metrics_uses_peak_then_higher_threshold() -> None
     assert metrics[score_threshold_key(0.6)] == 1.1
     assert metrics[score_threshold_key(0.7)] == 1.1
     assert metrics['acc'] == 1.1
+
+
+def test_select_best_threshold_rejects_collapsed_recall() -> None:
+    rows = [
+        {
+            'competition_metric': 1.1,
+            'recall': 0.01,
+            'node_ratio': 0.01,
+            'acc': 1.0,
+            'num_pred_nodes': 1.0,
+        },
+        {
+            'competition_metric': 0.4,
+            'recall': 0.2,
+            'node_ratio': 1.1,
+            'acc': 0.9,
+            'num_pred_nodes': 10.0,
+        },
+    ]
+    metrics = select_best_threshold_metrics(rows, (0.5, 0.9))
+    assert metrics['competition_metric'] == 0.4
+    assert metrics['score_threshold'] == 0.9
+    assert metrics['recall'] == 0.2
 
 
 @pytest.mark.parametrize(
@@ -407,6 +442,8 @@ def test_search_remaining_architecture_values_backward(knobs: dict[str, object])
         {'det_loss_kind': 'weighted_bce', 'match_assign': 'greedy'},
         {'det_loss_kind': 'focal', 'match_assign': 'hungarian'},
         {'det_loss_kind': 'gaussian_heatmap', 'match_assign': 'sinkhorn', 'match_soft': True},
+        {'det_loss_kind': 'pu_bce', 'match_assign': 'greedy'},
+        {'det_loss_kind': 'pu_heatmap', 'match_assign': 'greedy'},
         {'edge_loss': 'ce_softmax', 'target_mode': 'gt_nodes'},
         {'edge_loss': 'asl_softmax', 'target_mode': 'mixed', 'target_gt_frac': 0.5},
         {'train_peak_topk': 4, 'edge_gate_distance': 12.0},

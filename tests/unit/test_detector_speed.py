@@ -140,9 +140,11 @@ def test_detect_and_match_caps_dense_peaks():
         (2, 8, 20, 20),
         det_threshold=0.0,
         window_size=2,
+        peak_gt_multiplier=2,
     )
-    assert int(det_m.sum().item()) <= 2 * 512
-    assert det_c.shape[1] <= 512
+    cap = 2 * 3
+    assert int(det_m.sum().item()) <= 2 * cap
+    assert det_c.shape[1] <= cap
     assert int(det_m.sum().item()) < 2 * 8 * 20 * 20
 
 
@@ -157,37 +159,58 @@ def test_detect_and_match_constant_volume_is_not_all_peaks():
         (1, 8, 8, 8),
         det_threshold=0.0,
         window_size=1,
+        peak_gt_multiplier=2,
     )
-    n_peaks = int(det_m.sum().item())
-    assert 0 < n_peaks < 8 * 8 * 8
+    assert int(det_m.sum().item()) == 0
+
+
+def test_detect_and_match_caps_peaks_per_sample_gt():
+    logits = torch.ones(2, 1, 8, 16, 16)
+    coords = torch.zeros(2, 5, 3)
+    mask = torch.tensor(
+        [[True, True, True, False, False], [True, False, False, False, False]],
+        dtype=torch.bool,
+    )
+    _, _, det_m, _, _ = detect_and_match(
+        logits,
+        coords,
+        mask,
+        (2, 8, 16, 16),
+        det_threshold=0.0,
+        window_size=2,
+        peak_gt_multiplier=2,
+    )
+    assert int(det_m[0].sum().item()) <= 6
+    assert int(det_m[0].sum().item()) > 0
+    assert int(det_m[1].sum().item()) == 2
 
 
 def test_detect_and_match_keeps_sparse_peaks():
-    logits = torch.full((1, 1, 4, 8, 8), -10.0)
+    logits = torch.full((1, 1, 4, 16, 16), -10.0)
     logits[0, 0, 1, 2, 3] = 5.0
-    logits[0, 0, 2, 4, 5] = 5.0
-    coords = torch.tensor([[[1.0, 2.0, 3.0], [2.0, 4.0, 5.0]]])
+    logits[0, 0, 2, 12, 13] = 5.0
+    coords = torch.tensor([[[1.0, 2.0, 3.0], [2.0, 12.0, 13.0]]])
     mask = torch.ones(1, 2, dtype=torch.bool)
     det_c, _, det_m, matches, _ = detect_and_match(
-        logits, coords, mask, (2, 4, 8, 8), det_threshold=0.5, window_size=2
+        logits, coords, mask, (2, 4, 16, 16), det_threshold=0.5, window_size=2
     )
     assert int(det_m.sum().item()) == 2
     assert matches[0].shape[0] == 2
     found = {tuple(row.tolist()) for row in det_c[0, :2]}
-    assert found == {(1.0, 2.0, 3.0), (2.0, 4.0, 5.0)}
+    assert found == {(1.0, 2.0, 3.0), (2.0, 12.0, 13.0)}
 
 
 def test_detect_and_match_packed_skips_couplings():
-    logits = torch.full((1, 1, 4, 8, 8), -10.0)
+    logits = torch.full((1, 1, 4, 16, 16), -10.0)
     logits[0, 0, 1, 2, 3] = 5.0
-    logits[0, 0, 2, 4, 5] = 5.0
-    coords = torch.tensor([[[1.0, 2.0, 3.0], [2.0, 4.0, 5.0]]])
+    logits[0, 0, 2, 12, 13] = 5.0
+    coords = torch.tensor([[[1.0, 2.0, 3.0], [2.0, 12.0, 13.0]]])
     mask = torch.ones(1, 2, dtype=torch.bool)
     det_c, _, det_m, matches, couplings = detect_and_match(
         logits,
         coords,
         mask,
-        (2, 4, 8, 8),
+        (2, 4, 16, 16),
         det_threshold=0.5,
         window_size=2,
         packed_matches=True,
@@ -198,7 +221,7 @@ def test_detect_and_match_packed_skips_couplings():
     assert couplings == []
     assert int((matches[0, : int(det_m[0].sum())] >= 0).sum()) == 2
     cropped = detect_and_match(
-        logits, coords, mask, (2, 4, 8, 8), det_threshold=0.5, window_size=2
+        logits, coords, mask, (2, 4, 16, 16), det_threshold=0.5, window_size=2
     )[3]
     assert cropped[0].shape[0] == 2
 

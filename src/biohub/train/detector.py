@@ -104,7 +104,13 @@ SCORE_THRESHOLDS = (
     0.99,
     0.997,
 )
-TRAIN_DET_THRESHOLD_MAX = 0.5
+
+
+DEFAULT_DETECT_PEAK_CAP = 256
+PEAK_GT_MULTIPLIER = 2
+PEAK_CAP_MIN = 16
+MIN_RECALL_FOR_COMPETITION = 0.15
+MIN_NODE_RATIO_FOR_COMPETITION = 0.15
 
 
 def score_threshold_key(threshold: float) -> str:
@@ -112,7 +118,7 @@ def score_threshold_key(threshold: float) -> str:
 
 
 def train_det_threshold(val_threshold: float) -> float:
-    return min(float(val_threshold), TRAIN_DET_THRESHOLD_MAX)
+    return float(val_threshold)
 
 
 def _rates(tp: float, fp: float, fn: float) -> tuple[float, float, float, float]:
@@ -215,23 +221,49 @@ def checkpoint_score(metric: str, values: dict[str, float]) -> float:
         raise ValueError(
             f'Unknown checkpoint_metric {metric!r}; expected one of {CHECKPOINT_METRICS}'
         )
-    return float(values[metric])
+    score = float(values[metric])
+    if metric == 'competition_metric':
+        recall = float(values.get('recall', 0.0))
+        node_ratio = float(values.get('node_ratio', 0.0))
+        if recall < MIN_RECALL_FOR_COMPETITION or node_ratio < MIN_NODE_RATIO_FOR_COMPETITION:
+            return -1.0
+    return score
+
+
+def gate_competition_metric(
+    metric: float,
+    *,
+    recall: float,
+    node_ratio: float,
+) -> float:
+    if recall < MIN_RECALL_FOR_COMPETITION or node_ratio < MIN_NODE_RATIO_FOR_COMPETITION:
+        return 0.0
+    return float(metric)
 
 
 def _topk_coords_padded(
     scores: torch.Tensor,
-    k: int,
+    k: int | torch.Tensor,
     min_score: float,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     batch = scores.shape[0]
     spatial = scores.shape[1:]
-    k = min(max(int(k), 0), int(scores[0].numel()))
-    if k <= 0:
+    numel = int(scores[0].numel()) if batch else 0
+    if isinstance(k, torch.Tensor):
+        ks = k.to(device=scores.device, dtype=torch.long).clamp(min=0, max=numel)
+        k_max = int(ks.max().item()) if batch else 0
+    else:
+        k_max = min(max(int(k), 0), numel)
+        ks = None
+    if k_max <= 0:
         coords = scores.new_zeros(batch, 0, 3)
         keep = torch.zeros(batch, 0, dtype=torch.bool, device=scores.device)
         return coords, keep
-    vals, idx = torch.topk(scores.reshape(batch, -1), k, dim=1)
+    vals, idx = torch.topk(scores.reshape(batch, -1), k_max, dim=1)
     keep = vals > min_score
+    if ks is not None:
+        rank = torch.arange(k_max, device=scores.device).unsqueeze(0)
+        keep = keep & (rank < ks.unsqueeze(1))
     coords = torch.stack(torch.unravel_index(idx, spatial), dim=-1).to(dtype=torch.float32)
     return coords.masked_fill(~keep.unsqueeze(-1), 0), keep
 
@@ -282,6 +314,7 @@ def detect_and_match(
     sinkhorn_tau: float = 0.1,
     sinkhorn_iters: int = 20,
     train_peak_topk: int = 0,
+    peak_gt_multiplier: int = 0,
     gt_counts: list[int] | None = None,
     return_couplings: bool = True,
     packed_matches: bool = False,
@@ -320,12 +353,14 @@ def detect_and_match(
     with torch.no_grad():
         logits = det_logits[:, 0].float()
         probs = torch.sigmoid(logits)
-        pooled = F.max_pool3d(logits.unsqueeze(1), pool_kernel, stride=1, padding=pad)[:, 0]
-        local = _local_max_mask(logits, (3, 3, 3), (1, 1, 1))
-        is_peak = local & (logits == pooled) & (probs > det_threshold)
-        # Prediction budget must not depend on GT count/padding or batch composition.
-        cap = max(512, int(train_peak_topk))
-        peak_coords, peak_keep = _topk_coords_padded(probs.masked_fill(~is_peak, -1.0), cap, 0.0)
+        is_peak = _local_max_mask(logits, pool_kernel, pad) & (probs > det_threshold)
+        if train_peak_topk > 0:
+            caps: int | torch.Tensor = max(1, int(train_peak_topk))
+        elif int(peak_gt_multiplier) > 0:
+            caps = (int(peak_gt_multiplier) * gt_n).clamp_min(0)
+        else:
+            caps = is_peak.reshape(B, -1).sum(dim=1).to(dtype=torch.long)
+        peak_coords, peak_keep = _topk_coords_padded(probs.masked_fill(~is_peak, -1.0), caps, 0.0)
         if train_peak_topk > 0:
             extra_c, extra_k = _topk_coords_padded(
                 probs.masked_fill(is_peak, -1.0), int(train_peak_topk), 0.0
@@ -547,6 +582,7 @@ def _window_detections(
     sinkhorn_tau: float,
     sinkhorn_iters: int,
     train_peak_topk: int,
+    peak_gt_multiplier: int = 0,
     match_soft: bool = False,
 ) -> tuple[
     torch.Tensor,
@@ -591,6 +627,7 @@ def _window_detections(
         sinkhorn_tau=sinkhorn_tau,
         sinkhorn_iters=sinkhorn_iters,
         train_peak_topk=train_peak_topk,
+        peak_gt_multiplier=peak_gt_multiplier,
         return_couplings=match_soft,
         packed_matches=True,
     )
@@ -714,8 +751,10 @@ def train_epoch(
                     if heatmap_batch is None
                     else heatmap_batch.reshape(flat, *heatmap_batch.shape[2:])
                 ),
+                images=imgs.reshape(flat, *imgs.shape[2:]),
             )
 
+            edge_use_gt = use_gt
             det_c, det_p, det_m, matches_w, feat, couplings_w = _window_detections(
                 model,
                 unet_out,
@@ -734,6 +773,26 @@ def train_epoch(
                 train_peak_topk=train_peak_topk,
                 match_soft=match_soft,
             )
+            if (not use_gt) and int(det_m.sum().item()) == 0:
+                edge_use_gt = True
+                det_c, det_p, det_m, matches_w, feat, couplings_w = _window_detections(
+                    model,
+                    unet_out,
+                    det_stack,
+                    coords,
+                    masks,
+                    image_shape,
+                    voxel_size,
+                    use_gt=True,
+                    det_threshold=det_threshold,
+                    pool_kernel_um=pool_kernel_um,
+                    max_match_distance=max_match_distance,
+                    match_assign=match_assign,
+                    sinkhorn_tau=sinkhorn_tau,
+                    sinkhorn_iters=sinkhorn_iters,
+                    train_peak_topk=train_peak_topk,
+                    match_soft=match_soft,
+                )
 
             aux_div = []
             aux_con = []
@@ -762,7 +821,7 @@ def train_epoch(
                         src_feat, tgt_feat, src_c, tgt_c, src_p, tgt_p, src_m, tgt_m
                     )
                 pair_target = _pair_edge_targets(
-                    use_gt=use_gt,
+                    use_gt=edge_use_gt,
                     match_soft=match_soft,
                     matches_w=matches_w,
                     targets=targets,
@@ -863,9 +922,9 @@ def select_best_threshold_metrics(
     thresholds: tuple[float, ...] = SCORE_THRESHOLDS,
 ) -> dict[str, float]:
     best_index = 0
-    best_score = sweep[0]['competition_metric']
+    best_score = checkpoint_score('competition_metric', sweep[0])
     for index in range(1, len(sweep)):
-        score = sweep[index]['competition_metric']
+        score = checkpoint_score('competition_metric', sweep[index])
         if score >= best_score:
             best_score = score
             best_index = index
@@ -908,6 +967,8 @@ def _eval_metrics(
         num_pred_nodes=num_pred_nodes,
         n_total=gt_total,
     )
+    node_ratio = num_pred_nodes / max(gt_total, 1)
+    metric = gate_competition_metric(metric, recall=node_recall, node_ratio=node_ratio)
     edge_p, edge_r, edge_f1, edge_j = _rates(edge_tp, edge_fp, edge_fn)
     div_p, div_r, div_f1, div_j = _rates(division_tp, division_fp, division_fn)
     return {
@@ -926,7 +987,7 @@ def _eval_metrics(
         'division_f1': div_f1,
         'division_jaccard': div_j,
         'det_precision': det_precision,
-        'node_ratio': num_pred_nodes / max(gt_total, 1),
+        'node_ratio': node_ratio,
         'edge_tp': float(edge_tp),
         'edge_fp': float(edge_fp),
         'edge_fn': float(edge_fn),
@@ -961,6 +1022,7 @@ def _eval_encoded_window(
     sinkhorn_tau: float,
     sinkhorn_iters: int,
     train_peak_topk: int,
+    peak_gt_multiplier: int = 0,
     cast_dtype: torch.dtype | None,
     autocast_on: bool,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, int]:
@@ -980,6 +1042,7 @@ def _eval_encoded_window(
         sinkhorn_tau=sinkhorn_tau,
         sinkhorn_iters=sinkhorn_iters,
         train_peak_topk=train_peak_topk,
+        peak_gt_multiplier=peak_gt_multiplier,
         match_soft=match_soft,
     )
     assert matches_w is not None
@@ -1058,7 +1121,8 @@ def evaluate(
         'match_soft': match_soft,
         'sinkhorn_tau': sinkhorn_tau,
         'sinkhorn_iters': sinkhorn_iters,
-        'train_peak_topk': train_peak_topk,
+        'train_peak_topk': 0,
+        'peak_gt_multiplier': PEAK_GT_MULTIPLIER,
         'cast_dtype': dtype,
         'autocast_on': autocast_on,
     }
@@ -1085,7 +1149,7 @@ def evaluate(
                 image_shape,
                 voxel_size,
                 det_threshold=threshold,
-                edge_threshold=threshold,
+                edge_threshold=edge_threshold,
                 **window_kw,
             )
             sweep_pair[index] += stats
@@ -1124,6 +1188,7 @@ def train(
     unet_out_channels: int = 32,
     unet_layers: list[int] | None = None,
     unet_weights: Path | None = None,
+    init_checkpoint: Path | None = None,
     downsample: tuple[int, ...] = (1, 4, 4),
     det_loss_weight: float = 1e1,
     det_neg_weight: float = 1e-2,
@@ -1379,6 +1444,9 @@ def train(
         (output_dir / 'config.json').write_text(json.dumps(model_config, indent=2) + '\n')
 
         dataset_seed = int(seed) if seed is not None else 0
+        heatmap_sigma = (
+            float(det_heatmap_sigma) if det_loss in ('gaussian_heatmap', 'pu_heatmap') else None
+        )
         train_ds = FrameWindowDataset(
             train_video_data,
             max_nodes=max_nodes,
@@ -1386,6 +1454,7 @@ def train(
             seed=dataset_seed,
             batch_padding=batch_padding,
             frame_cache_mb=frame_cache_mb,
+            heatmap_sigma=heatmap_sigma,
         )
         test_ds = FrameWindowDataset(
             test_video_data,
@@ -1393,6 +1462,7 @@ def train(
             seed=dataset_seed,
             batch_padding=batch_padding,
             frame_cache_mb=frame_cache_mb,
+            heatmap_sigma=heatmap_sigma,
         )
         g = dataloader_generator(seed)
         worker_init_fn = seed_worker if num_workers > 0 else None
@@ -1510,6 +1580,14 @@ def train(
 
         n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
         print(f'Model parameters: {n_params:,}', flush=True)
+        if init_checkpoint is not None:
+            state = torch.load(init_checkpoint, map_location=train_device, weights_only=True)
+            missing, unexpected = model.load_state_dict(state, strict=False)
+            print(
+                f'Init checkpoint {init_checkpoint}: '
+                f'{len(missing)} missing, {len(unexpected)} unexpected',
+                flush=True,
+            )
 
         optimizer = build_optimizer(model, name=optimizer_name, lr=lr, weight_decay=weight_decay)
         lr_sched = build_scheduler(
@@ -1608,7 +1686,9 @@ def train(
             test_time = time.monotonic() - t0
 
             score = checkpoint_score(checkpoint_metric, metrics)
-            is_best = score >= best_score
+            is_best = score > best_score and (
+                checkpoint_metric != 'competition_metric' or score >= 0.0
+            )
 
             if is_best:
                 best_score = score
@@ -1946,6 +2026,7 @@ def train_from_config(
             unet_out_channels=int(cfg.get('unet_out_channels', 32)),
             unet_layers=unet_layers,
             unet_weights=unet_weights,
+            init_checkpoint=(Path(cfg['init_checkpoint']) if cfg.get('init_checkpoint') else None),
             downsample=downsample,
             det_loss_weight=float(cfg.get('det_loss_weight', 1.0)),
             det_neg_weight=float(cfg.get('det_neg_weight', 0.01)),
@@ -2010,6 +2091,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument('--unet-out-channels', type=int, default=32)
     parser.add_argument('--unet-layers', type=str, default='32,64,128')
     parser.add_argument('--unet-weights', type=str, default=None)
+    parser.add_argument('--init-checkpoint', type=str, default=None)
     parser.add_argument('--downsample', type=str, default='1,4,4')
     parser.add_argument('--det-loss-weight', type=float, default=1e0)
     parser.add_argument('--det-neg-weight', type=float, default=1e-2)

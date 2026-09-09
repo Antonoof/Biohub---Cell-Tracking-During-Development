@@ -9,7 +9,7 @@ from biohub.train.schedule import normalize_amp
 ENUMS = {
     'checkpoint_metric': None,
     'edge_loss': ('focal_softmax', 'ce_softmax', 'asl_softmax'),
-    'det_loss': ('weighted_bce', 'focal', 'gaussian_heatmap'),
+    'det_loss': ('weighted_bce', 'focal', 'gaussian_heatmap', 'pu_bce', 'pu_heatmap'),
     'target_mode': ('matched_det', 'gt_nodes', 'mixed'),
     'optimizer': ('adamw', 'adam', 'sgd', 'adan', 'adamp', 'muonwithauxadam'),
     'scheduler': ('none', 'cosine', 'cosine_warmup'),

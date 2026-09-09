@@ -1,3 +1,4 @@
+import pytest
 import torch
 
 from biohub.losses.association import association_loss, compute_batch_loss, compute_loss
@@ -61,6 +62,31 @@ def test_gaussian_heatmap_does_not_prefer_background_collapse() -> None:
     assert float(detection_loss('gaussian_heatmap', peaked, coords, mask)) < float(
         detection_loss('gaussian_heatmap', collapsed, coords, mask)
     )
+
+
+def test_pu_bce_weights_dark_background_more_than_uncertain() -> None:
+    from biohub.losses.detection import pu_loss_weights
+
+    images = torch.zeros(1, 4, 4, 4)
+    images[0, :, :, :2] = 0.0
+    images[0, :, :, 2:] = 1.0
+    target = torch.zeros(1, 4, 4, 4)
+    target[0, 1, 1, 1] = 1.0
+    weights = pu_loss_weights(images, target, positive_threshold=0.5)
+    assert float(weights[0, 1, 1, 1]) == pytest.approx(12.0)
+    assert float(weights[0, 0, 0, 0]) == pytest.approx(1.0)
+    assert float(weights[0, 0, 0, 3]) == pytest.approx(0.05)
+
+
+def test_pu_heatmap_requires_images_and_is_finite() -> None:
+    coords = torch.tensor([[[2.0, 2.0, 2.0]]])
+    mask = torch.ones(1, 1, dtype=torch.bool)
+    logits = torch.zeros(1, 1, 5, 5, 5)
+    images = torch.rand(1, 5, 5, 5)
+    loss = detection_loss('pu_heatmap', logits, coords, mask, images=images)
+    assert torch.isfinite(loss).all()
+    with pytest.raises(ValueError, match='requires images'):
+        detection_loss('pu_bce', logits, coords, mask)
 
 
 def test_aux_zero_weight_does_not_change_total() -> None:
