@@ -920,17 +920,18 @@ def train_epoch(
 def select_best_threshold_metrics(
     sweep: list[dict[str, float]],
     thresholds: tuple[float, ...] = SCORE_THRESHOLDS,
+    metric: str = 'acc_times_recall',
 ) -> dict[str, float]:
     best_index = 0
-    best_score = checkpoint_score('competition_metric', sweep[0])
+    best_score = checkpoint_score(metric, sweep[0])
     for index in range(1, len(sweep)):
-        score = checkpoint_score('competition_metric', sweep[index])
+        score = checkpoint_score(metric, sweep[index])
         if score >= best_score:
             best_score = score
             best_index = index
     metrics = dict(sweep[best_index])
     for index, threshold in enumerate(thresholds):
-        metrics[score_threshold_key(threshold)] = sweep[index]['competition_metric']
+        metrics[score_threshold_key(threshold)] = sweep[index][metric]
     metrics['score_threshold'] = float(thresholds[best_index])
     return metrics
 
@@ -1104,6 +1105,7 @@ def evaluate(
     sinkhorn_iters: int = 20,
     train_peak_topk: int = 0,
     amp_kind: str = 'off',
+    threshold_metric: str = 'acc_times_recall',
 ) -> dict[str, float]:
     model.eval()
     n_th = len(SCORE_THRESHOLDS)
@@ -1169,7 +1171,7 @@ def evaluate(
         )
         for index in range(n_th)
     ]
-    metrics = select_best_threshold_metrics(sweep_rows, SCORE_THRESHOLDS)
+    metrics = select_best_threshold_metrics(sweep_rows, SCORE_THRESHOLDS, metric=threshold_metric)
     metrics['det_threshold'] = float(det_threshold)
     metrics['edge_threshold'] = float(edge_threshold)
     return metrics
@@ -1206,7 +1208,7 @@ def train(
     dropout: float = 0.3,
     weight_decay: float = 0.01,
     overwrite: bool = False,
-    checkpoint_metric: str = 'competition_metric',
+    checkpoint_metric: str = 'acc_times_recall',
     patience: int = 0,
     det_threshold: float = 0.5,
     max_match_distance: float = 5.0,
@@ -1444,9 +1446,7 @@ def train(
         (output_dir / 'config.json').write_text(json.dumps(model_config, indent=2) + '\n')
 
         dataset_seed = int(seed) if seed is not None else 0
-        heatmap_sigma = (
-            float(det_heatmap_sigma) if det_loss in ('gaussian_heatmap', 'pu_heatmap') else None
-        )
+        heatmap_sigma = float(det_heatmap_sigma)
         train_ds = FrameWindowDataset(
             train_video_data,
             max_nodes=max_nodes,
@@ -1682,6 +1682,7 @@ def train(
                 sinkhorn_iters=sinkhorn_iters,
                 train_peak_topk=0,
                 amp_kind=amp,
+                threshold_metric=checkpoint_metric,
             )
             test_time = time.monotonic() - t0
 
@@ -1722,21 +1723,24 @@ def train(
                 edge=f'{train_edge_loss:.4f}',
                 det=f'{train_det_loss:.4f}',
                 acc=f'{metrics["acc"]:.4f}',
-                comp=(f'{metrics["competition_metric"]:.4f}@{metrics["score_threshold"]:g}'),
+                ej=f'{metrics["edge_jaccard"]:.4f}',
+                score=(f'{metrics[checkpoint_metric]:.4f}@{metrics["score_threshold"]:g}'),
             )
             print(
                 f'  Epoch {epoch:3d}/{n_epochs} | edge={train_edge_loss:.4f} | '
                 f'det={train_det_loss:.4f} | '
                 f'test_loss={metrics["loss"]:.4f} | acc={metrics["acc"]:.4f} | '
                 f'recall={metrics["recall"]:.4f} | '
-                f'competition={metrics["competition_metric"]:.4f}'
+                f'acc_times_recall={metrics["acc_times_recall"]:.4f}'
                 f'@{metrics["score_threshold"]:g} | '
+                f'edge_jaccard={metrics["edge_jaccard"]:.4f} | '
+                f'competition={metrics["competition_metric"]:.4f} | '
                 f'{checkpoint_metric}={score:.4f} | best={best_score:.4f} {marker} | '
                 f'train={train_time:.1f}s test={test_time:.1f}s',
                 flush=True,
             )
             print(
-                '    competition_th '
+                f'    {checkpoint_metric}_th '
                 + ' '.join(
                     f'{threshold:g}={metrics[score_threshold_key(threshold)]:.4f}'
                     for threshold in SCORE_THRESHOLDS
@@ -1761,9 +1765,7 @@ def train(
         if best_metrics is not None:
             (output_dir / 'metrics.json').write_text(json.dumps(best_metrics, indent=2) + '\n')
         print(
-            f'\nBest {checkpoint_metric}: {best_score:.4f}, saved to {save_path}. '
-            'Window competition_metric is a proxy; promotion requires official evaluate '
-            'on a disjoint panel.',
+            f'\nBest {checkpoint_metric}: {best_score:.4f}, saved to {save_path}.',
             flush=True,
         )
         writer.close()
@@ -2044,7 +2046,7 @@ def train_from_config(
             weight_decay=float(cfg.get('weight_decay', 0.01)),
             augmentations=_augmentations_from_cfg(cfg),
             overwrite=bool(cfg.get('overwrite', False)),
-            checkpoint_metric=str(cfg.get('checkpoint_metric', 'competition_metric')),
+            checkpoint_metric=str(cfg.get('checkpoint_metric', 'acc_times_recall')),
             patience=int(cfg.get('patience', 0)),
             det_threshold=float(cfg.get('det_threshold', 0.5)),
             max_match_distance=float(cfg.get('max_match_distance', 5.0)),
@@ -2117,7 +2119,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         '--checkpoint-metric',
         choices=list(CHECKPOINT_METRICS),
-        default='competition_metric',
+        default='acc_times_recall',
     )
     parser.add_argument('--patience', type=int, default=0)
     parser.add_argument('--det-threshold', type=float, default=0.5)

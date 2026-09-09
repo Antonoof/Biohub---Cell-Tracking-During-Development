@@ -37,7 +37,7 @@ max_iters: null
 debug_video: null
 max_frames: null
 unet_weights: null
-checkpoint_metric: competition_metric
+checkpoint_metric: acc_times_recall
 patience: 0
 det_threshold: 0.5
 max_match_distance: 5.0

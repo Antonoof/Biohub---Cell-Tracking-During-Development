@@ -143,7 +143,7 @@ FIXED_TRAIN_KEYS = {
     'n_folds': 5,
     'seed': 42,
     'patience': 5,
-    'checkpoint_metric': 'competition_metric',
+    'checkpoint_metric': 'acc_times_recall',
     'batch_size': 16,
     'accum_steps': 1,
     'grad_clip_norm': 2.0,
@@ -246,7 +246,7 @@ def sample_search_params(trial: TrialLike) -> dict[str, Any]:
     drop_path = trial.suggest_float('drop_path', 0.0, 0.2)
     warmup_epochs = trial.suggest_int('warmup_epochs', 2, 5)
     params: dict[str, Any] = {
-        'epochs': trial.suggest_int('epochs', 10, 50),
+        'epochs': trial.suggest_int('epochs', 5, 30),
         'optimizer': optimizer,
         'lr': _suggest_lr(trial, optimizer),
         'weight_decay': _suggest_weight_decay(trial, optimizer),
@@ -380,7 +380,7 @@ def apply_search_params(params: dict[str, Any]) -> dict[str, Any]:
 
 def params_from_config(cfg: dict[str, Any]) -> dict[str, Any]:
     params: dict[str, Any] = {
-        'epochs': min(50, max(10, int(cfg.get('epochs', 50)))),
+        'epochs': min(30, max(5, int(cfg.get('epochs', 30)))),
         'optimizer': str(cfg.get('optimizer', 'adamw')),
         'lr': float(cfg.get('lr', 1e-4)),
         'weight_decay': float(cfg.get('weight_decay', 0.01)),
@@ -497,7 +497,7 @@ def params_from_config(cfg: dict[str, Any]) -> dict[str, Any]:
 
 def seed_trial_params(cfg: dict[str, Any]) -> dict[str, Any]:
     params = params_from_config(cfg)
-    params['det_loss'] = 'weighted_bce'
+    params['det_loss'] = 'gaussian_heatmap'
     params['det_heatmap_sigma'] = 1.0
     params['det_neg_weight'] = 0.01
     params['det_loss_weight'] = 1.0
@@ -551,11 +551,15 @@ def pooled_oof_score(trial_dir: Path, n_folds: int = 5) -> tuple[float, dict[str
     )
     acc = totals['pair_correct'] / max(totals['pair_total'], 1.0)
     recall = totals['gt_matched'] / max(totals['gt_total'], 1.0)
+    edge_denom = totals['edge_tp'] + totals['edge_fp'] + totals['edge_fn']
+    edge_jaccard = totals['edge_tp'] / edge_denom if edge_denom > 0.0 else 0.0
+    score = acc * recall
     bundled = {
-        'oof': competition,
+        'oof': score,
         'competition_metric': competition,
-        'acc_times_recall': acc * recall,
+        'acc_times_recall': score,
+        'edge_jaccard': edge_jaccard,
         **totals,
         **{f'fold{fold}_{key}': row[key] for fold, row in enumerate(folds) for key in row},
     }
-    return float(competition), bundled
+    return float(score), bundled

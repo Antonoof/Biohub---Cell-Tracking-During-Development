@@ -85,7 +85,7 @@ def test_apply_search_params_derives_conditionals() -> None:
     assert overlay['frame_cache_mb'] == 256.0
     assert overlay['batch_padding'] is True
     assert overlay['pair_chunk_size'] == 512
-    assert overlay['checkpoint_metric'] == 'competition_metric'
+    assert overlay['checkpoint_metric'] == 'acc_times_recall'
     assert overlay['det_threshold'] == pytest.approx(MSNT_TRAIN_DET_PROB)
     assert overlay['edge_threshold'] == 0.5
     assert 0.5 in SCORE_THRESHOLDS
@@ -157,8 +157,10 @@ def test_pooled_oof_sums_fold_counts(tmp_path: Path) -> None:
     assert bundled['pair_correct'] == 50.0
     assert bundled['pair_total'] == 100.0
     assert bundled['acc_times_recall'] == 0.2
-    assert bundled['competition_metric'] == score
-    assert score > 0.0
+    assert bundled['acc_times_recall'] == score
+    assert bundled['competition_metric'] > 0.0
+    assert bundled['edge_jaccard'] == pytest.approx(50.0 / 60.0)
+    assert score == 0.2
 
 
 def test_optuna_enqueues_p1_params() -> None:
@@ -182,7 +184,7 @@ def test_seed_trial_params_matches_yaml() -> None:
     yaml_params = params_from_config(load_base_config())
     seed = seed_trial_params(load_base_config())
     assert yaml_params['det_loss'] == 'weighted_bce'
-    assert seed['det_loss'] == 'weighted_bce'
+    assert seed['det_loss'] == 'gaussian_heatmap'
     assert seed['det_heatmap_sigma'] == pytest.approx(1.0)
     assert seed['det_neg_weight'] == pytest.approx(0.01)
     assert seed['det_loss_weight'] == pytest.approx(1.0)
@@ -198,7 +200,8 @@ def test_optuna_enqueues_yaml_seed() -> None:
 
     def objective(trial: optuna.Trial) -> float:
         params = sample_search_params(trial)
-        assert params['det_loss'] == 'weighted_bce'
+        assert params['det_loss'] == 'gaussian_heatmap'
+        assert params['det_heatmap_sigma'] == pytest.approx(1.0)
         assert params['det_neg_weight'] == pytest.approx(0.01)
         assert params['det_loss_weight'] == pytest.approx(1.0)
         return 0.0
@@ -357,10 +360,12 @@ def test_evaluate_logs_competition_thresholds() -> None:
         torch.device('cpu'),
         det_threshold=0.97,
         edge_threshold=0.5,
+        threshold_metric='acc_times_recall',
     )
     scores = [metrics[score_threshold_key(threshold)] for threshold in SCORE_THRESHOLDS]
-    assert metrics['competition_metric'] == max(scores)
-    assert metrics['competition_metric'] == metrics[score_threshold_key(metrics['score_threshold'])]
+    assert metrics['acc_times_recall'] == max(scores)
+    assert metrics['acc_times_recall'] == metrics[score_threshold_key(metrics['score_threshold'])]
+    assert 'edge_jaccard' in metrics
     assert metrics['det_threshold'] == 0.97
     assert metrics['edge_threshold'] == 0.5
 
@@ -368,6 +373,7 @@ def test_evaluate_logs_competition_thresholds() -> None:
 def test_select_best_threshold_metrics_uses_peak_then_higher_threshold() -> None:
     def item(score: float) -> dict[str, float]:
         return {
+            'acc_times_recall': score,
             'competition_metric': score,
             'acc': score,
             'num_pred_nodes': 1.0,
@@ -378,8 +384,9 @@ def test_select_best_threshold_metrics_uses_peak_then_higher_threshold() -> None
     metrics = select_best_threshold_metrics(
         [item(0.0), item(0.2), item(1.1), item(1.1), item(0.5)],
         (0.1, 0.5, 0.6, 0.7, 0.97),
+        metric='acc_times_recall',
     )
-    assert metrics['competition_metric'] == 1.1
+    assert metrics['acc_times_recall'] == 1.1
     assert metrics['score_threshold'] == 0.7
     assert metrics[score_threshold_key(0.5)] == 0.2
     assert metrics[score_threshold_key(0.6)] == 1.1
@@ -391,6 +398,7 @@ def test_select_best_threshold_rejects_collapsed_recall() -> None:
     rows = [
         {
             'competition_metric': 1.1,
+            'acc_times_recall': 0.01,
             'recall': 0.01,
             'node_ratio': 0.01,
             'acc': 1.0,
@@ -398,14 +406,15 @@ def test_select_best_threshold_rejects_collapsed_recall() -> None:
         },
         {
             'competition_metric': 0.4,
+            'acc_times_recall': 0.18,
             'recall': 0.2,
             'node_ratio': 1.1,
             'acc': 0.9,
             'num_pred_nodes': 10.0,
         },
     ]
-    metrics = select_best_threshold_metrics(rows, (0.5, 0.9))
-    assert metrics['competition_metric'] == 0.4
+    metrics = select_best_threshold_metrics(rows, (0.5, 0.9), metric='acc_times_recall')
+    assert metrics['acc_times_recall'] == 0.18
     assert metrics['score_threshold'] == 0.9
     assert metrics['recall'] == 0.2
 
@@ -641,14 +650,14 @@ def test_search_window_and_epoch_bounds() -> None:
     high = sample_search_params(_LastTrial())
     assert low['window_size'] == 2
     assert high['window_size'] == 4
-    assert low['epochs'] == 10
-    assert high['epochs'] == 50
+    assert low['epochs'] == 5
+    assert high['epochs'] == 30
     p1 = params_from_config(load_base_config())
     assert p1['window_size'] == 2
-    assert p1['epochs'] == 50
+    assert p1['epochs'] == 30
     overlay = apply_search_params(high)
     assert overlay['window_size'] == 4
-    assert overlay['epochs'] == 50
+    assert overlay['epochs'] == 30
 
 
 def test_search_window_size_five_train_step() -> None:
