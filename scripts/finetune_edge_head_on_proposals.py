@@ -40,11 +40,11 @@ from biohub_tracking.models import TemporalUNet3D
 
 def parse_args():
     p = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    p.add_argument("--repo", type=Path, default=Path("/home/tweak/bio_track_repo"))
-    p.add_argument("--data", type=Path, default=Path("/home/tweak/bio/train"))
+    p.add_argument("--repo", type=Path, default=Path("external/bio_track_repo"))
+    p.add_argument("--data", type=Path, default=Path("data/train"))
     p.add_argument("--proposals", type=Path, required=True,
                    help="Extracted biohub_ab_proposals directory")
-    p.add_argument("--splits", type=Path, default=Path("/home/tweak/bio/splits_ensembleB.json"))
+    p.add_argument("--splits", type=Path, default=Path("data/splits_ensembleB.json"))
     p.add_argument("--fold", type=int, default=0)
     p.add_argument("--init-weights", type=Path, required=True,
                    help="Existing model B edge_predictor_best.pth")
@@ -53,7 +53,7 @@ def parse_args():
                    help="Frozen model A edge_predictor_best.pth")
     p.add_argument("--anchor-config", type=Path, default=None)
     p.add_argument("--output", type=Path,
-                   default=Path("/home/tweak/bio_track_repo/weights/unet_transformer_b2_proposals/split_1"))
+                   default=Path("external/bio_track_repo/weights/unet_transformer_b2_proposals/split_1"))
     p.add_argument("--epochs", type=int, default=15)
     p.add_argument("--steps-per-epoch", type=int, default=750)
     p.add_argument("--batch-size", type=int, default=2)

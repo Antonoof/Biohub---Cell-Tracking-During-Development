@@ -27,9 +27,9 @@ RUNTIME_DROP={"det_src","det_tgt","det_disagree_src","det_disagree_tgt","frozen"
 
 def argspec():
  p=argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
- p.add_argument("--data",type=Path,default=Path('/home/tweak/bio/train'));p.add_argument("--proposals",type=Path,default=Path('/home/tweak/bio/ab_proposals_export/biohub_ab_proposals'))
- p.add_argument("--splits",type=Path,default=Path('/home/tweak/bio/splits_ensembleB.json'));p.add_argument("--cache",type=Path,default=Path('/home/tweak/bio/motion_cost_cache'))
- p.add_argument("--output",type=Path,default=Path('/home/tweak/bio_track_repo/weights/motion_cost_corrector'));p.add_argument("--tight",type=float,default=6.2);p.add_argument("--relaxed",type=float,default=9.5)
+ p.add_argument("--data",type=Path,default=Path('data/train'));p.add_argument("--proposals",type=Path,default=Path('data/ab_proposals_export/biohub_ab_proposals'))
+ p.add_argument("--splits",type=Path,default=Path('data/splits_ensembleB.json'));p.add_argument("--cache",type=Path,default=Path('data/motion_cost_cache'))
+ p.add_argument("--output",type=Path,default=Path('external/bio_track_repo/weights/motion_cost_corrector'));p.add_argument("--tight",type=float,default=6.2);p.add_argument("--relaxed",type=float,default=9.5)
  p.add_argument("--velocity-weight",type=float,default=.52);p.add_argument("--residual-scale",type=float,default=2.0);p.add_argument("--epochs",type=int,default=40);p.add_argument("--batch-size",type=int,default=8192)
  p.add_argument("--lr",type=float,default=2e-3);p.add_argument("--patience",type=int,default=7);p.add_argument("--negative-ratio",type=int,default=20);p.add_argument("--seed",type=int,default=2028);p.add_argument("--rebuild-cache",action='store_true');p.add_argument("--max-videos",type=int,default=0);p.add_argument("--device",default='cuda:0')
  return p.parse_args()

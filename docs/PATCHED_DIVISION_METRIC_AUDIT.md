@@ -23,7 +23,7 @@ evaluator is now the only authoritative local division gate.
 ## Reproducibility
 
 - Official repository checkout:
-  `/home/tweak/bio/kaggle-cell-tracking-competition-patched`
+  `data/kaggle-cell-tracking-competition-patched`
 - Evaluated commit:
   `075fc5f5a52d11077f9dc2b074644618f26939e2`
 - Division patch commit:
@@ -52,7 +52,7 @@ under the patched definition.
 ## Exact 24-video division-rich panel
 
 The saved final V2 graphs in
-`/home/tweak/bio/v3_v2_final_state_replay_positive24/v2_final_shards` were
+`data/v3_v2_final_state_replay_positive24/v2_final_shards` were
 converted to GEFF and evaluated with both versions of the official package.
 
 | Metric version | Adjusted edge | Division TP/FP/FN | Division Jaccard | Combined score |
@@ -135,6 +135,6 @@ frozen and unchanged.
 Reproducibility:
 
 - Trainer/screen: `scripts/train_patch_aware_fork_selector.py`
-- Graph-only output: `/home/tweak/bio/patch_aware_fork_selector_screen_v1`
-- V2 runtime-feature output: `/home/tweak/bio/patch_aware_fork_selector_screen_v2`
-- Downstream-branch output: `/home/tweak/bio/patch_aware_fork_selector_screen_v3`
+- Graph-only output: `data/patch_aware_fork_selector_screen_v1`
+- V2 runtime-feature output: `data/patch_aware_fork_selector_screen_v2`
+- Downstream-branch output: `data/patch_aware_fork_selector_screen_v3`

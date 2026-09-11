@@ -225,9 +225,9 @@ Reproduction script:
 
 Generated outputs:
 
-`/home/tweak/bio/model_c_early_triplet_t24_test`
+`data/model_c_early_triplet_t24_test`
 
-`/home/tweak/bio/model_c_combined_931_local`
+`data/model_c_combined_931_local`
 
 ## Full-population mapping and coupled-rescue audit
 
@@ -300,11 +300,11 @@ promotion. The submitted `.931` notebook and artifact remain unchanged.
 
 Reproduction outputs:
 
-`/home/tweak/bio/model_c_combined_primary_rewire_indmap6_held20_sweep`
+`data/model_c_combined_primary_rewire_indmap6_held20_sweep`
 
-`/home/tweak/bio/model_c_combined_rescue_v2_smoke_c502`
+`data/model_c_combined_rescue_v2_smoke_c502`
 
-`/home/tweak/bio/model_c_combined_rescue_v2_panel4`
+`data/model_c_combined_rescue_v2_panel4`
 
 ## V2 / combined / NULL arbiter: promoted by exact graph replay
 
@@ -369,15 +369,15 @@ Training script:
 
 Generated outputs:
 
-`/home/tweak/bio/model_c_v2_arbiter_v1`
+`data/model_c_v2_arbiter_v1`
 
-`/home/tweak/bio/model_c_v2_arbiter_exact_smoke_c502`
+`data/model_c_v2_arbiter_exact_smoke_c502`
 
 Exact paired summaries:
 
-`/home/tweak/bio/model_c_v2_arbiter_exact_smoke_c502/exact_metric_held20/summary.json`
+`data/model_c_v2_arbiter_exact_smoke_c502/exact_metric_held20/summary.json`
 
-`/home/tweak/bio/model_c_combined_primary_held20_exact/exact_metric_held20/summary.json`
+`data/model_c_combined_primary_held20_exact/exact_metric_held20/summary.json`
 
 ## Reproducibility
 
@@ -387,8 +387,8 @@ Audit script:
 
 Generated outputs:
 
-`/home/tweak/bio/model_c_v2_nine_event_trace/summary.json`
+`data/model_c_v2_nine_event_trace/summary.json`
 
-`/home/tweak/bio/model_c_v2_nine_event_trace/trace.json`
+`data/model_c_v2_nine_event_trace/trace.json`
 
-`/home/tweak/bio/model_c_v2_nine_event_trace/trace.csv`
+`data/model_c_v2_nine_event_trace/trace.csv`

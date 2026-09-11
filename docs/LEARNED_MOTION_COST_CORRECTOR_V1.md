@@ -156,10 +156,10 @@ without a hidden-score regression, and it remains integrated in the current
 The original local training implementation and primary evidence remain at:
 
 ```text
-/home/tweak/bio_track_repo/scripts/train_motion_cost_corrector.py
-/home/tweak/bio_track_repo/train_motion_corrector_20260712_172831.log
-/home/tweak/bio_track_repo/weights/motion_cost_corrector_runtime_safe/motion_corrector_best.pt
-C:/Users/sk8fu/Documents/Codex/2026-07-01/c/outputs/learned_motion_results_20260712/local_gt_eval.csv
+external/bio_track_repo/scripts/train_motion_cost_corrector.py
+external/bio_track_repo/train_motion_corrector_20260712_172831.log
+external/bio_track_repo/weights/motion_cost_corrector_runtime_safe/motion_corrector_best.pt
+./outputs/learned_motion_results_20260712/local_gt_eval.csv
 ```
 
 ## Artifact integrity
@@ -173,7 +173,7 @@ SHA-256 of the documented runtime-safe checkpoint:
 Verified locally against:
 
 ```text
-/home/tweak/bio_track_repo/weights/motion_cost_corrector_runtime_safe/motion_corrector_best.pt
+external/bio_track_repo/weights/motion_cost_corrector_runtime_safe/motion_corrector_best.pt
 ```
 
 ## Limitations

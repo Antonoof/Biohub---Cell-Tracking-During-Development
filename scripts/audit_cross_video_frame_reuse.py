@@ -6,8 +6,8 @@ import numpy as np
 import zarr
 from tqdm import tqdm
 
-ROOT=Path('/home/tweak/bio/train')
-OUT=Path('/home/tweak/bio/cross_video_frame_reuse_audit.json')
+ROOT=Path('data/train')
+OUT=Path('data/cross_video_frame_reuse_audit.json')
 exact=defaultdict(list)
 projection=defaultdict(list)
 videos=sorted(ROOT.glob('*.zarr'))

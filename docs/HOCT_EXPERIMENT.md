@@ -20,8 +20,8 @@ the four-practice-video exact graph replay.
 
 ## Official model
 
-- Repository: `C:\Kaggle\hoct`
-- Checkpoint: `C:\Kaggle\hoct\models\general_v0.pt`
+- Repository: `historical\hoct`
+- Checkpoint: `historical\hoct\models\general_v0.pt`
 - Size: 25,510,490 bytes
 - SHA256: `024c2e4606275c96667907abfc9e0c27487b543480caf99d9ebd1d267cef8e4a`
 - Forward outputs: edge logits, 288-dimensional contextual node features,
@@ -77,5 +77,5 @@ retain corrected V1 streaming as the primary division solution.
 - `scripts/export_hoct_division_features.py`
 - `scripts/run_hoct_division_feature_panel.py`
 - `scripts/train_hoct_pair_panel.py`
-- Feature panel: `/home/tweak/bio/hoct_division_features_panel_v1`
-- OOF summary: `/home/tweak/bio/hoct_pair_panel_v1/summary.json`
+- Feature panel: `data/hoct_division_features_panel_v1`
+- OOF summary: `data/hoct_pair_panel_v1/summary.json`

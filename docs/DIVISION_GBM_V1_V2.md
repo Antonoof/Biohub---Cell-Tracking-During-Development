@@ -428,46 +428,46 @@ data are intentionally excluded from Git.
 
 ### Windows/Kaggle workspace
 
-- V1 full notebook: `C:\Kaggle\true-ensemble-division-gbm.ipynb`
-- V1 anytime notebook: `C:\Kaggle\true-ensemble-division-gbm-anytime.ipynb`
-- V1 Kaggle artifact staging: `C:\Kaggle\biohub-division-gbm-v1`
+- V1 full notebook: `historical\true-ensemble-division-gbm.ipynb`
+- V1 anytime notebook: `historical\true-ensemble-division-gbm-anytime.ipynb`
+- V1 Kaggle artifact staging: `historical\biohub-division-gbm-v1`
 - V2 Kaggle artifact staging:
-  `C:\Kaggle\biohub-division-parent-gate-v2`
+  `historical\biohub-division-parent-gate-v2`
 - V2 four-worker streaming notebook:
-  `C:\Kaggle\true-ensemble-division-parent-gate-v2-streaming-4worker-anytime.ipynb`
+  `historical\true-ensemble-division-parent-gate-v2-streaming-4worker-anytime.ipynb`
 - V2 scored submission notebook:
-  `C:\Kaggle\division-gbm-w-updated-model.ipynb`
+  `historical\division-gbm-w-updated-model.ipynb`
 
 ### WSL development workspace
 
-- V1 deployment: `/home/tweak/bio/division_gbm_deploy_v1`
+- V1 deployment: `data/division_gbm_deploy_v1`
 - Promoted V2 deployment:
-  `/home/tweak/bio/division_parent_gate_v2_deploy`
+  `data/division_parent_gate_v2_deploy`
 - Clean official-event cache:
-  `/home/tweak/bio/division_official_event_cache_v2.npz`
+  `data/division_official_event_cache_v2.npz`
 - Clean V2 compact leave-four-out model:
-  `/home/tweak/bio/division_parent_gate_official_v2_compact_leave4out`
+  `data/division_parent_gate_official_v2_compact_leave4out`
 - Faulty V1 label cache quarantine:
-  `/home/tweak/bio/frozen_v1_repro/faulty_label_cache_20260716`
+  `data/frozen_v1_repro/faulty_label_cache_20260716`
 - Exact V2 held-four graph replay:
-  `/home/tweak/bio/division_parent_gate_v2_official_4clips`
+  `data/division_parent_gate_v2_official_4clips`
 - Full 199-video A+B proposals:
-  `/home/tweak/bio/ab_proposals_export/biohub_ab_proposals`
-- Stable `0.907` audit: `/home/tweak/bio/audit_907_v1`
+  `data/ab_proposals_export/biohub_ab_proposals`
+- Stable `0.907` audit: `data/audit_907_v1`
 - Pre-safe graphs:
-  `/home/tweak/bio/division_candidate_audit_v1/pre_safe_graphs`
+  `data/division_candidate_audit_v1/pre_safe_graphs`
 - Four-clip full candidate features:
-  `/home/tweak/bio/division_gbm_replay_4clips_v1/candidates_full`
+  `data/division_gbm_replay_4clips_v1/candidates_full`
 - Runtime implementation:
-  `/home/tweak/bio_track_repo/scripts/division_gbm_runtime.py`
+  `external/bio_track_repo/scripts/division_gbm_runtime.py`
 - Replay/scoring wrapper:
-  `/home/tweak/bio_track_repo/scripts/replay_division_gbm_model.py`
+  `external/bio_track_repo/scripts/replay_division_gbm_model.py`
 - Full-population transition exporter:
-  `/home/tweak/bio_track_repo/scripts/export_division_v3_full_population.py`
+  `external/bio_track_repo/scripts/export_division_v3_full_population.py`
 - Resumable 199-video exporter launcher:
-  `/home/tweak/export_division_v3_full_population.sh`
+  `historical/export_division_v3_full_population.sh`
 - Full-population transition cache:
-  `/home/tweak/bio/division_v3_full_population_cache`
+  `data/division_v3_full_population_cache`
 
 ### Superseded progressive prototypes
 
@@ -475,9 +475,9 @@ The following launchers were used during early 20- and 60-video pseudo-label
 experiments. They are retained only for historical reproducibility and are not
 part of the current V2 workflow:
 
-- `/home/tweak/run_pseudo_candidates_20_parallel.sh`
-- `/home/tweak/run_pseudo_candidates_60.sh`
-- `/home/tweak/bio/division_pseudo_candidates_60_v1/candidates_full`
+- `historical/run_pseudo_candidates_20_parallel.sh`
+- `historical/run_pseudo_candidates_60.sh`
+- `data/division_pseudo_candidates_60_v1/candidates_full`
 
 ## Current conclusion
 
@@ -561,7 +561,7 @@ The approved V1 helper is now available in a scheduling-only four-process
 notebook:
 
 - Builder: `scripts/build_streaming_4worker_notebook.py`
-- Notebook: `C:\Kaggle\true-ensemble-division-gbm-crossfit-streaming-4worker-anytime.ipynb`
+- Notebook: `historical\true-ensemble-division-gbm-crossfit-streaming-4worker-anytime.ipynb`
 
 The two-GPU A+B producer continues to emit atomic ready markers. The parent
 creates a complete A+B baseline shard immediately, then dispatches that video
@@ -673,10 +673,10 @@ The packaged runtime was independently executed on `6bba_05b6850b` and exactly
 matched the cached replay: 6,068 scored sources, 16,578 scored pairs, 12 passing
 sources, and 8 final tube winners.
 
-- Kaggle artifact: `C:\Kaggle\biohub-division-parent-gate-v2`
-- Artifact archive: `C:\Kaggle\biohub-division-parent-gate-v2.zip`
+- Kaggle artifact: `historical\biohub-division-parent-gate-v2`
+- Artifact archive: `historical\biohub-division-parent-gate-v2.zip`
 - Streaming notebook:
-  `C:\Kaggle\true-ensemble-division-parent-gate-v2-streaming-4worker-anytime.ipynb`
+  `historical\true-ensemble-division-parent-gate-v2-streaming-4worker-anytime.ipynb`
 - Local report:
   `outputs/DIVISION_PARENT_GATE_V2_REPORT.md`
 

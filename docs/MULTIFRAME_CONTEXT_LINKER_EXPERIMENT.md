@@ -2,7 +2,7 @@
 
 Production source of truth remains:
 
-`C:\Kaggle\division-gbm-w-updated-model.ipynb`
+`historical\division-gbm-w-updated-model.ipynb`
 
 Production SHA256 before and after this experiment:
 
@@ -24,9 +24,9 @@ multi-frame linker without rerunning either neural network.
 
 ## Reused assets
 
-- `/home/tweak/bio/ab_proposals_export/biohub_ab_proposals`
-- `/home/tweak/bio/ab_edge_probs_v16`
-- Sparse GT under `/home/tweak/bio/train`
+- `data/ab_proposals_export/biohub_ab_proposals`
+- `data/ab_edge_probs_v16`
+- Sparse GT under `data/train`
 - Existing official metric implementation and cached audit graphs
 
 No model inference or 199-video image extraction was run.
@@ -113,6 +113,6 @@ edge Jaccard.
 
 - Training script: `scripts/train_multiframe_context_linker.py`
 - Paired replay: `scripts/replay_multiframe_context_linker_panel.py`
-- Full OOF output: `/home/tweak/bio/multiframe_context_linker_v1`
-- Initial panel: `/home/tweak/bio/multiframe_context_linker_panel_smoke`
-- Independent holdout: `/home/tweak/bio/multiframe_context_linker_panel_holdout_v1`
+- Full OOF output: `data/multiframe_context_linker_v1`
+- Initial panel: `data/multiframe_context_linker_panel_smoke`
+- Independent holdout: `data/multiframe_context_linker_panel_holdout_v1`

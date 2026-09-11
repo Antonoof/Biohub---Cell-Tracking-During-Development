@@ -1,0 +1,23 @@
+cff-version: 1.2.0
+message: "If you use or adapt this pipeline, cite the software release and its author."
+title: "Biohub Cell Tracking: Reproducible Training and Inference Pipeline"
+type: software
+authors:
+  - family-names: Duckworth
+    given-names: William
+version: "0.957-reference"
+date-released: 2026-09-11
+abstract: >-
+  A modular training and inference pipeline for 3-D fluorescence cell
+  tracking, combining detector evidence, constrained graph construction,
+  motion and gap repair, multi-branch division inference, ownership
+  arbitration, continuation repair, cleanup, and topology validation.
+keywords:
+  - cell tracking
+  - bioimage analysis
+  - fluorescence microscopy
+  - lineage reconstruction
+  - graph optimization
+  - reproducible research
+license: Apache-2.0
+repository-code: "https://github.com/Antonoof/Biohub---Cell-Tracking-During-Development"

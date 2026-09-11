@@ -138,9 +138,9 @@ Runtime parity was verified on `44b6_0113de3b`:
 
 ## Files
 
-- Frozen source notebook: `C:\Kaggle\division-gbm-w-updated-model.ipynb`
-- Candidate notebook: `C:\Kaggle\division-gbm-structured-association.ipynb`
-- Upload artifact: `C:\Kaggle\biohub-structured-association-v1.zip`
+- Frozen source notebook: `historical\division-gbm-w-updated-model.ipynb`
+- Candidate notebook: `historical\division-gbm-structured-association.ipynb`
+- Upload artifact: `historical\biohub-structured-association-v1.zip`
 - Artifact SHA256:
   `6F38DFE52F40FF7CC00E8B1B16B01F19679D9BF2ECA1802726F36B26952FF5DE`
 - Training script:
