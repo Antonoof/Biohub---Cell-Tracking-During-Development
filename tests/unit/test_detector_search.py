@@ -81,7 +81,7 @@ def test_apply_search_params_derives_conditionals() -> None:
     assert overlay['train_peak_topk'] == 0
     assert overlay['edge_gate_distance'] == 0.0
     assert overlay['drop_path_decay'] is True
-    assert overlay['batch_size'] == 16
+    assert overlay['batch_size'] == 8
     assert overlay['frame_cache_mb'] == 256.0
     assert overlay['batch_padding'] is True
     assert overlay['pair_chunk_size'] == 512
@@ -185,6 +185,7 @@ def test_seed_trial_params_matches_yaml() -> None:
     seed = seed_trial_params(load_base_config())
     assert yaml_params['det_loss'] == 'weighted_bce'
     assert seed['det_loss'] == 'gaussian_heatmap'
+    assert seed['epochs'] == 15
     assert seed['det_heatmap_sigma'] == pytest.approx(1.0)
     assert seed['det_neg_weight'] == pytest.approx(0.01)
     assert seed['det_loss_weight'] == pytest.approx(1.0)
@@ -592,7 +593,7 @@ def test_search_trial_config_recipe_and_augmentations(tmp_path: Path) -> None:
     assert recipe['amp'] == 'bf16'
     assert recipe['batch_padding'] is True
     assert recipe['match_soft'] is False
-    assert cfg['batch_size'] == 16
+    assert cfg['batch_size'] == 8
     assert cfg['poisson_aug'] is False
     assert cfg['poisson_aug_proba'] == 0.0
     names = [getattr(aug, 'func', aug).__name__ for aug in augs]
@@ -654,10 +655,13 @@ def test_search_window_and_epoch_bounds() -> None:
     assert high['epochs'] == 30
     p1 = params_from_config(load_base_config())
     assert p1['window_size'] == 2
-    assert p1['epochs'] == 30
+    assert p1['epochs'] == 15
     overlay = apply_search_params(high)
     assert overlay['window_size'] == 4
     assert overlay['epochs'] == 30
+    seed = seed_trial_params(load_base_config())
+    assert seed['epochs'] == 15
+    assert apply_search_params(seed)['epochs'] == 15
 
 
 def test_search_window_size_five_train_step() -> None:

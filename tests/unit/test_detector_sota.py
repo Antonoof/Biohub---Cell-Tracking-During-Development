@@ -105,6 +105,34 @@ def test_detector_coord_flow_encode() -> None:
     assert torch.isfinite(feat).all()
 
 
+def test_trilinear_feature_sample_accepts_bfloat16_maps() -> None:
+    unet = TemporalUNet3D(
+        in_channels=unet_in_channels(coord_kind='coord', flow_input='frame_diff'),
+        out_channels=4,
+        layers=(8, 16),
+    )
+    model = UNetNodeTransformer(
+        unet=unet,
+        unet_out_channels=4,
+        pos_feat_dim=8,
+        hidden_dim=32,
+        n_heads=4,
+        n_blocks=1,
+        dropout=0.0,
+        coord_kind='coord',
+        flow_input='frame_diff',
+        extra_encoder='none',
+        feature_sample='trilinear',
+    )
+    feat_maps = torch.randn(1, 4, 4, 8, 8, dtype=torch.bfloat16)
+    coords = torch.tensor([[[1.2, 2.4, 3.1], [0.5, 1.0, 2.0]]])
+    mask = torch.tensor([[True, True]])
+    feat = model.index_features(feat_maps, coords, mask)
+    assert feat.dtype == torch.bfloat16
+    assert feat.shape == (1, 2, 4)
+    assert torch.isfinite(feat.float()).all()
+
+
 def test_hungarian_resolves_crossed_greedy() -> None:
     dists = torch.tensor([[1.0, 4.0], [1.2, 3.0]])
     greedy = greedy_assign(dists, 10.0)

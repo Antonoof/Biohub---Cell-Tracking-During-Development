@@ -188,7 +188,7 @@ def test_existing_detector_configs_and_random_search_parameters_validate():
         trial = study.ask()
         cfg = load_base_config() | apply_search_params(sample_search_params(trial))
         checked = validate_config(cfg)
-        assert checked['batch_size'] == 16
+        assert checked['batch_size'] == 8
         study.tell(trial, 0.0)
 
 

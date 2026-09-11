@@ -42,17 +42,21 @@ def _index_trilinear(
     out = torch.zeros(B, max_nodes, C, device=feat_maps.device, dtype=feat_maps.dtype)
     if max_nodes == 0:
         return out
-    z = coords[..., 0].clamp(0, max(depth - 1, 0))
-    y = coords[..., 1].clamp(0, max(height - 1, 0))
-    x = coords[..., 2].clamp(0, max(width - 1, 0))
+    z = coords[..., 0].float().clamp(0, max(depth - 1, 0))
+    y = coords[..., 1].float().clamp(0, max(height - 1, 0))
+    x = coords[..., 2].float().clamp(0, max(width - 1, 0))
     zn = 2.0 * z / max(depth - 1, 1) - 1.0
     yn = 2.0 * y / max(height - 1, 1) - 1.0
     xn = 2.0 * x / max(width - 1, 1) - 1.0
     grid = torch.stack((xn, yn, zn), dim=-1).view(B, 1, 1, max_nodes, 3)
     sampled = F.grid_sample(
-        feat_maps, grid, mode='bilinear', padding_mode='border', align_corners=True
+        feat_maps.float(),
+        grid,
+        mode='bilinear',
+        padding_mode='border',
+        align_corners=True,
     )
-    sampled = sampled.view(B, C, max_nodes).transpose(1, 2)
+    sampled = sampled.view(B, C, max_nodes).transpose(1, 2).to(dtype=feat_maps.dtype)
     return sampled * mask.unsqueeze(-1).to(dtype=sampled.dtype)
 
 

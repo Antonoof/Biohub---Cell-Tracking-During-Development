@@ -678,6 +678,7 @@ def train_epoch(
     sinkhorn_tau: float = 0.1,
     sinkhorn_iters: int = 20,
     train_peak_topk: int = 0,
+    peak_gt_multiplier: int = PEAK_GT_MULTIPLIER,
     edge_gate_distance: float = 0.0,
     offset_target: str = 'frac',
 ) -> tuple[float, float]:
@@ -688,6 +689,7 @@ def train_epoch(
     accum = max(int(accum_steps), 1)
     dtype = amp_dtype(amp_kind)
     autocast_on = dtype is not None and device.type == 'cuda'
+    peak_cap = int(peak_gt_multiplier)
 
     n_steps = int(max_iters) if max_iters is not None else len(loader)
     if n_steps <= 0 or len(loader) == 0:
@@ -771,6 +773,7 @@ def train_epoch(
                 sinkhorn_tau=sinkhorn_tau,
                 sinkhorn_iters=sinkhorn_iters,
                 train_peak_topk=train_peak_topk,
+                peak_gt_multiplier=peak_cap,
                 match_soft=match_soft,
             )
             if (not use_gt) and int(det_m.sum().item()) == 0:
@@ -791,6 +794,7 @@ def train_epoch(
                     sinkhorn_tau=sinkhorn_tau,
                     sinkhorn_iters=sinkhorn_iters,
                     train_peak_topk=train_peak_topk,
+                    peak_gt_multiplier=peak_cap,
                     match_soft=match_soft,
                 )
 
@@ -1446,7 +1450,6 @@ def train(
         (output_dir / 'config.json').write_text(json.dumps(model_config, indent=2) + '\n')
 
         dataset_seed = int(seed) if seed is not None else 0
-        heatmap_sigma = float(det_heatmap_sigma)
         train_ds = FrameWindowDataset(
             train_video_data,
             max_nodes=max_nodes,
@@ -1454,7 +1457,6 @@ def train(
             seed=dataset_seed,
             batch_padding=batch_padding,
             frame_cache_mb=frame_cache_mb,
-            heatmap_sigma=heatmap_sigma,
         )
         test_ds = FrameWindowDataset(
             test_video_data,
@@ -1462,7 +1464,6 @@ def train(
             seed=dataset_seed,
             batch_padding=batch_padding,
             frame_cache_mb=frame_cache_mb,
-            heatmap_sigma=heatmap_sigma,
         )
         g = dataloader_generator(seed)
         worker_init_fn = seed_worker if num_workers > 0 else None
@@ -1661,6 +1662,7 @@ def train(
                 sinkhorn_tau=sinkhorn_tau,
                 sinkhorn_iters=sinkhorn_iters,
                 train_peak_topk=train_peak_topk,
+                peak_gt_multiplier=PEAK_GT_MULTIPLIER,
                 edge_gate_distance=edge_gate_distance,
                 offset_target=offset_target,
             )

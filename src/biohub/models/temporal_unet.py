@@ -94,9 +94,13 @@ class DeformConv3d(nn.Module):
             self._grid_key = key
         warped = grid + (offset.permute(0, 2, 3, 4, 1) / scale.permute(0, 2, 3, 4, 1))
         sampled = F.grid_sample(
-            x, warped, mode='bilinear', padding_mode='border', align_corners=True
+            x.float(),
+            warped.float(),
+            mode='bilinear',
+            padding_mode='border',
+            align_corners=True,
         )
-        return self.conv(sampled)
+        return self.conv(sampled.to(dtype=x.dtype))
 
 
 def pack_conv3d_channels_last(module: nn.Module) -> None:

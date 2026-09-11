@@ -144,7 +144,7 @@ FIXED_TRAIN_KEYS = {
     'seed': 42,
     'patience': 5,
     'checkpoint_metric': 'acc_times_recall',
-    'batch_size': 16,
+    'batch_size': 8,
     'accum_steps': 1,
     'grad_clip_norm': 2.0,
     'amp': 'bf16',
@@ -497,6 +497,7 @@ def params_from_config(cfg: dict[str, Any]) -> dict[str, Any]:
 
 def seed_trial_params(cfg: dict[str, Any]) -> dict[str, Any]:
     params = params_from_config(cfg)
+    params['epochs'] = 15
     params['det_loss'] = 'gaussian_heatmap'
     params['det_heatmap_sigma'] = 1.0
     params['det_neg_weight'] = 0.01
