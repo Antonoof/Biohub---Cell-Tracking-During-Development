@@ -17,7 +17,12 @@ def new_run_dir(runs_root: Path | str, stage: str, run_name: str | None = None) 
     runs_root = Path(runs_root)
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     name = run_name or "run"
-    path = runs_root / stage / f"{ts}_{name}"
+    base = runs_root / stage / f"{ts}_{name}"
+    path = base
+    n = 2
+    while path.exists():
+        path = runs_root / stage / f"{ts}_{name}_{n}"
+        n += 1
     path.mkdir(parents=True, exist_ok=False)
     return path
 

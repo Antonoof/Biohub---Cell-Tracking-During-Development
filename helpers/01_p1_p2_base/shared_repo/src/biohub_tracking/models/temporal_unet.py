@@ -28,12 +28,24 @@ def _conv_block(in_channels: int, out_channels: int) -> nn.Sequential:
 
 
 class _TemporalAttention(nn.Module):
-    """Per-voxel multi-head self-attention across time."""
+    """Per-voxel multi-head self-attention across time.
 
-    def __init__(self, channels: int, n_heads: int = 4) -> None:
+    Same ``nn.MultiheadAttention`` as the original William model. Voxels are
+    independent along the sequence axis (length = window_size, usually 2), so
+    we only chunk the voxel batch dimension for H100/H200 SDPA stability —
+    this does not change the math vs one giant ``(B*S, T, C)`` call.
+    """
+
+    def __init__(
+        self,
+        channels: int,
+        n_heads: int = 4,
+        chunk_size: int = 32768,
+    ) -> None:
         super().__init__()
         self.norm = nn.LayerNorm(channels)
         self.attn = nn.MultiheadAttention(channels, n_heads, batch_first=True)
+        self.chunk_size = int(chunk_size)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: (B, T, C, Z, Y, X)
@@ -43,7 +55,18 @@ class _TemporalAttention(nn.Module):
 
         h = x.reshape(B, T, C, S).permute(0, 3, 1, 2).reshape(B * S, T, C)
         h = self.norm(h)
-        h, _ = self.attn(h, h, h, need_weights=False)
+
+        n = h.shape[0]
+        if n <= self.chunk_size:
+            h, _ = self.attn(h, h, h, need_weights=False)
+        else:
+            chunks = []
+            for i in range(0, n, self.chunk_size):
+                sl = h[i : i + self.chunk_size]
+                out, _ = self.attn(sl, sl, sl, need_weights=False)
+                chunks.append(out)
+            h = torch.cat(chunks, dim=0)
+
         h = h.reshape(B, S, T, C).permute(0, 2, 3, 1).reshape(B, T, C, *spatial)
         return x + h
 
@@ -62,10 +85,11 @@ class TemporalUNet3D(nn.Module):
         ``len(layers)``; spatial size is halved before every stage except
         the first.
     gradient_checkpointing : bool
-        If True (default), wrap encoder/decoder conv blocks with
+        If True, wrap encoder/decoder conv blocks with
         ``torch.utils.checkpoint`` during training to reduce activation
         memory at the cost of recomputing activations in the backward
-        pass.
+        pass. Default False — H100/H200 have enough VRAM; checkpointing
+        roughly doubles backward time.
     skip_fullres_temporal : bool
         If True (default), replace the temporal-attention block at the
         full-resolution (first) encoder stage with an Identity. Per-voxel
@@ -79,7 +103,7 @@ class TemporalUNet3D(nn.Module):
         in_channels: int = 1,
         out_channels: int = 32,
         layers: Sequence[int] = (32, 64, 128),
-        gradient_checkpointing: bool = True,
+        gradient_checkpointing: bool = False,
         skip_fullres_temporal: bool = True,
     ) -> None:
         super().__init__()

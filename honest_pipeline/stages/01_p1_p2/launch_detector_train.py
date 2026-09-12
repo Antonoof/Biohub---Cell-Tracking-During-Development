@@ -6,10 +6,13 @@ Wraps William's train_unet_transformer.py with:
   - RunLogger under runs/01_p1_detector or runs/02_p2_detector
   - CUDA_VISIBLE_DEVICES selection
 
-Example (remote):
-  CUDA_VISIBLE_DEVICES=3 \\
-  python stages/01_p1_p2/launch_detector_train.py \\
-    --scheme gkf_movie --split 0 --epochs 50 --tag p1_gkf5
+Unknown CLI flags are forwarded to the trainer (e.g. --batch-size 2).
+Do NOT use a trailing --extra REMAINDER: parallel launch appends --split N
+after your args, and REMAINDER would swallow it.
+
+Example:
+  CUDA_VISIBLE_DEVICES=3 python stages/01_p1_p2/launch_detector_train.py \\
+    --scheme gkf_movie --split 0 --epochs 50 --tag p1 --batch-size 2
 """
 
 from __future__ import annotations
@@ -36,7 +39,6 @@ WILLIAM_TRAIN = (
     / "scripts"
     / "train_unet_transformer.py"
 )
-# Local mirror fallback.
 LOCAL_TRAIN = (
     ROOT.parent
     / "helpers"
@@ -47,7 +49,7 @@ LOCAL_TRAIN = (
 )
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args() -> tuple[argparse.Namespace, list[str]]:
     p = argparse.ArgumentParser()
     p.add_argument("--scheme", choices=["gkf_movie", "loeo"], default="gkf_movie")
     p.add_argument("--split", type=str, default="0", help="Fold index or 'all'")
@@ -64,12 +66,17 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--train-script", type=Path, default=None)
     p.add_argument("--method", type=str, default=None)
-    p.add_argument("--extra", nargs=argparse.REMAINDER, default=[])
-    return p.parse_args()
+    # Compat: ignore bare --extra; real trainer flags come via parse_known_args.
+    p.add_argument("--extra", action="store_true", help=argparse.SUPPRESS)
+    args, unknown = p.parse_known_args()
+    # Drop a leading "--" separator if present.
+    if unknown and unknown[0] == "--":
+        unknown = unknown[1:]
+    return args, unknown
 
 
 def main() -> None:
-    args = parse_args()
+    args, forward = parse_args()
     splits = load_canonical_splits(ROOT / "splits" / "canonical_splits.json")
     split_file = (
         ROOT / "splits" / "dataset_splits_gkf5_train175.json"
@@ -97,11 +104,7 @@ def main() -> None:
             "method": method,
             "protocol": splits.to_jsonable()["protocol"],
             "banned": ["alltrain", "held20_threshold_tuning", "practice_in_fit"],
-            "notes": [
-                "Honest detector CV launch. Do not use alltrain checkpoints in cascade OOF.",
-                "After folds finish, export per-movie OOF detections before downstream stages.",
-            ],
-            "extra": args.extra,
+            "forward_args": forward,
         },
     )
 
@@ -118,7 +121,7 @@ def main() -> None:
         str(args.epochs),
         "--method",
         method,
-        *args.extra,
+        *forward,
     ]
     logger.log("cmd: " + " ".join(cmd))
     env = os.environ.copy()
@@ -127,8 +130,6 @@ def main() -> None:
     env["BIOHUB_HONEST_RUN_DIR"] = str(run_dir)
     env["BIOHUB_WEIGHTS_DIR"] = str(weights_dir)
     env["BIOHUB_DATA_DIR"] = str(args.data_dir)
-    # Force math SDPA (flash/mem-efficient break on H200 for this temporal MHA).
-    env.setdefault("PYTORCH_SDP_BACKEND", "math")
     src = str(train_script.parent.parent / "src")
     scripts = str(train_script.parent)
     env["PYTHONPATH"] = os.pathsep.join(
@@ -142,6 +143,7 @@ def main() -> None:
         "split": args.split,
         "method": method,
         "splits_file": str(split_file),
+        "forward_args": forward,
     }
     logger.write_summary(summary)
     (run_dir / "launch_cmd.json").write_text(json.dumps(cmd, indent=2) + "\n")

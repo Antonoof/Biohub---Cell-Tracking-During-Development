@@ -628,6 +628,7 @@ def detect_and_match(
     voxel_size: tuple[float, ...] | None = None,
     frame_index: int = 0,
     window_size: int | None = None,
+    max_detections: int = 256,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Detect peaks in logits, match to GT, return padded edge-prediction inputs.
 
@@ -642,11 +643,14 @@ def detect_and_match(
     mask : (B, max_nodes)
         Boolean mask for real (non-padded) nodes.
     image_shape : (T, Z, Y, X) downsampled shape for pos-embed normalisation.
-    det_threshold : minimum logit to accept a peak.
+    det_threshold : minimum *probability* (sigmoid) to accept a peak.
     pool_kernel_um : local-max suppression distance in microns.
     max_match_distance : maximum physical distance for detection→GT matching.
     voxel_size : (Z, Y, X) physical voxel size (scale * downsample).
         When provided, distances are computed in physical units.
+    max_detections : keep at most this many peaks per sample (by score).
+        Without a cap, early training (sigmoid≈0.5) yields thousands of
+        local maxima and the pairwise edge head becomes O(N²) dominant.
 
     Returns
     -------
@@ -677,12 +681,15 @@ def detect_and_match(
 
     # --- 1. Batched local-max peak detection on GPU -------------------------
     with torch.no_grad():
-        # Peak gate must be on probabilities, not raw logits (organizer bug).
+        # Gate on probabilities (threshold is a probability, not a raw logit).
         det_probs = torch.sigmoid(det_logits)
         pooled = F.max_pool3d(det_probs, pool_kernel, stride=1, padding=pad)
         is_peak = (det_probs == pooled) & (det_probs > det_threshold)
         # (N_total, 4): columns [b, z, y, x]
         peak_idx = torch.nonzero(is_peak[:, 0])
+        peak_scores = det_probs[:, 0][
+            peak_idx[:, 0], peak_idx[:, 1], peak_idx[:, 2], peak_idx[:, 3]
+        ]
 
     batch_ids = peak_idx[:, 0]                         # (N_total,)
     peak_coords = peak_idx[:, 1:].float()              # (N_total, 3)
@@ -697,7 +704,13 @@ def detect_and_match(
     for b in range(B):
         sel = batch_ids == b
         det_b = peak_coords[sel]                        # (n_det, 3)
+        scores_b = peak_scores[sel]
         n_det = det_b.shape[0]
+        if n_det > max_detections:
+            top = torch.topk(scores_b, k=max_detections).indices
+            top = top.sort().values  # stable spatial order not required
+            det_b = det_b[top]
+            n_det = det_b.shape[0]
         nt = int(nt_per_sample[b].item())
         gt_b = gt_coords[b, :nt]                        # (n_gt, 3)
         n_gt = gt_b.shape[0]
@@ -790,6 +803,7 @@ def train_epoch(
     det_neg_weight: float = 0.1,
     max_iters: int | None = None,
     pool_kernel_um: float = 5.0,
+    max_detections: int = 256,
 ) -> tuple[float, float]:
     """Train for one epoch, return (avg edge loss, avg detection loss).
 
@@ -852,6 +866,7 @@ def train_epoch(
                 image_shape,
                 voxel_size=voxel_size,
                 pool_kernel_um=pool_kernel_um,
+                max_detections=max_detections,
                 frame_index=i, window_size=W,
             )
             unet_feat = model._index_features(
@@ -923,6 +938,7 @@ def evaluate(
     loader: DataLoader,
     device: torch.device,
     pool_kernel_um: float = 5.0,
+    max_detections: int = 256,
 ) -> tuple[float, float, float]:
     """Evaluate model using detect→match→predict (same path as training).
 
@@ -952,6 +968,7 @@ def evaluate(
                 image_shape,
                 voxel_size=voxel_size,
                 pool_kernel_um=pool_kernel_um,
+                max_detections=max_detections,
                 frame_index=i, window_size=W,
             )
             unet_feat = model._index_features(
@@ -1023,6 +1040,8 @@ def train(
     augmentations: list | None = DEFAULT_AUGMENTATIONS,
     pool_kernel_um: float = 5.0,
     data_parallel: bool = True,
+    gradient_checkpointing: bool = False,
+    max_detections: int = 256,
 ) -> UNetNodeTransformer:
     """Train on one fold from a pre-computed splits file.
 
@@ -1093,36 +1112,44 @@ def train(
             worker_seed = torch.initial_seed() % 2**32
             np.random.seed(worker_seed)
 
-    train_loader = DataLoader(
-        train_ds, batch_size=batch_size, shuffle=True,
-        num_workers=num_workers, prefetch_factor=2 if num_workers > 0 else None,
-        persistent_workers=num_workers > 0, pin_memory=False,
-        generator=g, worker_init_fn=worker_init_fn,
-    )
-    test_loader = DataLoader(
-        test_ds, batch_size=batch_size, shuffle=False,
-        num_workers=num_workers, prefetch_factor=2 if num_workers > 0 else None,
-        persistent_workers=num_workers > 0, pin_memory=False,
-        generator=g, worker_init_fn=worker_init_fn,
-    )
-
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     n_visible = torch.cuda.device_count() if device.type == "cuda" else 0
     print(f"Using device: {device} | visible CUDA GPUs: {n_visible}", flush=True)
 
-    # H200 + large B*spatial temporal MHA: flash/mem-efficient SDPA raises
-    # "CUDA error: invalid configuration argument". Math SDP is stable.
+    # Temporal MHA uses huge (B*S, T, C). Flash SDPA crashes above ~32k batch on
+    # H200; TemporalUNet3D chunks voxels so Flash stays valid. Same
+    # nn.MultiheadAttention as William — chunking does not change the math.
     if device.type == "cuda":
-        torch.backends.cuda.enable_flash_sdp(False)
-        torch.backends.cuda.enable_mem_efficient_sdp(False)
+        torch.backends.cuda.enable_flash_sdp(True)
+        torch.backends.cuda.enable_mem_efficient_sdp(True)
         torch.backends.cuda.enable_math_sdp(True)
-        print("SDPA: flash=off mem_efficient=off math=on", flush=True)
+        print(
+            "SDPA: flash=on mem_efficient=on math=on "
+            "(temporal MHA voxel-chunked ≤32k; stock nn.MultiheadAttention)",
+            flush=True,
+        )
+
+    use_pin = device.type == "cuda"
+    train_loader = DataLoader(
+        train_ds, batch_size=batch_size, shuffle=True,
+        num_workers=num_workers, prefetch_factor=4 if num_workers > 0 else None,
+        persistent_workers=num_workers > 0, pin_memory=use_pin,
+        generator=g, worker_init_fn=worker_init_fn,
+    )
+    test_loader = DataLoader(
+        test_ds, batch_size=batch_size, shuffle=False,
+        num_workers=num_workers, prefetch_factor=4 if num_workers > 0 else None,
+        persistent_workers=num_workers > 0, pin_memory=use_pin,
+        generator=g, worker_init_fn=worker_init_fn,
+    )
 
     unet = TemporalUNet3D(
         in_channels=1,
         out_channels=unet_out_channels,
         layers=unet_layers,
+        gradient_checkpointing=gradient_checkpointing,
     )
+    print(f"UNet gradient_checkpointing={gradient_checkpointing}", flush=True)
     if unet_weights is not None:
         state = torch.load(unet_weights, map_location="cpu", weights_only=True)
         missing, unexpected = unet.load_state_dict(state, strict=False)
@@ -1159,17 +1186,23 @@ def train(
     save_path = output_dir / "edge_predictor_best.pth"
     pbar = tqdm(range(n_epochs), desc="Training", disable=False)
     print(f"Detection loss: weight={det_loss_weight}, neg_weight={det_neg_weight}", flush=True)
+    print(f"max_detections={max_detections} (peak top-k per frame)", flush=True)
 
     for epoch in pbar:
         t0 = time.monotonic()
         edge_loss, det_loss = train_epoch(
             model, train_loader, optimizer, device, det_loss_weight, det_neg_weight,
             max_iters=max_iters, pool_kernel_um=pool_kernel_um,
+            max_detections=max_detections,
         )
         train_time = time.monotonic() - t0
 
         t0 = time.monotonic()
-        test_loss, test_acc, test_recall = evaluate(model, test_loader, device, pool_kernel_um=pool_kernel_um)
+        test_loss, test_acc, test_recall = evaluate(
+            model, test_loader, device,
+            pool_kernel_um=pool_kernel_um,
+            max_detections=max_detections,
+        )
         test_time = time.monotonic() - t0
 
         score = test_acc * test_recall
@@ -1242,6 +1275,14 @@ def main() -> None:
                         help="Number of consecutive frames per training window (default: 2).")
     parser.add_argument("--pool-kernel-um", type=float, default=5.0,
                         help="Local-max suppression distance in microns (default: 5.0).")
+    parser.add_argument("--max-detections", type=int, default=256,
+                        help="Max peaks per frame for edge head (default: 256).")
+    parser.add_argument("--gradient-checkpointing", dest="gradient_checkpointing",
+                        action="store_true", default=False,
+                        help="Trade compute for VRAM (slow on H200; off by default).")
+    parser.add_argument("--no-gradient-checkpointing", dest="gradient_checkpointing",
+                        action="store_false",
+                        help="Disable gradient checkpointing (default).")
     parser.add_argument("--data-parallel", dest="data_parallel", action="store_true", default=True,
                         help="Split the UNet across all visible GPUs via nn.DataParallel "
                              "when more than one is available (default: on).")
@@ -1282,6 +1323,8 @@ def main() -> None:
             window_size=args.window_size,
             pool_kernel_um=args.pool_kernel_um,
             data_parallel=args.data_parallel,
+            gradient_checkpointing=args.gradient_checkpointing,
+            max_detections=args.max_detections,
         )
 
 
