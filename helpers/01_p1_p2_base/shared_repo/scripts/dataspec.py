@@ -38,4 +38,4 @@ def _default_dataset_path() -> Path:
 DATASET_PATH = _default_dataset_path()
 PREDICTIONS_PATH = _BASE / "predictions"
 RESULTS_PATH = _BASE / "results"
-WEIGHTS_PATH = _BASE / "weights"
+WEIGHTS_PATH = Path(os.environ["BIOHUB_WEIGHTS_DIR"]) if os.environ.get("BIOHUB_WEIGHTS_DIR") else (_BASE / "weights")

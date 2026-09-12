@@ -677,8 +677,10 @@ def detect_and_match(
 
     # --- 1. Batched local-max peak detection on GPU -------------------------
     with torch.no_grad():
-        pooled = F.max_pool3d(det_logits, pool_kernel, stride=1, padding=pad)
-        is_peak = (det_logits == pooled) & (det_logits > det_threshold)
+        # Peak gate must be on probabilities, not raw logits (organizer bug).
+        det_probs = torch.sigmoid(det_logits)
+        pooled = F.max_pool3d(det_probs, pool_kernel, stride=1, padding=pad)
+        is_peak = (det_probs == pooled) & (det_probs > det_threshold)
         # (N_total, 4): columns [b, z, y, x]
         peak_idx = torch.nonzero(is_peak[:, 0])
 
@@ -1107,6 +1109,14 @@ def train(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     n_visible = torch.cuda.device_count() if device.type == "cuda" else 0
     print(f"Using device: {device} | visible CUDA GPUs: {n_visible}", flush=True)
+
+    # H200 + large B*spatial temporal MHA: flash/mem-efficient SDPA raises
+    # "CUDA error: invalid configuration argument". Math SDP is stable.
+    if device.type == "cuda":
+        torch.backends.cuda.enable_flash_sdp(False)
+        torch.backends.cuda.enable_mem_efficient_sdp(False)
+        torch.backends.cuda.enable_math_sdp(True)
+        print("SDPA: flash=off mem_efficient=off math=on", flush=True)
 
     unet = TemporalUNet3D(
         in_channels=1,

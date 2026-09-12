@@ -1,0 +1,91 @@
+{
+  "stages": [
+    {
+      "id": "01_p1_detector",
+      "kind": "neural",
+      "william_entry": "helpers/01_p1_p2_base/shared_repo/scripts/train_unet_transformer.py",
+      "honest_split": "loeo + nested gkf5 (ban alltrain)",
+      "status": "splits_ready",
+      "priority": 1
+    },
+    {
+      "id": "02_p2_detector",
+      "kind": "neural",
+      "william_entry": "helpers/01_p1_p2_base/shared_repo/scripts/train_unet_transformer.py",
+      "honest_split": "same as P1; independent seed; never alltrain for CV cascade",
+      "status": "splits_ready",
+      "priority": 1
+    },
+    {
+      "id": "03_ilp",
+      "kind": "solver",
+      "honest_split": "tune costs on nested OOF graphs only",
+      "status": "pending",
+      "priority": 2
+    },
+    {
+      "id": "04_motion_corrector",
+      "kind": "mlp",
+      "william_entry": "helpers/09_motion_corrector/TRAINING_V1/train_motion_cost_corrector.py",
+      "honest_split": "gkf5/loeo; train on OOF parents not GT",
+      "status": "pending",
+      "priority": 2
+    },
+    {
+      "id": "05_model_c",
+      "kind": "neural+gbm",
+      "william_entry": "helpers/02_model_c/",
+      "honest_split": "loeo outer; ban held20 threshold calibration",
+      "status": "pending",
+      "priority": 3
+    },
+    {
+      "id": "06_source_cardinality",
+      "kind": "tabular",
+      "william_entry": "helpers/03_source_cardinality/train_source_cardinality_head.py",
+      "honest_split": "gkf5 + oof parquet + inner threshold",
+      "status": "pending",
+      "priority": 3
+    },
+    {
+      "id": "07_unigraft_p1p2",
+      "kind": "tabular",
+      "william_entry": "helpers/04_unigraft_p1p2/",
+      "honest_split": "same as cardinality",
+      "status": "pending",
+      "priority": 3
+    },
+    {
+      "id": "08_ownership",
+      "kind": "tabular",
+      "william_entry": "helpers/06_full_population_ownership/score_and_fit_ownership_oof.py",
+      "honest_split": "already GKF OOF; wire canonical folds + run logger",
+      "status": "pending",
+      "priority": 4
+    },
+    {
+      "id": "09_edgegraft",
+      "kind": "tabular",
+      "william_entry": "helpers/07_edgegraft/training/",
+      "honest_split": "rebuild on OOF substrate; keep oof parquet",
+      "status": "pending",
+      "priority": 4
+    },
+    {
+      "id": "10_candidategraft",
+      "kind": "tabular",
+      "william_entry": "helpers/08_candidategraft/training/",
+      "honest_split": "canonical GKF; no final-fit as primary metric",
+      "status": "pending",
+      "priority": 4
+    },
+    {
+      "id": "11_deepcenter",
+      "kind": "neural",
+      "william_entry": "helpers/10_deepcenter/train_full_frame_center_detector.py",
+      "honest_split": "true LOEO 2-fold both directions",
+      "status": "pending",
+      "priority": 5
+    }
+  ]
+}

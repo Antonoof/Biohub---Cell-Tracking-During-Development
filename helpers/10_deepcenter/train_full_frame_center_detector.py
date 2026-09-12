@@ -406,6 +406,7 @@ def split_samples(
     val_fraction: float,
     seed: int,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Legacy embryo-level split. Prefer split_samples_by_fold (GKF/LOEO)."""
     rng = random.Random(seed)
     by_embryo: dict[str, list[dict[str, Any]]] = {}
     for sample in samples:
@@ -420,6 +421,40 @@ def split_samples(
     if not train and val:
         train, val = val, []
     return train, val
+
+
+def split_samples_by_fold(
+    samples: list[dict[str, Any]],
+    splits_json: Path,
+    fold: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    """Honest movie-group fold from dataset_splits_*.json (list of {train,test})."""
+    folds = json.loads(Path(splits_json).read_text())
+    if not isinstance(folds, list):
+        raise ValueError(f"Expected list of folds in {splits_json}")
+    fold_data = folds[int(fold)]
+    train_set = {Path(x).stem for x in fold_data["train"]}
+    val_set = {Path(x).stem for x in fold_data.get("test", fold_data.get("val", []))}
+    if train_set & val_set:
+        raise AssertionError(f"fold {fold} train∩val leak: {sorted(train_set & val_set)[:5]}")
+    by_name = {str(s["name"]): s for s in samples}
+    train = [by_name[m] for m in sorted(train_set) if m in by_name]
+    val = [by_name[m] for m in sorted(val_set) if m in by_name]
+    missing_tr = sorted(train_set - set(by_name))
+    missing_va = sorted(val_set - set(by_name))
+    meta = {
+        "fold": int(fold),
+        "fold_id": fold_data.get("fold_id", f"fold_{fold}"),
+        "scheme": fold_data.get("scheme", "gkf_movie"),
+        "n_train": len(train),
+        "n_val": len(val),
+        "missing_train": missing_tr,
+        "missing_val": missing_va,
+        "splits_json": str(splits_json),
+    }
+    if not train or not val:
+        raise RuntimeError(f"Empty train/val for fold {fold}: {meta}")
+    return train, val, meta
 
 
 def weighted_bce_loss(logits: torch.Tensor, target: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
@@ -913,7 +948,21 @@ def train(args: argparse.Namespace) -> None:
     print(json.dumps(asdict(cfg), indent=2, sort_keys=True))
 
     samples = discover_samples(data_dir, cfg)
-    train_samples, val_samples = split_samples(samples, cfg.val_fraction, cfg.seed)
+    if getattr(args, "splits_json", None) is not None:
+        train_samples, val_samples, split_meta = split_samples_by_fold(
+            samples, Path(args.splits_json), int(args.fold)
+        )
+        print(
+            f"Honest fold {args.fold}: train={len(train_samples)} val={len(val_samples)} "
+            f"scheme={split_meta.get('scheme')}",
+            flush=True,
+        )
+    else:
+        train_samples, val_samples = split_samples(samples, cfg.val_fraction, cfg.seed)
+        split_meta = {
+            "mode": "legacy_embryo_fraction",
+            "warning": "Prefer --splits-json + --fold (GKF5). Legacy may train on one embryo.",
+        }
     print(f"samples: total={len(samples)} train={len(train_samples)} val={len(val_samples)}")
     print("train sample examples:", [s["name"] for s in train_samples[:5]])
     print("val sample examples:", [s["name"] for s in val_samples[:5]])
@@ -923,6 +972,7 @@ def train(args: argparse.Namespace) -> None:
         "train": [str(sample["name"]) for sample in train_samples],
         "val": [str(sample["name"]) for sample in val_samples],
         "all": [str(sample["name"]) for sample in samples],
+        **split_meta,
     }
     (output_dir / "split_manifest.json").write_text(
         json.dumps(split_manifest, indent=2, sort_keys=True) + "\n"
@@ -1106,6 +1156,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--frames-per-movie", type=int, default=0)
     parser.add_argument("--movie-limit", type=int, default=None)
     parser.add_argument("--val-fraction", type=float, default=0.10)
+    parser.add_argument(
+        "--splits-json",
+        type=Path,
+        default=None,
+        help="Honest fold file (list of {train,test}), e.g. dataset_splits_gkf5_train175.json",
+    )
+    parser.add_argument(
+        "--fold",
+        type=int,
+        default=0,
+        help="Fold index into --splits-json (required for honest GKF5/LOEO).",
+    )
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--learning-rate", type=float, default=1.0e-3)
     parser.add_argument("--weight-decay", type=float, default=0.0)

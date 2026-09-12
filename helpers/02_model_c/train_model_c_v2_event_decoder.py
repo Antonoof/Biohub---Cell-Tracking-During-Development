@@ -829,12 +829,55 @@ def metric(scored, threshold: float):
 
 
 def threshold_sweep(scored):
+    """Pooled sweep — prefer threshold_sweep_by_fold for honest selection."""
     candidates = np.unique(np.r_[
         np.linspace(0.05, 0.99, 95),
         np.linspace(0.990, 0.999, 19),
     ])
     results = [metric(scored, value) for value in candidates]
     return max(results, key=lambda row: (row["jaccard"], row["tp"], -row["fp"]))
+
+
+def threshold_sweep_by_fold(scored_with_fold):
+    """Mean Jaccard across folds; never optimize pooled OOF directly."""
+    candidates = np.unique(np.r_[
+        np.linspace(0.05, 0.99, 95),
+        np.linspace(0.990, 0.999, 19),
+    ])
+    by_fold: dict[int, list] = {}
+    for fold_i, row in scored_with_fold:
+        by_fold.setdefault(int(fold_i), []).append(row)
+    best = None
+    best_key = None
+    sweep = []
+    for value in candidates:
+        fold_js = []
+        for fold_i, rows in sorted(by_fold.items()):
+            fold_js.append(metric(rows, value)["jaccard"])
+        mean_j = float(np.mean(fold_js)) if fold_js else 0.0
+        std_j = float(np.std(fold_js)) if fold_js else 0.0
+        entry = {
+            "threshold": float(value),
+            "mean_jaccard": mean_j,
+            "std_jaccard": std_j,
+            "per_fold": fold_js,
+        }
+        sweep.append(entry)
+        key = (mean_j, -std_j)
+        if best_key is None or key > best_key:
+            best_key = key
+            best = entry
+    assert best is not None
+    # Compat shape with threshold_sweep / metric consumers.
+    return {
+        "threshold": best["threshold"],
+        "jaccard": best["mean_jaccard"],
+        "mean_jaccard": best["mean_jaccard"],
+        "std_jaccard": best["std_jaccard"],
+        "per_fold": best["per_fold"],
+        "policy": "mean_over_folds",
+        "sweep_top": sweep[-5:],
+    }
 
 
 def frozen_v2_scores_for_videos(videos, args):
@@ -919,6 +962,7 @@ def train_family(
 ):
     splitter = GroupKFold(n_splits=args.folds)
     oof_parts = []
+    oof_with_fold = []
     dummy = np.zeros(len(train))
     for fold, (fit_idx, val_idx) in enumerate(splitter.split(dummy, groups=groups)):
         fit_videos = [train[i] for i in fit_idx]
@@ -943,18 +987,48 @@ def train_family(
             use_ctc=use_ctc,
             use_public=use_public,
         )
-        oof_parts.extend(
-            score_videos(
-                val_videos,
-                pair,
-                source,
-                use_c=use_c,
-                use_ctc=use_ctc,
-                use_public=use_public,
-            )
+        scored = score_videos(
+            val_videos,
+            pair,
+            source,
+            use_c=use_c,
+            use_ctc=use_ctc,
+            use_public=use_public,
         )
-    frozen_threshold = threshold_sweep(oof_parts)
-    print(f"{label} OOF {json.dumps(frozen_threshold)}", flush=True)
+        oof_parts.extend(scored)
+        for row in scored:
+            oof_with_fold.append((fold, row))
+    frozen_threshold = threshold_sweep_by_fold(oof_with_fold)
+    print(f"{label} OOF {json.dumps({k: frozen_threshold[k] for k in frozen_threshold if k != 'sweep_top'})}", flush=True)
+
+    # Durable OOF scores for downstream / audits.
+    oof_rows = []
+    for fold_i, (video, score, best_pair, pair_label) in oof_with_fold:
+        for row in range(len(score)):
+            oof_rows.append(
+                {
+                    "movie": video.stem,
+                    "fold_id": f"gkf5_{fold_i}",
+                    "scheme": "gkf_movie",
+                    "source_row": int(row),
+                    "y_score": float(score[row]),
+                    "y_true": int(video.source_y[row]) if hasattr(video, "source_y") else None,
+                    "pair_label": int(pair_label[row]),
+                    "best_pair": int(best_pair[row]),
+                    "embryo": video.stem.split("_", 1)[0],
+                    "family": label,
+                }
+            )
+    oof_path = args.output / f"oof_{label.replace('+', '_').replace(' ', '_').lower()}.parquet"
+    try:
+        import pandas as pd
+
+        pd.DataFrame(oof_rows).to_parquet(oof_path, index=False)
+        print(f"{label} wrote OOF {oof_path} rows={len(oof_rows)}", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        (args.output / f"oof_{label.replace('+', '_').replace(' ', '_').lower()}.json").write_text(
+            json.dumps({"error": str(exc), "n_rows": len(oof_rows)}) + "\n"
+        )
     final_pair = fit_pair_model(
         train,
         args,
@@ -998,10 +1072,10 @@ def train_family(
             use_public=use_public,
         )
         practice_result = metric(
-            practice_scored, held_calibration["threshold"]
+            practice_scored, frozen_threshold["threshold"]
         )
         print(
-            f"{label} PRACTICE DIRECT @ HELD-DIRECT-CALIBRATED "
+            f"{label} PRACTICE DIRECT @ OOF-FROZEN "
             f"{json.dumps(practice_result)}",
             flush=True,
         )
@@ -1018,7 +1092,9 @@ def train_family(
         "oof_frozen_threshold": frozen_threshold,
         "held_frozen": held_result,
         "held_per_embryo": per_embryo,
-        "held_calibrated_threshold": held_calibration,
+        # Compat key now aliases OOF-frozen (held sweep is diagnostic-only).
+        "held_calibrated_threshold": frozen_threshold,
+        "held_calibration_diagnostic_only": held_calibration,
         "practice_final_test": practice_result,
         "practice_scored": practice_scored,
     }
@@ -1359,12 +1435,12 @@ def main() -> None:
     control_union = additive_union_metric_from_scores(
         frozen_v2_practice,
         control["practice_scored"],
-        control["held_calibrated_threshold"]["threshold"],
+        control["oof_frozen_threshold"]["threshold"],
     )
     combined_union = additive_union_metric_from_scores(
         frozen_v2_practice,
         combined["practice_scored"],
-        combined["held_calibrated_threshold"]["threshold"],
+        combined["oof_frozen_threshold"]["threshold"],
     )
     print(
         "PRACTICE ADDITIVE "
@@ -1413,7 +1489,8 @@ def main() -> None:
             "unannotated_sources_as_negatives": False,
             "practice_clips_used_for_final_gate": True,
             "threshold_selected_on_practice": False,
-            "threshold_selected_on_validation_held20": True,
+            "threshold_selected_on_validation_held20": False,
+            "threshold_selected_on_oof_only": True,
             "practice_used_for_training_or_threshold": False,
             "frozen_v2_probabilities_used_as_features": False,
         },

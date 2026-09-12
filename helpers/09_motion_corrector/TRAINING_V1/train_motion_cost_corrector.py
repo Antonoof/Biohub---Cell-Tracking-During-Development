@@ -32,6 +32,8 @@ def argspec():
  p.add_argument("--output",type=Path,default=Path('artifacts/motion_cost_corrector'));p.add_argument("--tight",type=float,default=6.2);p.add_argument("--relaxed",type=float,default=9.5)
  p.add_argument("--velocity-weight",type=float,default=.52);p.add_argument("--residual-scale",type=float,default=2.0);p.add_argument("--epochs",type=int,default=40);p.add_argument("--batch-size",type=int,default=8192)
  p.add_argument("--lr",type=float,default=2e-3);p.add_argument("--patience",type=int,default=7);p.add_argument("--negative-ratio",type=int,default=20);p.add_argument("--seed",type=int,default=2028);p.add_argument("--rebuild-cache",action='store_true');p.add_argument("--max-videos",type=int,default=0);p.add_argument("--device",default='cuda:0')
+ p.add_argument("--parent-mode",choices=["proposal_nn","gt"],default="proposal_nn",help="Velocity parents: proposal_nn=serve-matched (default), gt=teacher-forced leak")
+ p.add_argument("--fold",type=int,default=0,help="Fold index when --splits is a list of folds (honest GKF5)")
  return p.parse_args()
 
 class MotionResidual(nn.Module):
@@ -52,7 +54,14 @@ def shifts_for_video(v):
  return shifts
 
 def video_rows(v,group_start,train,args):
- scale=np.asarray(v.voxel_scale_um,np.float64);shifts=shifts_for_video(v);parent={int(d):int(s) for s,d in v.gt_edges};rows=[];group_meta=[];gid=group_start
+ scale=np.asarray(v.voxel_scale_um,np.float64);shifts=shifts_for_video(v)
+ # Serve-matched velocity: proposal NN parents, NOT GT edges (fixes teacher forcing).
+ parent_mode=getattr(args,'parent_mode','proposal_nn')
+ if parent_mode=='gt':
+  parent={int(d):int(s) for s,d in v.gt_edges}
+ else:
+  parent={}  # unused when proposal_nn velocity is used
+ rows=[];group_meta=[];gid=group_start
  for t in range(v.image_shape_raw[0]-1):
   a0,a1=int(v.offsets[t]),int(v.offsets[t+1]);b0,b1=int(v.offsets[t+1]),int(v.offsets[t+2]);n0,n1=a1-a0,b1-b0
   group_meta.append((gid,n0,n1,len(v.edges_by_t.get(t,()))));
@@ -65,15 +74,25 @@ def video_rows(v,group_start,train,args):
    if g>=0:
     for d in v.children.get(int(g),()):
      if d in right:label[i,right[d]]=True
-  prev_lookup={}
-  if t:
-   p0,p1=int(v.offsets[t-1]),int(v.offsets[t]);
-   for k,g in enumerate(v.matches[p0:p1]):
-    if g>=0:prev_lookup[int(g)]=v.coords[p0+k,1:].astype(np.float64)*scale
   vel=np.zeros((n0,3));has=np.zeros(n0)
-  for i,g in enumerate(m0):
-   pg=parent.get(int(g),-1) if g>=0 else -1
-   if pg in prev_lookup:vel[i]=c0[i]-prev_lookup[pg]-prev_shift;has[i]=1
+  if parent_mode=='gt':
+   prev_lookup={}
+   if t:
+    p0,p1=int(v.offsets[t-1]),int(v.offsets[t]);
+    for k,g in enumerate(v.matches[p0:p1]):
+     if g>=0:prev_lookup[int(g)]=v.coords[p0+k,1:].astype(np.float64)*scale
+   for i,g in enumerate(m0):
+    pg=parent.get(int(g),-1) if g>=0 else -1
+    if pg in prev_lookup:vel[i]=c0[i]-prev_lookup[pg]-prev_shift;has[i]=1
+  elif t:
+   # Proposal-index NN on previous frame (same signal available at serve).
+   p0,p1=int(v.offsets[t-1]),int(v.offsets[t])
+   prev=v.coords[p0:p1,1:].astype(np.float64)*scale
+   if len(prev):
+    tree=cKDTree(prev); dist,jix=tree.query(c0-shift,k=1)
+    if np.ndim(dist)==0: dist=np.asarray([dist]); jix=np.asarray([jix])
+    ok=dist<=args.relaxed
+    vel[ok]=c0[ok]-prev[jix[ok]]-prev_shift; has[ok]=1
   predicted=c0+shift+args.velocity_weight*vel;motion_delta=c1[None,:,:]-predicted[:,None,:];motion=np.linalg.norm(motion_delta,axis=2);raw_delta=c1[None,:,:]-c0[:,None,:];raw=np.linalg.norm(raw_delta,axis=2);base_cost=motion+.05*reg
   dens0=(cdist(c0,c0)<=15).sum(1)-1;dens1=(cdist(c1,c1)<=15).sum(1)-1
   zmax=max((v.image_shape_raw[1]-1)*scale[0],1);zb0=np.minimum(c0[:,0]/zmax,1-c0[:,0]/zmax);zb1=np.minimum(c1[:,0]/zmax,1-c1[:,0]/zmax)
@@ -120,7 +139,8 @@ def residuals(model,x,mean,std,args):
  return np.concatenate(out)
 
 def main():
- args=argspec();random.seed(args.seed);np.random.seed(args.seed);torch.manual_seed(args.seed);args.device=str(torch.device(args.device if torch.cuda.is_available() else 'cpu'));tr,va=ft.load_split(args.splits,0)
+ args=argspec();random.seed(args.seed);np.random.seed(args.seed);torch.manual_seed(args.seed);args.device=str(torch.device(args.device if torch.cuda.is_available() else 'cpu'));tr,va=ft.load_split(args.splits,args.fold)
+ print(f'Motion fold={args.fold} parent_mode={args.parent_mode} train={len(tr)} val={len(va)}',flush=True)
  if args.rebuild_cache or not (args.cache/'train.npz').exists():make_cache(tr,'train',args);make_cache(va,'val',args)
  a=np.load(args.cache/'train.npz');v=np.load(args.cache/'val.npz');names=[str(q) for q in a['feature_names']];keep=np.asarray([n not in RUNTIME_DROP for n in names]);runtime_features=[n for n,k in zip(names,keep) if k];x=a['features'][:,keep].astype(np.float32);y=a['labels'].astype(np.float32);xv=v['features'][:,keep].astype(np.float32);yv=v['labels'];sv=v['supervision'];gv=v['groups'];src=v['src'];tgt=v['tgt'];reg=v['registered'];meta=v['group_meta'];mean=x.mean(0);std=x.std(0).clip(1e-4);print('Runtime-safe features',len(runtime_features),runtime_features)
  model=MotionResidual(x.shape[1]).to(args.device);opt=torch.optim.AdamW(model.parameters(),lr=args.lr,weight_decay=1e-4);args.output.mkdir(parents=True,exist_ok=True)
