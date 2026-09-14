@@ -620,6 +620,13 @@ def main() -> None:
                              "Default 0.99: the detector is poorly calibrated because the "
                              "ground truth is sparse (only some cells annotated), so a high "
                              "threshold keeps precision up. Sweep it for your model.")
+    parser.add_argument("--pool-kernel-um", type=float, default=3.0,
+                        help="Local-max pool kernel size in µm for peak extraction.")
+    parser.add_argument("--edge-threshold", type=float, default=0.5,
+                        help="Min edge probability kept after edge activation.")
+    parser.add_argument("--edge-activation", type=str, default="softmax",
+                        choices=["softmax", "sigmoid"],
+                        help="Activation applied to raw edge logits.")
     parser.add_argument("--use-ilp", action="store_true",
                         help="Post-process the predicted graph with the tracksdata ILP "
                              "solver (global, flow-consistent linking) instead of greedy "
@@ -645,6 +652,9 @@ def main() -> None:
     )
     cfg = PredictConfig(
         det_threshold=args.det_threshold,
+        pool_kernel_um=args.pool_kernel_um,
+        threshold=args.edge_threshold,
+        edge_activation=args.edge_activation,
         use_ilp=args.use_ilp,
         ilp_edge_weight=args.ilp_edge_weight,
         ilp_appearance_weight=args.ilp_appearance_weight,
