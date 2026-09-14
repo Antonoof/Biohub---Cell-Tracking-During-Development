@@ -45,3 +45,4 @@ kaggle.json
 *.pem
 *.key
 public_models/
+.tmp

@@ -638,7 +638,29 @@ def main():
     ap.add_argument("--device", default="auto")
     ap.add_argument("--slice", default=None, help="python slice on sorted stems, e.g. :10")
     ap.add_argument("--stems", default=None, help="comma-separated stems")
+    ap.add_argument("--unet-thresh", type=float, default=None)
+    ap.add_argument("--cand-thr", type=float, default=None)
+    ap.add_argument("--nms-um", type=float, default=None)
+    ap.add_argument("--max-link-um", type=float, default=None)
+    ap.add_argument("--tight-um", type=float, default=None)
     args = ap.parse_args()
+    global UNET_THRESH, CAND_THR, DETECT_THRESH, NMS_UM, MAX_LINK_UM, TIGHT_UM
+    if args.unet_thresh is not None:
+        UNET_THRESH = float(args.unet_thresh)
+    if args.cand_thr is not None:
+        CAND_THR = float(args.cand_thr)
+    if args.nms_um is not None:
+        NMS_UM = float(args.nms_um)
+    if args.max_link_um is not None:
+        MAX_LINK_UM = float(args.max_link_um)
+    if args.tight_um is not None:
+        TIGHT_UM = float(args.tight_um)
+    DETECT_THRESH = min(UNET_THRESH, CAND_THR) if REPAIR else UNET_THRESH
+    print(
+        f"knobs unet_thresh={UNET_THRESH} cand_thr={CAND_THR} nms_um={NMS_UM} "
+        f"max_link_um={MAX_LINK_UM} tight_um={TIGHT_UM}",
+        flush=True,
+    )
     device = pick_device(args.device)
     print("device", device, flush=True)
     load_models(device, args.weight_root)

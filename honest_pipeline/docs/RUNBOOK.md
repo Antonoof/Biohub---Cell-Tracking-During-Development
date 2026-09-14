@@ -23,8 +23,8 @@ $PY scripts/verify_splits.py
 
 | # | Stage | Needs | Parallel | ETA (full) | Metrics to watch |
 |---|---|---|---|---|---|
-| 1 | **P1 detector** GKF5 | raw zarr/geff | 5 GPUs | **~8–20 h** / fold @50ep (load ~2min; epoch depends on max-iters) | `runs/01_p1_detector/*/summary.json`, val acc/recall in train log |
-| 2 | **P2 detector** GKF5 | same | 5 GPUs | same as P1 | same under `02_p2_detector` — **no alltrain** |
+| 1 | **0_917 Exp203 detector** | public weights | GPU 6/7 | ~2 h / 199 | `runs/p1_candidate_compare/kaggle_train_all/classical_exp203` adj **0.870** |
+| 2 | **P2 detector** | — | — | — | **dropped** (stack replaces P1+P2) |
 | 3 | Assemble OOF index | P1/P2 fold weights | CPU | minutes | `assembled_*/summary.json` → `ready_for_oof_predict` |
 | 4 | OOF predict + ILP graphs | P1/P2 OOF | multi-GPU | hours | graph Jaccard later |
 | 5 | **DeepCenter** GKF5 | raw | 5 GPUs | **~2–6 h** / fold @30ep | `runs/11_deepcenter/*/weights/history.csv`, gate_summary.json |
@@ -34,8 +34,15 @@ $PY scripts/verify_splits.py
 | 9 | Ownership | geometry parquet | CPU | **~10–30 min** | `oof_gkf_movie.parquet`, threshold |
 | 10 | EdgeGRAFT / CandidateGRAFT | labels on **OOF graphs** | CPU | **~30–90 min** | oof parquet; never stale `.951/.952` |
 
-**Start now with stages that only need raw data: P1 → P2 → DeepCenter.**  
-Downstream tabular stages need banks rebuilt from honest OOF graphs (ban `.934/.951/.952`).
+**Detector is 0_917 Exp203** (P1/P2 dropped). DeepCenter GKF5 already trained. Next: freeze gate + rebuild motion proposals from 0_917 graphs.
+
+```bash
+$PY $HP/scripts/freeze_0917_stack_oof.py
+$PY $HP/scripts/export_exp203_proposals.py \
+  --geff-dir $HP/runs/p1_candidate_compare/kaggle_train_all/classical_exp203 \
+  --data-dir $TRAIN \
+  --out-dir $BIO/data/exp203_0917_proposals
+```
 
 ---
 

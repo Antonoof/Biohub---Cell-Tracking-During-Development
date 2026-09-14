@@ -4,16 +4,24 @@
       "id": "01_p1_detector",
       "kind": "neural",
       "william_entry": "helpers/01_p1_p2_base/shared_repo/scripts/train_unet_transformer.py",
-      "honest_split": "loeo + nested gkf5 (ban alltrain)",
-      "status": "splits_ready",
+      "honest_split": "DROPPED — replaced by public 0_917 Exp203 stack",
+      "status": "replaced_by_exp203_0917",
       "priority": 1
     },
     {
       "id": "02_p2_detector",
       "kind": "neural",
       "william_entry": "helpers/01_p1_p2_base/shared_repo/scripts/train_unet_transformer.py",
-      "honest_split": "same as P1; independent seed; never alltrain for CV cascade",
-      "status": "splits_ready",
+      "honest_split": "DROPPED — 0_917 stack is the sole detector",
+      "status": "dropped",
+      "priority": 1
+    },
+    {
+      "id": "01_detector_0917",
+      "kind": "classical_ensemble",
+      "william_entry": "helpers/12_classical_unet3d/run_exp203_to_geff.py",
+      "honest_split": "public all-train weights; score/report on kaggle train + gkf5 fold means",
+      "status": "selected",
       "priority": 1
     },
     {
