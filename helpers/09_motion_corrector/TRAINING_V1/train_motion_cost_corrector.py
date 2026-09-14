@@ -57,15 +57,25 @@ FEATURES = [
     "z_boundary_tgt",
     "has_predecessor",
     "frozen",
+    # optional extras (appended when --extra-feats != none; still listed for name alignment)
+    "n_comp_src",
+    "n_comp_tgt",
+    "cost_gap_src",
+    "ab_det_mean",
+    "ab_det_min",
+    "ab_disagree_max",
 ]
-# Available in cache build but not in submitted GEFF → drop for serve parity.
+# Available in cache build but not in submitted GEFF → drop for serve parity unless --include-det-feats.
 RUNTIME_DROP = {"det_src", "det_tgt", "det_disagree_src", "det_disagree_tgt", "frozen"}
-
-# Indices into runtime-safe feature list (after RUNTIME_DROP).
-# Order matches FEATURES with drops removed.
-RUNTIME_SAFE = [n for n in FEATURES if n not in RUNTIME_DROP]
+EXTRA_FEAT_NAMES = {
+    "competition": ["n_comp_src", "n_comp_tgt", "cost_gap_src"],
+    "ab_pair": ["ab_det_mean", "ab_det_min", "ab_disagree_max"],
+    "both": ["n_comp_src", "n_comp_tgt", "cost_gap_src", "ab_det_mean", "ab_det_min", "ab_disagree_max"],
+    "none": [],
+}
 DIST_NAMES = {"base_cost", "raw_dist", "registered_dist", "motion_dist", "velocity_mag", "shift_mag"}
 ABS_DELTA = {"abs_dz", "abs_dy", "abs_dx", "abs_reg_dz", "abs_reg_dy", "abs_reg_dx"}
+BASE_FEAT_COUNT = 28  # core columns always written (including det/frozen)
 
 
 def argspec():
@@ -78,6 +88,12 @@ def argspec():
     p.add_argument("--tight", type=float, default=6.2)
     p.add_argument("--relaxed", type=float, default=9.5)
     p.add_argument("--velocity-weight", type=float, default=0.52)
+    p.add_argument(
+        "--velocity-axes",
+        default="iso",
+        help="iso = scalar velocity-weight; or z,y,x floats e.g. 0,0.45,0.47 (production)",
+    )
+    p.add_argument("--reg-weight", type=float, default=0.05, help="base_cost = motion + reg_weight * registered")
     p.add_argument("--residual-scale", type=float, default=2.0)
     p.add_argument("--epochs", type=int, default=40)
     p.add_argument("--batch-size", type=int, default=8192)
@@ -85,6 +101,13 @@ def argspec():
     p.add_argument("--weight-decay", type=float, default=1e-4)
     p.add_argument("--patience", type=int, default=7)
     p.add_argument("--negative-ratio", type=int, default=20)
+    p.add_argument(
+        "--mine-mode",
+        default="hard",
+        choices=["hard", "random", "ambiguous", "hard_ambiguous"],
+        help="Negative mining for train cache rows",
+    )
+    p.add_argument("--ambiguous-margin", type=float, default=1.5, help="um cost margin for ambiguous mining")
     p.add_argument("--seed", type=int, default=2028)
     p.add_argument("--rebuild-cache", action="store_true")
     p.add_argument("--max-videos", type=int, default=0)
@@ -121,10 +144,26 @@ def argspec():
         "--feat-mode",
         default="raw",
         choices=["raw", "log_dist", "quad", "interact", "log_interact", "full"],
-        help="Feature transforms applied after RUNTIME_DROP (serve-reproducible)",
+        help="Feature transforms applied after column keep",
     )
-    p.add_argument("--loss", default="focal", choices=["focal", "bce", "focal_soft", "asymmetric"])
+    p.add_argument(
+        "--include-det-feats",
+        action="store_true",
+        help="Keep det_src/tgt + P1/P2 disagreement (member A/B) features",
+    )
+    p.add_argument(
+        "--extra-feats",
+        default="none",
+        choices=["none", "competition", "ab_pair", "both"],
+        help="Extra cache-time features: competitor counts / AB pair signals",
+    )
+    p.add_argument(
+        "--loss",
+        default="focal",
+        choices=["focal", "bce", "focal_soft", "asymmetric", "ranking", "margin"],
+    )
     p.add_argument("--focal-gamma", type=float, default=2.0)
+    p.add_argument("--rank-margin", type=float, default=0.5)
     p.add_argument("--logit-bias", type=float, default=2.5)
     p.add_argument("--learn-logit-bias", action="store_true")
     p.add_argument("--pos-weight", type=float, default=1.0)
@@ -133,6 +172,16 @@ def argspec():
     p.add_argument("--grad-clip", type=float, default=2.0)
     p.add_argument("--exp-name", default="", help="Stored in checkpoint/metrics for sweeps")
     return p.parse_args()
+
+
+def parse_velocity_axes(args) -> np.ndarray | None:
+    s = str(args.velocity_axes).strip().lower()
+    if s in ("iso", "scalar", ""):
+        return None
+    parts = [float(x) for x in s.replace(" ", "").split(",")]
+    if len(parts) != 3:
+        raise ValueError(f"--velocity-axes needs 3 floats or 'iso', got {args.velocity_axes}")
+    return np.asarray(parts, dtype=np.float64)
 
 
 # ---------------------------------------------------------------------------
@@ -175,6 +224,12 @@ def transform_features(x: np.ndarray, names: list[str], mode: str) -> tuple[np.n
             ("motion_dist", "registered_dist"),
             ("density_src", "density_tgt"),
             ("abs_dz", "abs_reg_dz"),
+            ("det_disagree_src", "det_disagree_tgt"),
+            ("det_src", "det_tgt"),
+            ("det_disagree_src", "base_cost"),
+            ("ab_disagree_max", "base_cost"),
+            ("n_comp_src", "base_cost"),
+            ("cost_gap_src", "has_predecessor"),
         ]
         for a, b in pairs:
             if a in idx and b in idx:

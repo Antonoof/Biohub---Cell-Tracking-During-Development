@@ -44,3 +44,4 @@ Thumbs.db
 kaggle.json
 *.pem
 *.key
+public_models/
