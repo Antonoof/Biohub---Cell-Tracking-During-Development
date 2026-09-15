@@ -436,6 +436,45 @@ def shifts_for_video(v):
     return shifts
 
 
+def _mine_negatives(neg: np.ndarray, costs: np.ndarray, nk: int, args, gid: int) -> np.ndarray:
+    """Select nk negative pair indices from `neg` according to --mine-mode."""
+    mode = getattr(args, "mine_mode", "hard")
+    if nk <= 0 or len(neg) <= nk:
+        return neg
+    if mode == "random":
+        rng = np.random.default_rng(int(getattr(args, "seed", 0)) + int(gid))
+        pick = rng.choice(len(neg), size=nk, replace=False)
+        return neg[pick]
+    if mode == "ambiguous":
+        margin = float(getattr(args, "ambiguous_margin", 1.5))
+        gate = float(getattr(args, "tight", 6.2))
+        score = np.abs(costs - gate)
+        # prefer costs inside [gate-margin, gate+margin], then nearest to gate
+        in_band = np.abs(costs - gate) <= margin
+        order = np.lexsort((score, ~in_band))
+        return neg[order[:nk]]
+    if mode == "hard_ambiguous":
+        nk_h = max(1, nk // 2)
+        nk_a = nk - nk_h
+        hard = neg[np.argpartition(costs, nk_h - 1)[:nk_h]]
+        margin = float(getattr(args, "ambiguous_margin", 1.5))
+        gate = float(getattr(args, "tight", 6.2))
+        score = np.abs(costs - gate)
+        in_band = np.abs(costs - gate) <= margin
+        order = np.lexsort((score, ~in_band))
+        amb = []
+        hard_set = set(hard.tolist())
+        for idx in order:
+            j = int(neg[idx])
+            if j not in hard_set:
+                amb.append(j)
+            if len(amb) >= nk_a:
+                break
+        return np.concatenate([hard, np.asarray(amb, dtype=neg.dtype)]) if amb else hard
+    # hard (default): lowest geometric cost = hardest negatives
+    return neg[np.argpartition(costs, nk - 1)[:nk]]
+
+
 def video_rows(v, group_start, train, args):
     scale = np.asarray(v.voxel_scale_um, np.float64)
     shifts = shifts_for_video(v)
@@ -500,12 +539,17 @@ def video_rows(v, group_start, train, args):
                 ok = dist <= args.relaxed
                 vel[ok] = c0[ok] - prev[jix[ok]] - prev_shift
                 has[ok] = 1
-        predicted = c0 + shift + args.velocity_weight * vel
+        axes = parse_velocity_axes(args)
+        if axes is None:
+            predicted = c0 + shift + args.velocity_weight * vel
+        else:
+            predicted = c0 + shift + vel * axes
         motion_delta = c1[None, :, :] - predicted[:, None, :]
         motion = np.linalg.norm(motion_delta, axis=2)
         raw_delta = c1[None, :, :] - c0[:, None, :]
         raw = np.linalg.norm(raw_delta, axis=2)
-        base_cost = motion + 0.05 * reg
+        rw = float(getattr(args, "reg_weight", 0.05))
+        base_cost = motion + rw * reg
         dens0 = (cdist(c0, c0) <= 15).sum(1) - 1
         dens1 = (cdist(c1, c1) <= 15).sum(1) - 1
         zmax = max((v.image_shape_raw[1] - 1) * scale[0], 1)
@@ -517,44 +561,65 @@ def video_rows(v, group_start, train, args):
             neg = np.flatnonzero(~label[ii, jj])
             nk = min(len(neg), max(64, max(1, len(pos)) * args.negative_ratio))
             if nk < len(neg):
-                neg = neg[np.argpartition(base_cost[ii[neg], jj[neg]], nk - 1)[:nk]]
-            take = np.concatenate([pos, neg])
-            ii, jj = ii[take], jj[take]
+                neg = _mine_negatives(neg, base_cost[ii[neg], jj[neg]], nk, args, gid)
+            take = np.concatenate([pos, neg]) if len(pos) or len(neg) else pos
+            if len(take):
+                ii, jj = ii[take], jj[take]
         if len(ii):
             md0 = v.member_det_prob[a0:a1]
             md1 = v.member_det_prob[b0:b1]
-            f = np.column_stack(
-                [
-                    base_cost[ii, jj],
-                    raw[ii, jj],
-                    reg[ii, jj],
-                    motion[ii, jj],
-                    np.abs(raw_delta[ii, jj, 0]),
-                    np.abs(raw_delta[ii, jj, 1]),
-                    np.abs(raw_delta[ii, jj, 2]),
-                    np.abs(reg_delta[ii, jj, 0]),
-                    np.abs(reg_delta[ii, jj, 1]),
-                    np.abs(reg_delta[ii, jj, 2]),
-                    vel[ii, 0],
-                    vel[ii, 1],
-                    vel[ii, 2],
-                    np.linalg.norm(vel[ii], axis=1),
-                    np.full(len(ii), shift[0]),
-                    np.full(len(ii), shift[1]),
-                    np.full(len(ii), shift[2]),
-                    np.full(len(ii), np.linalg.norm(shift)),
-                    v.fused_det_prob[a0:a1][ii],
-                    v.fused_det_prob[b0:b1][jj],
-                    np.abs(md0[ii, 0] - md0[ii, 1]),
-                    np.abs(md1[jj, 0] - md1[jj, 1]),
-                    dens0[ii],
-                    dens1[jj],
-                    zb0[ii],
-                    zb1[jj],
-                    has[ii],
-                    np.full(len(ii), float(t in v.frozen_sources)),
-                ]
-            ).astype(np.float32)
+            cols = [
+                base_cost[ii, jj],
+                raw[ii, jj],
+                reg[ii, jj],
+                motion[ii, jj],
+                np.abs(raw_delta[ii, jj, 0]),
+                np.abs(raw_delta[ii, jj, 1]),
+                np.abs(raw_delta[ii, jj, 2]),
+                np.abs(reg_delta[ii, jj, 0]),
+                np.abs(reg_delta[ii, jj, 1]),
+                np.abs(reg_delta[ii, jj, 2]),
+                vel[ii, 0],
+                vel[ii, 1],
+                vel[ii, 2],
+                np.linalg.norm(vel[ii], axis=1),
+                np.full(len(ii), shift[0]),
+                np.full(len(ii), shift[1]),
+                np.full(len(ii), shift[2]),
+                np.full(len(ii), np.linalg.norm(shift)),
+                v.fused_det_prob[a0:a1][ii],
+                v.fused_det_prob[b0:b1][jj],
+                np.abs(md0[ii, 0] - md0[ii, 1]),
+                np.abs(md1[jj, 0] - md1[jj, 1]),
+                dens0[ii],
+                dens1[jj],
+                zb0[ii],
+                zb1[jj],
+                has[ii],
+                np.full(len(ii), float(t in v.frozen_sources)),
+            ]
+            extra = getattr(args, "extra_feats", "none")
+            if extra and extra != "none":
+                inf = np.where(candidate, base_cost, 1e9)
+                best = inf.min(axis=1)
+                inf2 = inf.copy()
+                inf2[np.arange(n0), inf.argmin(axis=1)] = 1e9
+                gap = inf2.min(axis=1) - best
+                ncs = candidate.sum(axis=1).astype(np.float64)
+                nct = candidate.sum(axis=0).astype(np.float64)
+                extra_map = {
+                    "n_comp_src": ncs[ii],
+                    "n_comp_tgt": nct[jj],
+                    "cost_gap_src": gap[ii],
+                    "ab_det_mean": 0.5 * (md0[ii].mean(axis=1) + md1[jj].mean(axis=1)),
+                    "ab_det_min": np.minimum(md0[ii].min(axis=1), md1[jj].min(axis=1)),
+                    "ab_disagree_max": np.maximum(
+                        np.abs(md0[ii, 0] - md0[ii, 1]), np.abs(md1[jj, 0] - md1[jj, 1])
+                    ),
+                }
+                for name in EXTRA_FEAT_NAMES.get(extra, []):
+                    cols.append(extra_map[name])
+            f = np.column_stack(cols).astype(np.float32)
             rows.append(
                 (
                     f,
@@ -582,6 +647,10 @@ def make_cache(stems, name, args):
     arrays = [np.concatenate([r[i] for r in allrows]) for i in range(7)]
     gm = np.asarray(meta, np.int32)
     args.cache.mkdir(parents=True, exist_ok=True)
+    extra = getattr(args, "extra_feats", "none")
+    names = list(FEATURES[:BASE_FEAT_COUNT])
+    if extra and extra != "none":
+        names.extend(EXTRA_FEAT_NAMES.get(extra, []))
     np.savez_compressed(
         args.cache / f"{name}.npz",
         features=arrays[0],
@@ -592,7 +661,7 @@ def make_cache(stems, name, args):
         tgt=arrays[5],
         registered=arrays[6],
         group_meta=gm,
-        feature_names=np.asarray(FEATURES),
+        feature_names=np.asarray(names),
     )
     print(name, len(arrays[1]), "positive", int(arrays[1].sum()), "groups", len(gm))
 
@@ -660,6 +729,29 @@ def compute_loss(logit, yb, args):
         pt = p * yb + (1 - p) * (1 - yb)
         w = torch.where(yb > 0.5, torch.full_like(yb, args.pos_weight), torch.ones_like(yb))
         return (((1 - pt) ** args.focal_gamma) * bce * w).mean()
+    if args.loss == "ranking":
+        pos = logit[yb > 0.5]
+        neg = logit[yb <= 0.5]
+        if pos.numel() == 0 or neg.numel() == 0:
+            return F.binary_cross_entropy_with_logits(logit, yb)
+        m = float(getattr(args, "rank_margin", 0.5))
+        if pos.numel() > 256:
+            pos = pos[torch.randperm(pos.numel(), device=pos.device)[:256]]
+        if neg.numel() > 256:
+            neg = neg[torch.randperm(neg.numel(), device=neg.device)[:256]]
+        return F.relu(m - pos.unsqueeze(1) + neg.unsqueeze(0)).mean()
+    if args.loss == "margin":
+        m = float(getattr(args, "rank_margin", 0.5))
+        pos = logit[yb > 0.5]
+        neg = logit[yb <= 0.5]
+        parts = []
+        if pos.numel():
+            parts.append(F.relu(m - pos).mean())
+        if neg.numel():
+            parts.append(F.relu(m + neg).mean())
+        if not parts:
+            return F.binary_cross_entropy_with_logits(logit, yb)
+        return parts[0] if len(parts) == 1 else parts[0] + parts[1]
     # focal / focal_soft
     bce = F.binary_cross_entropy_with_logits(logit, yb, reduction="none")
     p = torch.sigmoid(logit)
@@ -686,8 +778,11 @@ def main():
         make_cache(va, "val", args)
     a = np.load(args.cache / "train.npz")
     v = np.load(args.cache / "val.npz")
-    names = [str(q) for q in a["feature_names"]]
-    keep = np.asarray([n not in RUNTIME_DROP for n in names])
+    names = [str(q) for q in a["feature_names"]][: a["features"].shape[1]]
+    drop = set(RUNTIME_DROP)
+    if getattr(args, "include_det_feats", False):
+        drop -= {"det_src", "det_tgt", "det_disagree_src", "det_disagree_tgt"}
+    keep = np.asarray([n not in drop for n in names])
     runtime_features = [n for n, k in zip(names, keep) if k]
     x0 = a["features"][:, keep].astype(np.float32)
     xv0 = v["features"][:, keep].astype(np.float32)

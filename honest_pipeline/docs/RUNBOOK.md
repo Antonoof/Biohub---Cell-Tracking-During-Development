@@ -23,10 +23,10 @@ $PY scripts/verify_splits.py
 
 | # | Stage | Needs | Parallel | ETA (full) | Metrics to watch |
 |---|---|---|---|---|---|
-| 1 | **0_917 Exp203 detector** | public weights | GPU 6/7 | ~2 h / 199 | `runs/p1_candidate_compare/kaggle_train_all/classical_exp203` adj **0.870** |
-| 2 | **P2 detector** | — | — | — | **dropped** (stack replaces P1+P2) |
-| 3 | Assemble OOF index | P1/P2 fold weights | CPU | minutes | `assembled_*/summary.json` → `ready_for_oof_predict` |
-| 4 | OOF predict + ILP graphs | P1/P2 OOF | multi-GPU | hours | graph Jaccard later |
+| 1 | **P1 Support Pack** | public weights | already done | 199 GEFFs | `kaggle_train_all/support_pack` adj **0.911** / GKF5 **0.913** |
+| 2 | **P2 0_917 Exp203** | public weights | already done | 199 GEFFs | `kaggle_train_all/classical_exp203` adj **0.870** / GKF5 **0.872** |
+| 3 | Assemble OOF index | existing P1/P2 GEFFs | CPU | minutes | `assembled_*/summary.json` → `ready_for_oof_predict` |
+| 4 | OOF graphs | public all-train GEFFs | already done | 175/175 | bake-off `metrics.json` gkf5 block |
 | 5 | **DeepCenter** GKF5 | raw | 5 GPUs | **~2–6 h** / fold @30ep | `runs/11_deepcenter/*/weights/history.csv`, gate_summary.json |
 | 6 | **Motion** GKF5 | proposals bank | 5 GPUs | **~1–3 h** / fold if cache exists | `runs/04_motion_corrector/*/weights/metrics.json` Jaccard |
 | 7 | Model C decoder | evidence banks | CPU/GPU light | **~30–90 min** | `oof_*.parquet`, summary threshold OOF-only |
@@ -34,14 +34,46 @@ $PY scripts/verify_splits.py
 | 9 | Ownership | geometry parquet | CPU | **~10–30 min** | `oof_gkf_movie.parquet`, threshold |
 | 10 | EdgeGRAFT / CandidateGRAFT | labels on **OOF graphs** | CPU | **~30–90 min** | oof parquet; never stale `.951/.952` |
 
-**Detector is 0_917 Exp203** (P1/P2 dropped). DeepCenter GKF5 already trained. Next: freeze gate + rebuild motion proposals from 0_917 graphs.
+**P1 = Support Pack (serve graph), P2 = 0_917 (motion member only).** Two motion applies, both lose to P1 **0.911 / 0.913**, so `runs/oof_graphs/current` → P1:
+
+- proposal rebuild (`apply_motion_oof.py`): e2e adj **0.888 / GKF5 0.889**
+- production relink on P1 ILP nodes (`apply_production_motion_relink.py`, notebook `motion_relink_edges`): e2e adj **0.898 / GKF5 0.900**
+
+Motion checkpoints stay frozen; they are not the serve graph.
 
 ```bash
-$PY $HP/scripts/freeze_0917_stack_oof.py
-$PY $HP/scripts/export_exp203_proposals.py \
-  --geff-dir $HP/runs/p1_candidate_compare/kaggle_train_all/classical_exp203 \
+# Freeze serve + apply OOF motion + bank graphs for Model C / grafts
+chmod +x $HP/scripts/freeze_cascade_for_downstream.sh
+$HP/scripts/freeze_cascade_for_downstream.sh
+# Event cache (zarr reads) and native Model-C evidence (GPUs 3–7) are started from that graph bank.
+```
+
+Downstream train (after event-cache parts + evidence npz exist):
+
+```bash
+$PY $HP/stages/05_model_c/launch_decoder.py --tag model_c_gkf5 \
+  --train-evidence $HP/runs/oof_graphs/model_c_evidence/train \
+  --held-evidence $HP/runs/oof_graphs/model_c_evidence/held \
+  --practice-evidence $HP/runs/oof_graphs/model_c_evidence/practice
+```
+
+### Metrics (do not mix)
+
+| Number | What it is |
+|---|---|
+| **0.911 / 0.913** | P1 Support Pack `adj_edge_jaccard` on 199 movies / GKF5 mean-of-fold-means. **Current basic-pipe / serve graph.** |
+| **0.870 / 0.872** | P2 0_917 same metric |
+| **0.898 / 0.900** | Production motion relink on P1 ILP nodes (same nodes, replace edges). Loses to P1. |
+| **0.888 / 0.889** | Motion as full graph rebuild from SP∪0_917 proposals. Loses to P1. |
+
+```bash
+$PY $HP/scripts/assemble_public_detector_oof.py
+$PY $HP/scripts/freeze_sp_0917_oof.py
+$PY $HP/scripts/export_ab_geff_proposals.py \
+  --p1-geff-dir $HP/runs/p1_candidate_compare/kaggle_train_all/support_pack \
+  --p2-geff-dir $HP/runs/p1_candidate_compare/kaggle_train_all/classical_exp203 \
   --data-dir $TRAIN \
-  --out-dir $BIO/data/exp203_0917_proposals
+  --out-dir $BIO/data/ab_proposals_sp_0917
 ```
 
 ---

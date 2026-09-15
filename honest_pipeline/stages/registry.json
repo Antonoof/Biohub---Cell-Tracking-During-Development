@@ -3,24 +3,16 @@
     {
       "id": "01_p1_detector",
       "kind": "neural",
-      "william_entry": "helpers/01_p1_p2_base/shared_repo/scripts/train_unet_transformer.py",
-      "honest_split": "DROPPED — replaced by public 0_917 Exp203 stack",
-      "status": "replaced_by_exp203_0917",
+      "william_entry": "public_models/Biohub Tracking Support Pack",
+      "honest_split": "public all-train Support Pack; GKF5 val GEFFs already scored",
+      "status": "selected",
       "priority": 1
     },
     {
       "id": "02_p2_detector",
-      "kind": "neural",
-      "william_entry": "helpers/01_p1_p2_base/shared_repo/scripts/train_unet_transformer.py",
-      "honest_split": "DROPPED — 0_917 stack is the sole detector",
-      "status": "dropped",
-      "priority": 1
-    },
-    {
-      "id": "01_detector_0917",
       "kind": "classical_ensemble",
       "william_entry": "helpers/12_classical_unet3d/run_exp203_to_geff.py",
-      "honest_split": "public all-train weights; score/report on kaggle train + gkf5 fold means",
+      "honest_split": "public all-train 0_917 Exp203; GKF5 val GEFFs already scored",
       "status": "selected",
       "priority": 1
     },
@@ -35,8 +27,8 @@
       "id": "04_motion_corrector",
       "kind": "mlp",
       "william_entry": "helpers/09_motion_corrector/TRAINING_V1/train_motion_cost_corrector.py",
-      "honest_split": "gkf5/loeo; train on OOF parents not GT",
-      "status": "pending",
+      "honest_split": "gkf5; winner geom_tight5_rel8; apply e2e then select vs P1 adj",
+      "status": "trained",
       "priority": 2
     },
     {
@@ -91,8 +83,8 @@
       "id": "11_deepcenter",
       "kind": "neural",
       "william_entry": "helpers/10_deepcenter/train_full_frame_center_detector.py",
-      "honest_split": "true LOEO 2-fold both directions",
-      "status": "pending",
+      "honest_split": "GKF5 already trained; gate frozen from OOF CSVs",
+      "status": "trained",
       "priority": 5
     }
   ]

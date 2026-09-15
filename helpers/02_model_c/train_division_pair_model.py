@@ -395,7 +395,7 @@ def build_cache(args) -> None:
         stems = stems[:args.max_videos]
 
     source_x, source_y, source_embryo, source_dataset, source_node, source_event = [], [], [], [], [], []
-    pair_x, pair_y, pair_source_idx, pair_event = [], [], [], []
+    pair_x, pair_y, pair_source_idx, pair_event, pair_a, pair_b = [], [], [], [], [], []
     event_rows = []
     event_counter = 0
     parts_dir = args.cache.parent / f"{args.cache.stem}_parts"
@@ -413,6 +413,7 @@ def build_cache(args) -> None:
             pair_x.extend(part["pair_x"]); pair_y.extend(part["pair_y"])
             pair_source_idx.extend([source_base + int(i) for i in part["pair_source_idx"]])
             pair_event.extend([event_base + int(e) if int(e) >= 0 else -1 for e in part["pair_event"]])
+            pair_a.extend(part["pair_a"]); pair_b.extend(part["pair_b"])
             for row in part["event_rows"]:
                 item = dict(row); item["event_id"] = event_base + int(item["event_id"]); event_rows.append(item)
             event_counter += len(part["event_rows"])
@@ -499,6 +500,7 @@ def build_cache(args) -> None:
             for _, y, event_id, a, b, da, db, sister in keep:
                 pair_x.append(pair_features(source, a, b, da, db, sister, sf, nodes, pos, outgoing, incoming, shifts, comp_of, reader, spacing, child_cache))
                 pair_y.append(y); pair_source_idx.append(idx); pair_event.append(event_id)
+                pair_a.append(int(a)); pair_b.append(int(b))
 
         part = {
             "source_x": np.asarray(source_x[source_start:], np.float32),
@@ -514,6 +516,8 @@ def build_cache(args) -> None:
             "pair_source_idx": np.asarray([
                 int(i) - source_start for i in pair_source_idx[pair_start:]
             ], np.int32),
+            "pair_a": np.asarray(pair_a[pair_start:], np.int64),
+            "pair_b": np.asarray(pair_b[pair_start:], np.int64),
             "pair_event": np.asarray([
                 int(e) - event_start if int(e) >= 0 else -1 for e in pair_event[pair_start:]
             ], np.int32),
@@ -535,7 +539,9 @@ def build_cache(args) -> None:
         source_embryo=np.asarray(source_embryo), source_dataset=np.asarray(source_dataset),
         source_node=np.asarray(source_node, np.int64), source_event=np.asarray(source_event, np.int32),
         pair_x=np.asarray(pair_x, np.float32), pair_y=np.asarray(pair_y, np.uint8),
-        pair_source_idx=np.asarray(pair_source_idx, np.int32), pair_event=np.asarray(pair_event, np.int32),
+        pair_source_idx=np.asarray(pair_source_idx, np.int32),
+        pair_a=np.asarray(pair_a, np.int64), pair_b=np.asarray(pair_b, np.int64),
+        pair_event=np.asarray(pair_event, np.int32),
         event_id=np.asarray([r["event_id"] for r in event_rows], np.int32),
         event_dataset=np.asarray([r["dataset"] for r in event_rows]),
         event_embryo=np.asarray([r["embryo"] for r in event_rows]),

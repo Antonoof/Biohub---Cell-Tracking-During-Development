@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Launch ~30 motion-corrector architecture/feature/train experiments on GKF5.
+"""GKF5 motion sweep: P1=Support Pack + P2=0_917 members, no graph blend.
 
-Reuses per-fold caches from a baseline motion run (no rebuild) so each fold is ~1–3 min.
-Round-robins jobs across GPUs 3–7.
+Architecture FIXED (mlp). Baseline builds the pair cache; geom/mining/extra-feats
+rebuild; feat-mode and loss reuse this sweep's baseline_mlp caches.
 """
 from __future__ import annotations
 
@@ -24,61 +24,55 @@ TRAIN = (
 )
 LOCAL_TRAIN = BIO / "helpers/09_motion_corrector/TRAINING_V1/train_motion_cost_corrector.py"
 SPLITS = HP / "splits/dataset_splits_gkf5_train175.json"
-PROPOSALS = BIO / "data/honest_ab_proposals_oof"
+PROPOSALS = BIO / "data/ab_proposals_sp_0917"
 DATA = BIO / "kaggle/input/competitions/biohub-cell-tracking-during-development/train"
-BASE_CACHE_GLOB = "20260914T073012Z_motion_gkf5_fold{fold}"
 
 
 def experiments() -> list[dict]:
-    """~30 named configs. Geometry (tight/relaxed/vw) fixed → shared cache OK."""
+    """One-at-a-time ablations. Arch always mlp. rebuild=True when pair set changes."""
     exps: list[dict] = []
 
-    def add(name: str, **kw):
-        exps.append({"name": name, **kw})
+    def add(name: str, rebuild: bool = False, **kw):
+        kw.setdefault("include_det_feats", True)
+        exps.append({"name": name, "rebuild_cache": rebuild, "arch": "mlp", **kw})
 
-    # --- architectures (raw features, default train) ---
-    for arch in [
-        "mlp",
-        "mlp_wide",
-        "mlp_deep",
-        "resmlp",
-        "realmlp",
-        "realmlp_wide",
-        "tabm",
-        "tabm_wide",
-        "gated",
-        "se_mlp",
-        "highway",
-    ]:
-        add(f"arch_{arch}", arch=arch)
+    # baseline cache for this P1/P2 proposal bank (queued first so feat/loss can reuse it)
+    add("baseline_mlp", rebuild=True)
 
-    # --- feature modes on best-ish arch family ---
+    # --- 1) geometry (pair graph / motion cost) ---
+    add("geom_tight5_rel8", rebuild=True, tight=5.0, relaxed=8.0)
+    add("geom_tight7_rel11", rebuild=True, tight=7.0, relaxed=11.0)
+    add("geom_tight6.2_rel12", rebuild=True, tight=6.2, relaxed=12.0)
+    add("geom_vw0.35", rebuild=True, velocity_weight=0.35)
+    add("geom_vw0.70", rebuild=True, velocity_weight=0.70)
+    add("geom_axes_prod", rebuild=True, velocity_axes="0,0.45,0.47")
+    add("geom_regw0.02", rebuild=True, reg_weight=0.02)
+    add("geom_regw0.15", rebuild=True, reg_weight=0.15)
+
+    # --- 2) negative mining ---
+    add("mine_random", rebuild=True, mine_mode="random")
+    add("mine_ambiguous", rebuild=True, mine_mode="ambiguous")
+    add("mine_hard_ambiguous", rebuild=True, mine_mode="hard_ambiguous")
+    add("mine_hard_nr8", rebuild=True, mine_mode="hard", negative_ratio=8)
+    add("mine_hard_nr40", rebuild=True, mine_mode="hard", negative_ratio=40)
+    add("mine_amb_m0.8", rebuild=True, mine_mode="ambiguous", ambiguous_margin=0.8)
+    add("mine_amb_m2.5", rebuild=True, mine_mode="ambiguous", ambiguous_margin=2.5)
+
+    # --- 3) features (transforms reuse baseline cache; extras rebuild) ---
     for feat in ["log_dist", "quad", "interact", "log_interact", "full"]:
-        add(f"feat_{feat}_realmlp", arch="realmlp", feat_mode=feat)
-        add(f"feat_{feat}_tabm", arch="tabm", feat_mode=feat)
+        add(f"feat_{feat}", feat_mode=feat)
+    add("feat_no_det", include_det_feats=False)
+    add("feat_extra_competition", rebuild=True, extra_feats="competition")
+    add("feat_extra_both", rebuild=True, extra_feats="both")
 
-    # --- residual scale ---
-    for rs in [1.0, 3.0, 4.0, 6.0]:
-        add(f"rscale_{rs:g}_realmlp", arch="realmlp", residual_scale=rs)
+    # --- 4) losses (same pairs) ---
+    add("loss_bce", loss="bce")
+    add("loss_focal_g1", loss="focal", focal_gamma=1.0)
+    add("loss_focal_soft", loss="focal_soft")
+    add("loss_asymmetric_pw2", loss="asymmetric", pos_weight=2.0)
+    add("loss_ranking", loss="ranking")
+    add("loss_margin", loss="margin")
 
-    # --- training ---
-    add("train_lr5e4_realmlp", arch="realmlp", lr=5e-4)
-    add("train_lr5e3_realmlp", arch="realmlp", lr=5e-3)
-    add("train_wd1e3_realmlp", arch="realmlp", weight_decay=1e-3)
-    add("train_drop02_realmlp", arch="realmlp", dropout=0.2)
-    add("train_cosine_realmlp", arch="realmlp", scheduler="cosine", epochs=50, patience=10)
-    add("train_bce_realmlp", arch="realmlp", loss="bce")
-    add("train_asym_pw2_realmlp", arch="realmlp", loss="asymmetric", pos_weight=2.0)
-    add("train_focal_g1_realmlp", arch="realmlp", loss="focal", focal_gamma=1.0)
-    add("train_learn_bias_realmlp", arch="realmlp", learn_logit_bias=True)
-    add("train_bs4k_realmlp", arch="realmlp", batch_size=4096)
-    add("train_patience12_tabm", arch="tabm", patience=12, epochs=50)
-    add("train_tabm_k16", arch="tabm", tabm_k=16)
-    add("combo_full_realmlp_rs4", arch="realmlp", feat_mode="full", residual_scale=4.0, scheduler="cosine", epochs=50, patience=10)
-    add("combo_interact_tabm_asym", arch="tabm", feat_mode="interact", loss="asymmetric", pos_weight=2.0, patience=10)
-    add("combo_log_gated_rs3", arch="gated", feat_mode="log_dist", residual_scale=3.0, lr=1e-3, dropout=0.1)
-
-    # Deduplicate by name (arch_mlp etc already unique)
     seen = set()
     out = []
     for e in exps:
@@ -89,17 +83,21 @@ def experiments() -> list[dict]:
     return out
 
 
-def find_cache(fold: int) -> Path:
+def find_cache(fold: int, root: Path | None = None) -> Path:
+    if root is not None:
+        here = root / "baseline_mlp" / f"fold_{fold}" / "cache"
+        if (here / "train.npz").exists():
+            return here
     base = HP / "runs/04_motion_corrector"
-    # Prefer known baseline; else any fold cache
-    preferred = base / BASE_CACHE_GLOB.format(fold=fold) / "cache"
-    if (preferred / "train.npz").exists():
-        return preferred
-    cands = sorted(base.glob(f"*motion_gkf5_fold{fold}/cache"))
-    for c in reversed(cands):
-        if (c / "train.npz").exists():
-            return c
-    raise FileNotFoundError(f"No cache for fold {fold}")
+    for pat in (
+        f"*motion_sp_p2_0917*/baseline_mlp/fold_{fold}/cache",
+        f"*motion_sp_p2*/baseline_mlp/fold_{fold}/cache",
+    ):
+        cands = sorted(base.glob(pat))
+        for c in reversed(cands):
+            if (c / "train.npz").exists():
+                return c
+    raise FileNotFoundError(f"No SP+P2 baseline cache for fold {fold}")
 
 
 def build_cmd(exp: dict, fold: int, out_dir: Path, cache: Path, gpu: int) -> list[str]:
@@ -147,15 +145,35 @@ def build_cmd(exp: dict, fold: int, out_dir: Path, cache: Path, gpu: int) -> lis
         str(exp.get("batch_size", 8192)),
         "--scheduler",
         exp.get("scheduler", "none"),
-        "--tabm-k",
-        str(exp.get("tabm_k", 8)),
         "--focal-gamma",
         str(exp.get("focal_gamma", 2.0)),
         "--pos-weight",
         str(exp.get("pos_weight", 1.0)),
+        "--tight",
+        str(exp.get("tight", 6.2)),
+        "--relaxed",
+        str(exp.get("relaxed", 9.5)),
+        "--velocity-weight",
+        str(exp.get("velocity_weight", 0.52)),
+        "--velocity-axes",
+        str(exp.get("velocity_axes", "iso")),
+        "--reg-weight",
+        str(exp.get("reg_weight", 0.05)),
+        "--mine-mode",
+        str(exp.get("mine_mode", "hard")),
+        "--negative-ratio",
+        str(exp.get("negative_ratio", 20)),
+        "--ambiguous-margin",
+        str(exp.get("ambiguous_margin", 1.5)),
+        "--extra-feats",
+        str(exp.get("extra_feats", "none")),
         "--seed",
         str(2028 + fold),
     ]
+    if exp.get("rebuild_cache"):
+        cmd.append("--rebuild-cache")
+    if exp.get("include_det_feats"):
+        cmd.append("--include-det-feats")
     if exp.get("learn_logit_bias"):
         cmd.append("--learn-logit-bias")
     if exp.get("hidden"):
@@ -166,7 +184,7 @@ def build_cmd(exp: dict, fold: int, out_dir: Path, cache: Path, gpu: int) -> lis
 def run_one(exp: dict, fold: int, root: Path, gpu: int) -> dict:
     out = root / exp["name"] / f"fold_{fold}"
     out.mkdir(parents=True, exist_ok=True)
-    cache = find_cache(fold)
+    cache = out / "cache" if exp.get("rebuild_cache") else find_cache(fold, root)
     cmd = build_cmd(exp, fold, out, cache, gpu)
     (out / "cmd.json").write_text(json.dumps({"cmd": cmd, "gpu": gpu, "cache": str(cache)}, indent=2))
     log = out / "train.log"
@@ -237,7 +255,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--gpus", default="3,4,5,6,7")
     ap.add_argument("--folds", default="0,1,2,3,4")
-    ap.add_argument("--tag", default="motion_arch_sweep_v1")
+    ap.add_argument("--tag", default="motion_sp_p2_0917_geom_mine_feat_loss")
     ap.add_argument("--max-exps", type=int, default=0, help="0=all")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()

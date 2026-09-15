@@ -174,7 +174,13 @@ def export_video(stem, args, base, extract_pos_features, open_dataset, model, do
         ab_downsample = tuple(int(x) for x in z["downsample"])
         spacing = z["voxel_scale_um"].astype(np.float32)
     if tuple(downsample) != ab_downsample:
-        raise ValueError(f"{stem}: C downsample {downsample} != A+B {ab_downsample}")
+        # Native detections are multiplied back to raw voxels before save/map.
+        # Honest SP∪0_917 proposals are stored at 1x; Model C infers at [1,4,4].
+        print(
+            f"{stem}: downsample C={tuple(downsample)} AB={ab_downsample}; "
+            "mapping in raw voxel space",
+            flush=True,
+        )
 
     dataset_path = args.data_dir / f"{stem}.zarr"
     if not dataset_path.exists():
