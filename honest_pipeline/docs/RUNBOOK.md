@@ -48,13 +48,14 @@ $HP/scripts/freeze_cascade_for_downstream.sh
 # Event cache (zarr reads) and native Model-C evidence (GPUs 3–7) are started from that graph bank.
 ```
 
-Downstream train (after event-cache parts + evidence npz exist):
+Downstream train (after event-cache parts + evidence npz exist). Decoder is CatBoost+LightGBM+TabM+RealMLP, each scored on GKF5 OOF, then nested-CV NNLS blend. Selection is nested-OOF only (never held20/practice).
 
 ```bash
-$PY $HP/stages/05_model_c/launch_decoder.py --tag model_c_gkf5 \
+CUDA_VISIBLE_DEVICES=3 $PY $HP/stages/05_model_c/launch_decoder.py --tag model_c_gkf5_ensemble \
   --train-evidence $HP/runs/oof_graphs/model_c_evidence/train \
   --held-evidence $HP/runs/oof_graphs/model_c_evidence/held \
-  --practice-evidence $HP/runs/oof_graphs/model_c_evidence/practice
+  --practice-evidence $HP/runs/oof_graphs/model_c_evidence/practice \
+  --backends catboost,lightgbm,tabm,realmlp --device cuda --inner-folds 3
 ```
 
 ### Metrics (do not mix)

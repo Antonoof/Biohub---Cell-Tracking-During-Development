@@ -26,6 +26,28 @@ WILLIAM = (
 )
 LOCAL = ROOT.parent / "helpers/02_model_c/train_model_c_v2_event_decoder.py"
 SPLIT = ROOT.parent / "helpers/02_model_c/division_balanced_175_20_split.json"
+V2_CANDIDATES = (
+    ROOT.parent / "kaggle/input/datasets/antonoof/all_files/model_c",
+    ROOT.parent / "legacy_antonoof/all_files/model_c",
+    ROOT.parent / "william-duckworth-reproducible-training-pipeline/helpers/02_model_c",
+)
+
+
+def _trainer() -> Path:
+    for cand in (LOCAL, WILLIAM):
+        if cand.exists() and (cand.parent / "decoder_backends.py").exists():
+            return cand
+    if LOCAL.exists():
+        return LOCAL
+    return WILLIAM
+
+
+def _v2_artifact() -> Path | None:
+    need = ("pair_model.joblib", "v1_source_model.joblib", "gate_model.joblib")
+    for cand in V2_CANDIDATES:
+        if all((cand / name).is_file() for name in need):
+            return cand
+    return None
 
 
 def main() -> None:
@@ -45,12 +67,22 @@ def main() -> None:
     p.add_argument("--held-evidence", type=Path, required=True)
     p.add_argument("--practice-evidence", type=Path, required=True)
     p.add_argument("--split", type=Path, default=SPLIT)
+    p.add_argument("--v2-artifact", type=Path, default=None)
+    p.add_argument("--backends", default="catboost,lightgbm,tabm,realmlp")
+    p.add_argument("--device", default="cuda")
+    p.add_argument("--inner-folds", type=int, default=3)
     p.add_argument("--extra", nargs=argparse.REMAINDER, default=[])
     args = p.parse_args()
 
     man = json.loads((ROOT / "runs/oof_graphs/manifest.json").read_text())
     graph_dir = Path(man["selected_graph_dir"])
-    script = WILLIAM if WILLIAM.exists() else LOCAL
+    script = _trainer()
+    v2 = args.v2_artifact or _v2_artifact()
+    if v2 is None:
+        raise SystemExit("Missing Division V2 artifact (pair_model.joblib / v1_source_model.joblib / gate_model.joblib)")
+    extra = list(args.extra)
+    if extra and extra[0] == "--":
+        extra = extra[1:]
     n_pt = len(list(args.event_cache.glob("*.pt")))
     n_geff = len(list(graph_dir.glob("*.geff")))
     if n_pt < 100:
@@ -69,6 +101,8 @@ def main() -> None:
             "graph_dir": str(graph_dir),
             "event_cache": str(args.event_cache),
             "selected": man.get("selected"),
+            "v2_artifact": str(v2),
+            "trainer": str(script),
         },
     )
     cmd = [
@@ -88,9 +122,17 @@ def main() -> None:
         str(args.practice_evidence),
         "--split",
         str(args.split),
+        "--v2-artifact",
+        str(v2),
         "--output",
         str(run_dir / "weights"),
-        *args.extra,
+        "--backends",
+        args.backends,
+        "--device",
+        args.device,
+        "--inner-folds",
+        str(args.inner_folds),
+        *extra,
     ]
     (run_dir / "weights").mkdir(parents=True, exist_ok=True)
     print(" ".join(cmd), flush=True)

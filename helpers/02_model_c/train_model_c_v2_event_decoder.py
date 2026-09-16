@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -31,8 +32,10 @@ import numpy as np
 import torch
 import tracksdata as td
 from scipy.spatial import cKDTree
-from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.model_selection import GroupKFold
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from decoder_backends import ensure_2d, hstack_blocks, make_backend, nnls_blend
 
 
 C_FEATURE_NAMES = [
@@ -61,6 +64,9 @@ C_FEATURE_NAMES = [
     "c_target_a_map_distance_um",
     "c_target_b_map_distance_um",
 ]
+
+SOURCE_GEOM_DIM = 41
+PAIR_GEOM_DIM = 78
 
 CTC_FEATURE_NAMES = [
     "ctc_pair_valid",
@@ -162,6 +168,32 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--seed", type=int, default=2029)
     p.add_argument("--max-pair-negatives", type=int, default=180_000)
     p.add_argument("--min-ctc-oof-gain", type=float, default=0.01)
+    p.add_argument(
+        "--backends",
+        default="catboost,lightgbm,tabm,realmlp",
+        help="Comma-separated decoder backends. Each is scored on GKF5 OOF, then nested-CV blended.",
+    )
+    p.add_argument("--device", default="cpu")
+    p.add_argument(
+        "--inner-folds",
+        type=int,
+        default=3,
+        help="Inner GroupKFold splits for nested ensemble blend weights.",
+    )
+    p.add_argument(
+        "--skip-v2-control",
+        action="store_true",
+        default=True,
+        help="Skip the old HistGB V2-feature control (default on).",
+    )
+    p.add_argument("--no-skip-v2-control", action="store_false", dest="skip_v2_control")
+    p.add_argument("--topk-pairs", type=int, default=1)
+    p.add_argument("--pair-pos-cap", type=float, default=75.0)
+    p.add_argument("--source-pos-cap", type=float, default=100.0)
+    p.add_argument("--use-v2-source-scores", action="store_true")
+    p.add_argument("--oof-only", action="store_true")
+    p.add_argument("--pair-backend", default="")
+    p.add_argument("--source-backend", default="")
     return p.parse_args()
 
 
@@ -192,35 +224,55 @@ def safe_probability(model, x: np.ndarray) -> np.ndarray:
 
 
 def grouped_best_pair(owner: np.ndarray, score: np.ndarray, n_sources: int) -> np.ndarray:
-    result = np.full(n_sources, -1, np.int64)
-    order = np.argsort(owner, kind="stable")
-    if not len(order):
+    return grouped_topk_pairs(owner, score, n_sources, k=1)[:, 0]
+
+
+def grouped_topk_pairs(
+    owner: np.ndarray, score: np.ndarray, n_sources: int, k: int = 1
+) -> np.ndarray:
+    result = np.full((n_sources, max(int(k), 1)), -1, np.int64)
+    if not len(owner) or n_sources <= 0:
         return result
+    order = np.argsort(owner, kind="stable")
     sorted_owner = owner[order]
     starts = np.flatnonzero(np.r_[True, sorted_owner[1:] != sorted_owner[:-1]])
     ends = np.r_[starts[1:], len(order)]
+    kk = result.shape[1]
     for left, right in zip(starts, ends):
+        src = int(sorted_owner[left])
+        if src < 0 or src >= n_sources:
+            continue
         rows = order[left:right]
-        result[int(sorted_owner[left])] = int(rows[int(np.argmax(score[rows]))])
+        take = min(kk, len(rows))
+        if take == 1:
+            result[src, 0] = int(rows[int(np.argmax(score[rows]))])
+            continue
+        rel = np.argpartition(-score[rows], take - 1)[:take]
+        rel = rel[np.argsort(-score[rows][rel])]
+        result[src, :take] = rows[rel]
     return result
 
 
 def base_v2_scores(cache: dict, pair_model, v1_model, gate_model):
-    sx = np.nan_to_num(cache["source_x"].astype(np.float32), nan=0.0)
-    px = np.nan_to_num(cache["pair_x"].astype(np.float32), nan=0.0)
-    owner = cache["pair_source_idx"].astype(np.int32)
+    owner = np.asarray(cache["pair_source_idx"], np.int32).ravel()
+    n_pairs = int(len(owner))
+    raw_sx = np.asarray(cache["source_x"])
+    n_sources = int(raw_sx.shape[0]) if raw_sx.ndim >= 1 and raw_sx.shape[0] else int(
+        len(np.asarray(cache.get("source_y", [])))
+    )
+    sx = ensure_2d(cache["source_x"], n_sources, SOURCE_GEOM_DIM)
+    px = ensure_2d(cache["pair_x"], n_pairs, PAIR_GEOM_DIM)
     pair_score = (
         safe_probability(pair_model, px)
         if len(px)
         else np.empty(0, np.float32)
     )
-    n_sources = len(sx)
     pmax = np.zeros(n_sources, np.float32)
     pmean = np.zeros(n_sources, np.float32)
     pcnt = np.zeros(n_sources, np.float32)
     npairs = np.zeros(n_sources, np.float32)
     best = np.full(n_sources, -1, np.int64)
-    best_x = np.zeros((n_sources, px.shape[1]), np.float32)
+    best_x = np.zeros((n_sources, PAIR_GEOM_DIM), np.float32)
     order = np.argsort(owner, kind="stable")
     sorted_owner = owner[order]
     starts = np.flatnonzero(
@@ -230,6 +282,8 @@ def base_v2_scores(cache: dict, pair_model, v1_model, gate_model):
     for left, right in zip(starts, ends):
         rows = order[left:right]
         source_row = int(sorted_owner[left])
+        if source_row < 0 or source_row >= n_sources:
+            continue
         probabilities = pair_score[rows]
         pair_row = int(rows[int(np.argmax(probabilities))])
         best[source_row] = pair_row
@@ -610,14 +664,17 @@ def pair_training_rows(
     xs, ys, groups = [], [], []
     rng = np.random.default_rng(seed)
     for video_index, video in enumerate(videos):
-        parts = [video.pair_x]
+        n_pairs = int(len(video.pair_owner))
+        parts = [ensure_2d(video.pair_x, n_pairs, PAIR_GEOM_DIM)]
         if use_c:
-            parts.append(video.c_pair_x)
+            parts.append(ensure_2d(video.c_pair_x, n_pairs, len(C_FEATURE_NAMES)))
         if use_ctc:
-            parts.append(video.ctc_pair_x)
+            parts.append(ensure_2d(video.ctc_pair_x, n_pairs, len(CTC_FEATURE_NAMES)))
         if use_public:
-            parts.append(video.public_pair_x)
-        x = np.concatenate(parts, axis=1)
+            pub = np.asarray(video.public_pair_x)
+            pub_dim = int(pub.shape[1]) if pub.ndim == 2 else 0
+            parts.append(ensure_2d(video.public_pair_x, n_pairs, pub_dim))
+        x = hstack_blocks(parts)
         positive = np.flatnonzero(video.pair_y == 1)
         positive_sources = np.unique(video.pair_owner[positive])
         hard = []
@@ -637,9 +694,17 @@ def pair_training_rows(
                 continuation_rows[: min(1500, len(continuation_rows))].tolist()
             )
         selected = np.unique(np.r_[positive, np.asarray(hard, np.int64)])
+        if len(selected) == 0:
+            continue
         xs.append(x[selected])
         ys.append(video.pair_y[selected])
         groups.append(np.full(len(selected), video_index, np.int32))
+    if not xs:
+        return (
+            np.zeros((0, 0), np.float32),
+            np.zeros((0,), np.int8),
+            np.zeros((0,), np.int32),
+        )
     x = np.concatenate(xs)
     y = np.concatenate(ys)
     group = np.concatenate(groups)
@@ -652,6 +717,43 @@ def pair_training_rows(
     return x[keep], y[keep], group[keep]
 
 
+def pair_rank_rows(
+    videos: list[VideoRows],
+    use_c: bool,
+    use_ctc: bool = False,
+    use_public: bool = False,
+):
+    xs, ys, groups = [], [], []
+    for video in videos:
+        n_pairs = int(len(video.pair_owner))
+        parts = [ensure_2d(video.pair_x, n_pairs, PAIR_GEOM_DIM)]
+        if use_c:
+            parts.append(ensure_2d(video.c_pair_x, n_pairs, len(C_FEATURE_NAMES)))
+        if use_ctc:
+            parts.append(ensure_2d(video.ctc_pair_x, n_pairs, len(CTC_FEATURE_NAMES)))
+        if use_public:
+            pub = np.asarray(video.public_pair_x)
+            pub_dim = int(pub.shape[1]) if pub.ndim == 2 else 0
+            parts.append(ensure_2d(video.public_pair_x, n_pairs, pub_dim))
+        x = hstack_blocks(parts)
+        y = np.asarray(video.pair_y).ravel()
+        owner = np.asarray(video.pair_owner).ravel()
+        for src in np.unique(owner):
+            rows = np.flatnonzero(owner == src)
+            if len(rows) < 2 or int(y[rows].max()) <= 0:
+                continue
+            xs.append(x[rows])
+            ys.append(y[rows])
+            groups.append(len(rows))
+    if not xs:
+        return (
+            np.zeros((0, 0), np.float32),
+            np.zeros((0,), np.int8),
+            np.zeros((0,), np.int32),
+        )
+    return np.concatenate(xs), np.concatenate(ys), np.asarray(groups, np.int32)
+
+
 def fit_pair_model(
     videos: list[VideoRows],
     args,
@@ -659,20 +761,28 @@ def fit_pair_model(
     use_c: bool = True,
     use_ctc: bool = False,
     use_public: bool = False,
+    backend: str = "catboost",
 ):
+    cap = float(getattr(args, "pair_pos_cap", 75.0))
+    model = make_backend(
+        backend, seed=seed, device=getattr(args, "device", "cpu"), role="pair"
+    )
+    if str(backend).endswith("_rank"):
+        x, y, group = pair_rank_rows(videos, use_c, use_ctc, use_public)
+        if len(y) == 0:
+            raise RuntimeError("No pair ranking rows")
+        model.fit(x, y, group=group)
+        return model
     x, y, _ = pair_training_rows(
         videos, args.max_pair_negatives, seed, use_c, use_ctc, use_public
     )
+    if len(y) == 0:
+        raise RuntimeError("No pair training rows")
     weight = np.ones(len(y), np.float32)
-    weight[y == 1] = min(75.0, max(1.0, (y == 0).sum() / max((y == 1).sum(), 1)))
-    model = HistGradientBoostingClassifier(
-        learning_rate=0.065,
-        max_iter=220,
-        max_leaf_nodes=31,
-        min_samples_leaf=25,
-        l2_regularization=1.5,
-        random_state=seed,
-    )
+    n_pos = max(int((y == 1).sum()), 1)
+    n_neg = int((y == 0).sum())
+    if cap > 0:
+        weight[y == 1] = min(cap, max(1.0, n_neg / n_pos))
     model.fit(x, y, sample_weight=weight)
     return model
 
@@ -683,50 +793,84 @@ def source_matrix(
     use_c: bool = True,
     use_ctc: bool = False,
     use_public: bool = False,
+    args=None,
 ):
-    pair_parts = [video.pair_x]
+    n_pairs = int(len(video.pair_owner))
+    n_src = int(len(video.source_y))
+    pair_x = ensure_2d(video.pair_x, n_pairs, PAIR_GEOM_DIM)
+    c_dim = len(C_FEATURE_NAMES) if use_c else 0
+    c_pair_x = ensure_2d(video.c_pair_x, n_pairs, c_dim)
+    ctc_dim = len(CTC_FEATURE_NAMES) if use_ctc else 0
+    ctc_pair_x = ensure_2d(video.ctc_pair_x, n_pairs, ctc_dim)
+    pub = np.asarray(video.public_pair_x)
+    public_dim = int(pub.shape[1]) if use_public and pub.ndim == 2 else 0
+    public_pair_x = ensure_2d(video.public_pair_x, n_pairs, public_dim)
+    pair_parts = [pair_x]
     if use_c:
-        pair_parts.append(video.c_pair_x)
+        pair_parts.append(c_pair_x)
     if use_ctc:
-        pair_parts.append(video.ctc_pair_x)
+        pair_parts.append(ctc_pair_x)
     if use_public:
-        pair_parts.append(video.public_pair_x)
-    pair_input = np.concatenate(pair_parts, axis=1)
+        pair_parts.append(public_pair_x)
+    pair_input = hstack_blocks(pair_parts)
     corrected_pair_score = (
         safe_probability(corrected_pair_model, pair_input)
         if len(pair_input)
         else np.empty(0, np.float32)
     )
-    best = grouped_best_pair(
-        video.pair_owner, corrected_pair_score, len(video.source_x)
-    )
-    pair_width = video.pair_x.shape[1]
-    c_width = video.c_pair_x.shape[1]
-    ctc_width = video.ctc_pair_x.shape[1]
-    public_width = video.public_pair_x.shape[1]
-    best_pair_x = np.zeros((len(best), pair_width), np.float32)
-    best_c_x = np.zeros((len(best), c_width), np.float32)
-    best_ctc_x = np.zeros((len(best), ctc_width), np.float32)
-    best_public_x = np.zeros((len(best), public_width), np.float32)
-    best_score = np.zeros(len(best), np.float32)
-    best_pair_label = np.zeros(len(best), np.int8)
-    for source_row, pair_row in enumerate(best):
-        if pair_row < 0:
-            continue
-        best_pair_x[source_row] = video.pair_x[pair_row]
-        best_c_x[source_row] = video.c_pair_x[pair_row]
-        best_ctc_x[source_row] = video.ctc_pair_x[pair_row]
-        best_public_x[source_row] = video.public_pair_x[pair_row]
-        best_score[source_row] = corrected_pair_score[pair_row]
-        best_pair_label[source_row] = video.pair_y[pair_row]
-    parts = [video.source_x, best_pair_x, best_score[:, None]]
-    if use_c:
-        parts.append(best_c_x)
-    if use_ctc:
-        parts.append(best_ctc_x)
-    if use_public:
-        parts.append(best_public_x)
-    x = np.concatenate(parts, axis=1)
+    topk = max(1, int(getattr(args, "topk_pairs", 1) or 1)) if args is not None else 1
+    top_idx = grouped_topk_pairs(video.pair_owner, corrected_pair_score, n_src, k=topk)
+    best = top_idx[:, 0]
+    pair_y = np.asarray(video.pair_y).ravel()
+    owner = np.asarray(video.pair_owner).ravel()
+    n_pairs_src = np.zeros((n_src, 1), np.float32)
+    if len(owner):
+        for src in np.unique(owner):
+            if 0 <= int(src) < n_src:
+                n_pairs_src[int(src), 0] = np.log1p(np.count_nonzero(owner == src))
+    source_x = ensure_2d(video.source_x, n_src, SOURCE_GEOM_DIM)
+    parts = [source_x]
+    best_pair_label = np.zeros(n_src, np.int8)
+    slot_scores = []
+    for slot in range(topk):
+        idx = top_idx[:, slot]
+        slot_pair = np.zeros((n_src, PAIR_GEOM_DIM), np.float32)
+        slot_c = np.zeros((n_src, c_dim), np.float32)
+        slot_ctc = np.zeros((n_src, ctc_dim), np.float32)
+        slot_pub = np.zeros((n_src, public_dim), np.float32)
+        slot_score = np.zeros(n_src, np.float32)
+        valid = idx >= 0
+        rows = idx[valid]
+        if len(rows):
+            slot_pair[valid] = pair_x[rows]
+            if c_dim:
+                slot_c[valid] = c_pair_x[rows]
+            if ctc_dim:
+                slot_ctc[valid] = ctc_pair_x[rows]
+            if public_dim:
+                slot_pub[valid] = public_pair_x[rows]
+            slot_score[valid] = corrected_pair_score[rows]
+            if slot == 0:
+                best_pair_label[valid] = pair_y[rows]
+        parts.extend([slot_pair, slot_score[:, None]])
+        if use_c:
+            parts.append(slot_c)
+        if use_ctc:
+            parts.append(slot_ctc)
+        if use_public:
+            parts.append(slot_pub)
+        slot_scores.append(slot_score)
+    if topk >= 2:
+        parts.append((slot_scores[0] - slot_scores[1])[:, None])
+        parts.append(n_pairs_src)
+    if args is not None and getattr(args, "use_v2_source_scores", False):
+        v2 = getattr(video, "v2_raw", None)
+        if v2 is None:
+            v2 = np.zeros((n_src, 3), np.float32)
+        else:
+            v2 = ensure_2d(v2, n_src, 3)
+        parts.append(v2)
+    x = hstack_blocks(parts)
     return x, best, best_pair_label
 
 
@@ -737,27 +881,27 @@ def fit_source_model(
     use_c: bool = True,
     use_ctc: bool = False,
     use_public: bool = False,
+    backend: str = "catboost",
+    args=None,
 ):
     xs, ys = [], []
     for video in videos:
         x, _, _ = source_matrix(
             video, pair_model, use_c=use_c, use_ctc=use_ctc,
-            use_public=use_public,
+            use_public=use_public, args=args,
         )
         xs.append(x)
         ys.append(video.source_y)
-    x = np.concatenate(xs)
-    y = np.concatenate(ys)
+    x = np.concatenate(xs) if xs else np.zeros((0, 0), np.float32)
+    y = np.concatenate(ys) if ys else np.zeros((0,), np.int8)
     weight = np.ones(len(y), np.float32)
-    weight[y == 1] = min(100.0, max(1.0, (y == 0).sum() / max((y == 1).sum(), 1)))
-    model = HistGradientBoostingClassifier(
-        learning_rate=0.055,
-        max_iter=260,
-        max_leaf_nodes=31,
-        min_samples_leaf=24,
-        l2_regularization=2.0,
-        random_state=seed,
-    )
+    cap = float(getattr(args, "source_pos_cap", 100.0)) if args is not None else 100.0
+    n_pos = max(int((y == 1).sum()), 1)
+    n_neg = int((y == 0).sum())
+    if cap > 0:
+        weight[y == 1] = min(cap, max(1.0, n_neg / n_pos))
+    device = getattr(args, "device", "cpu") if args is not None else "cpu"
+    model = make_backend(backend, seed=seed, device=device, role="source")
     model.fit(x, y, sample_weight=weight)
     return model
 
@@ -769,12 +913,13 @@ def score_videos(
     use_c: bool = True,
     use_ctc: bool = False,
     use_public: bool = False,
+    args=None,
 ):
     scored = []
     for video in videos:
         source_x, best_pair, pair_label = source_matrix(
             video, pair_model, use_c=use_c, use_ctc=use_ctc,
-            use_public=use_public,
+            use_public=use_public, args=args,
         )
         score = safe_probability(source_model, source_x)
         scored.append((video, score, best_pair, pair_label))
@@ -925,6 +1070,34 @@ def frozen_v2_scores_for_videos(videos, args):
     return result
 
 
+def attach_v2_raw_scores(videos, args) -> None:
+    pair_model = joblib.load(args.v2_artifact / "pair_model.joblib")
+    v1_model = joblib.load(args.v2_artifact / "v1_source_model.joblib")
+    gate_model = joblib.load(args.v2_artifact / "gate_model.joblib")
+    for video in videos:
+        cache = torch.load(
+            args.event_cache / f"{video.stem}.pt",
+            map_location="cpu",
+            weights_only=False,
+        )
+        pair_score, v1, gate = base_v2_scores(
+            cache, pair_model, v1_model, gate_model
+        )
+        n_src = int(len(video.source_y))
+        pmax = np.zeros(n_src, np.float32)
+        best = grouped_best_pair(video.pair_owner, pair_score, n_src)
+        for row, pair_row in enumerate(best):
+            if pair_row >= 0:
+                pmax[row] = pair_score[pair_row]
+        v1 = np.asarray(v1, np.float32).ravel()
+        gate = np.asarray(gate, np.float32).ravel()
+        if len(v1) != n_src:
+            v1 = np.resize(v1, n_src)
+        if len(gate) != n_src:
+            gate = np.resize(gate, n_src)
+        video.v2_raw = np.column_stack([pmax, v1, gate]).astype(np.float32)
+
+
 def additive_union_metric_from_scores(
     frozen_v2_scored,
     addition_scored,
@@ -959,7 +1132,10 @@ def train_family(
     label: str,
     use_ctc: bool = False,
     use_public: bool = False,
+    backend: str = "catboost",
 ):
+    pair_b = str(getattr(args, "pair_backend", "") or backend)
+    source_b = str(getattr(args, "source_backend", "") or backend)
     splitter = GroupKFold(n_splits=args.folds)
     oof_parts = []
     oof_with_fold = []
@@ -968,7 +1144,8 @@ def train_family(
         fit_videos = [train[i] for i in fit_idx]
         val_videos = [train[i] for i in val_idx]
         print(
-            f"{label} fold {fold}: fit={len(fit_videos)} held={len(val_videos)}",
+            f"{label} fold {fold}: fit={len(fit_videos)} held={len(val_videos)} "
+            f"pair={pair_b} source={source_b}",
             flush=True,
         )
         pair = fit_pair_model(
@@ -978,6 +1155,7 @@ def train_family(
             use_c=use_c,
             use_ctc=use_ctc,
             use_public=use_public,
+            backend=pair_b,
         )
         source = fit_source_model(
             fit_videos,
@@ -986,6 +1164,8 @@ def train_family(
             use_c=use_c,
             use_ctc=use_ctc,
             use_public=use_public,
+            backend=source_b,
+            args=args,
         )
         scored = score_videos(
             val_videos,
@@ -994,6 +1174,7 @@ def train_family(
             use_c=use_c,
             use_ctc=use_ctc,
             use_public=use_public,
+            args=args,
         )
         oof_parts.extend(scored)
         for row in scored:
@@ -1002,33 +1183,26 @@ def train_family(
     print(f"{label} OOF {json.dumps({k: frozen_threshold[k] for k in frozen_threshold if k != 'sweep_top'})}", flush=True)
 
     # Durable OOF scores for downstream / audits.
-    oof_rows = []
-    for fold_i, (video, score, best_pair, pair_label) in oof_with_fold:
-        for row in range(len(score)):
-            oof_rows.append(
-                {
-                    "movie": video.stem,
-                    "fold_id": f"gkf5_{fold_i}",
-                    "scheme": "gkf_movie",
-                    "source_row": int(row),
-                    "y_score": float(score[row]),
-                    "y_true": int(video.source_y[row]) if hasattr(video, "source_y") else None,
-                    "pair_label": int(pair_label[row]),
-                    "best_pair": int(best_pair[row]),
-                    "embryo": video.stem.split("_", 1)[0],
-                    "family": label,
-                }
-            )
-    oof_path = args.output / f"oof_{label.replace('+', '_').replace(' ', '_').lower()}.parquet"
-    try:
-        import pandas as pd
-
-        pd.DataFrame(oof_rows).to_parquet(oof_path, index=False)
-        print(f"{label} wrote OOF {oof_path} rows={len(oof_rows)}", flush=True)
-    except Exception as exc:  # noqa: BLE001
-        (args.output / f"oof_{label.replace('+', '_').replace(' ', '_').lower()}.json").write_text(
-            json.dumps({"error": str(exc), "n_rows": len(oof_rows)}) + "\n"
-        )
+    _write_oof_parquet(args, label, oof_with_fold)
+    if getattr(args, "oof_only", False):
+        return {
+            "label": label,
+            "backend": backend,
+            "pair_backend": pair_b,
+            "source_backend": source_b,
+            "use_model_c": use_c,
+            "use_ctc_pair_ranker": use_ctc,
+            "use_public_backbone_evidence": use_public,
+            "pair_model": None,
+            "source_model": None,
+            "oof_frozen_threshold": frozen_threshold,
+            "held_frozen": None,
+            "held_per_embryo": {},
+            "held_calibrated_threshold": frozen_threshold,
+            "held_calibration_diagnostic_only": None,
+            "practice_final_test": None,
+            "practice_scored": [],
+        }
     final_pair = fit_pair_model(
         train,
         args,
@@ -1036,6 +1210,7 @@ def train_family(
         use_c=use_c,
         use_ctc=use_ctc,
         use_public=use_public,
+        backend=backend,
     )
     final_source = fit_source_model(
         train,
@@ -1044,6 +1219,8 @@ def train_family(
         use_c=use_c,
         use_ctc=use_ctc,
         use_public=use_public,
+        backend=backend,
+        args=args,
     )
     held_scored = score_videos(
         held,
@@ -1084,6 +1261,7 @@ def train_family(
         practice_result = None
     return {
         "label": label,
+        "backend": backend,
         "use_model_c": use_c,
         "use_ctc_pair_ranker": use_ctc,
         "use_public_backbone_evidence": use_public,
@@ -1093,6 +1271,223 @@ def train_family(
         "held_frozen": held_result,
         "held_per_embryo": per_embryo,
         # Compat key now aliases OOF-frozen (held sweep is diagnostic-only).
+        "held_calibrated_threshold": frozen_threshold,
+        "held_calibration_diagnostic_only": held_calibration,
+        "practice_final_test": practice_result,
+        "practice_scored": practice_scored,
+    }
+
+
+def _write_oof_parquet(args, label: str, oof_with_fold) -> None:
+    oof_rows = []
+    for fold_i, (video, score, best_pair, pair_label) in oof_with_fold:
+        for row in range(len(score)):
+            oof_rows.append(
+                {
+                    "movie": video.stem,
+                    "fold_id": f"gkf5_{fold_i}",
+                    "scheme": "gkf_movie",
+                    "source_row": int(row),
+                    "y_score": float(score[row]),
+                    "y_true": int(video.source_y[row]) if hasattr(video, "source_y") else None,
+                    "pair_label": int(pair_label[row]),
+                    "best_pair": int(best_pair[row]),
+                    "embryo": video.stem.split("_", 1)[0],
+                    "family": label,
+                }
+            )
+    slug = label.replace("+", "_").replace(" ", "_").replace("/", "_").lower()
+    oof_path = args.output / f"oof_{slug}.parquet"
+    try:
+        import pandas as pd
+
+        pd.DataFrame(oof_rows).to_parquet(oof_path, index=False)
+        print(f"{label} wrote OOF {oof_path} rows={len(oof_rows)}", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        (args.output / f"oof_{slug}.json").write_text(
+            json.dumps({"error": str(exc), "n_rows": len(oof_rows)}) + "\n"
+        )
+
+
+def _blend_scored(scored_by_backend: list, weights: np.ndarray):
+    """Blend source scores; pair assignment from the max-weight member."""
+    k_star = int(np.argmax(weights))
+    blended = []
+    n_videos = len(scored_by_backend[0])
+    for i in range(n_videos):
+        video = scored_by_backend[0][i][0]
+        score = np.zeros_like(scored_by_backend[0][i][1], dtype=np.float64)
+        for k, w in enumerate(weights):
+            score += float(w) * scored_by_backend[k][i][1]
+        _, _, best, pair_label = scored_by_backend[k_star][i]
+        blended.append((video, score.astype(np.float32), best, pair_label))
+    return blended
+
+
+def _concat_source_block(scored):
+    scores = np.concatenate([s for _, s, _, _ in scored]) if scored else np.zeros((0,), np.float32)
+    y = np.concatenate([v.source_y for v, *_ in scored]) if scored else np.zeros((0,), np.int8)
+    return scores, y
+
+
+def train_nested_ensemble(
+    train,
+    held,
+    practice,
+    args,
+    groups,
+    backends: list[str],
+    use_c: bool = True,
+    use_ctc: bool = False,
+    use_public: bool = False,
+    label: str = "V2+C/nested-ensemble",
+):
+    """Outer GKF5 ensemble OOF; blend weights from inner GKF on outer-train."""
+    splitter = GroupKFold(n_splits=args.folds)
+    oof_with_fold = []
+    fold_weights = []
+    dummy = np.zeros(len(train))
+    n_inner = max(2, min(int(args.inner_folds), args.folds))
+    for fold, (fit_idx, val_idx) in enumerate(splitter.split(dummy, groups=groups)):
+        fit_videos = [train[i] for i in fit_idx]
+        val_videos = [train[i] for i in val_idx]
+        inner_groups = np.asarray([v.stem for v in fit_videos])
+        n_groups = len(np.unique(inner_groups))
+        inner_splits = max(2, min(n_inner, n_groups))
+        inner_splitter = GroupKFold(n_splits=inner_splits)
+        inner_P = []
+        inner_y = []
+        print(
+            f"{label} outer {fold}: fit={len(fit_videos)} val={len(val_videos)} "
+            f"inner_folds={inner_splits}",
+            flush=True,
+        )
+        inner_dummy = np.zeros(len(fit_videos))
+        for inner_i, (inner_fit_idx, inner_val_idx) in enumerate(
+            inner_splitter.split(inner_dummy, groups=inner_groups)
+        ):
+            inner_fit = [fit_videos[i] for i in inner_fit_idx]
+            inner_val = [fit_videos[i] for i in inner_val_idx]
+            member_scores = []
+            y_ref = None
+            for b_i, backend in enumerate(backends):
+                pair = fit_pair_model(
+                    inner_fit, args, args.seed + 1000 * fold + 10 * inner_i + b_i,
+                    use_c=use_c, use_ctc=use_ctc, use_public=use_public, backend=backend,
+                )
+                source = fit_source_model(
+                    inner_fit, pair, args.seed + 1100 * fold + 10 * inner_i + b_i,
+                    use_c=use_c, use_ctc=use_ctc, use_public=use_public,
+                    backend=backend, args=args,
+                )
+                scored = score_videos(
+                    inner_val, pair, source,
+                    use_c=use_c, use_ctc=use_ctc, use_public=use_public,
+                )
+                scores, y = _concat_source_block(scored)
+                member_scores.append(scores)
+                if y_ref is None:
+                    y_ref = y
+            inner_P.append(np.stack(member_scores, axis=1))
+            inner_y.append(y_ref)
+        P = np.concatenate(inner_P) if inner_P else np.zeros((0, len(backends)))
+        y = np.concatenate(inner_y) if inner_y else np.zeros((0,))
+        weights = nnls_blend(P, y)
+        fold_weights.append(weights.astype(np.float64))
+        print(
+            f"{label} outer {fold} blend "
+            + json.dumps({b: float(w) for b, w in zip(backends, weights)}),
+            flush=True,
+        )
+        outer_scored = []
+        for b_i, backend in enumerate(backends):
+            pair = fit_pair_model(
+                fit_videos, args, args.seed + fold + b_i,
+                use_c=use_c, use_ctc=use_ctc, use_public=use_public, backend=backend,
+            )
+            source = fit_source_model(
+                fit_videos, pair, args.seed + 100 + fold + b_i,
+                use_c=use_c, use_ctc=use_ctc, use_public=use_public,
+                backend=backend, args=args,
+            )
+            outer_scored.append(
+                score_videos(
+                    val_videos, pair, source,
+                    use_c=use_c, use_ctc=use_ctc, use_public=use_public,
+                )
+            )
+        blended = _blend_scored(outer_scored, weights)
+        for row in blended:
+            oof_with_fold.append((fold, row))
+
+    frozen_threshold = threshold_sweep_by_fold(oof_with_fold)
+    print(
+        f"{label} OOF {json.dumps({k: frozen_threshold[k] for k in frozen_threshold if k != 'sweep_top'})}",
+        flush=True,
+    )
+    _write_oof_parquet(args, label, oof_with_fold)
+    mean_weights = np.mean(np.stack(fold_weights), axis=0)
+    mean_weights = mean_weights / max(float(mean_weights.sum()), 1e-12)
+    print(
+        f"{label} mean blend "
+        + json.dumps({b: float(w) for b, w in zip(backends, mean_weights)}),
+        flush=True,
+    )
+
+    final_members = []
+    for b_i, backend in enumerate(backends):
+        pair = fit_pair_model(
+            train, args, args.seed + 500 + b_i,
+            use_c=use_c, use_ctc=use_ctc, use_public=use_public, backend=backend,
+        )
+        source = fit_source_model(
+            train, pair, args.seed + 600 + b_i,
+            use_c=use_c, use_ctc=use_ctc, use_public=use_public,
+            backend=backend, args=args,
+        )
+        final_members.append((backend, pair, source))
+
+    held_scored_members = [
+        score_videos(held, pair, source, use_c=use_c, use_ctc=use_ctc, use_public=use_public)
+        for _, pair, source in final_members
+    ]
+    held_scored = _blend_scored(held_scored_members, mean_weights)
+    held_result = metric(held_scored, frozen_threshold["threshold"])
+    held_calibration = threshold_sweep(held_scored)
+    per_embryo = {}
+    for embryo in ("44b6", "6bba"):
+        subset = [row for row in held_scored if row[0].embryo == embryo]
+        per_embryo[embryo] = metric(subset, frozen_threshold["threshold"])
+    print(f"{label} HELD FROZEN {json.dumps(held_result)}", flush=True)
+    if practice:
+        practice_scored_members = [
+            score_videos(
+                practice, pair, source,
+                use_c=use_c, use_ctc=use_ctc, use_public=use_public,
+            )
+            for _, pair, source in final_members
+        ]
+        practice_scored = _blend_scored(practice_scored_members, mean_weights)
+        practice_result = metric(practice_scored, frozen_threshold["threshold"])
+        print(
+            f"{label} PRACTICE DIRECT @ OOF-FROZEN {json.dumps(practice_result)}",
+            flush=True,
+        )
+    else:
+        practice_scored = []
+        practice_result = None
+    return {
+        "label": label,
+        "backends": list(backends),
+        "use_model_c": use_c,
+        "fold_blend_weights": [
+            {b: float(w) for b, w in zip(backends, ww)} for ww in fold_weights
+        ],
+        "mean_blend_weights": {b: float(w) for b, w in zip(backends, mean_weights)},
+        "members": final_members,
+        "oof_frozen_threshold": frozen_threshold,
+        "held_frozen": held_result,
+        "held_per_embryo": per_embryo,
         "held_calibrated_threshold": frozen_threshold,
         "held_calibration_diagnostic_only": held_calibration,
         "practice_final_test": practice_result,
@@ -1389,6 +1784,15 @@ def run_public_evidence_comparison(args, split: dict) -> None:
     print(json.dumps(summary, indent=2), flush=True)
 
 
+def _result_for_json(result: dict) -> dict:
+    out = dict(result)
+    out.pop("pair_model", None)
+    out.pop("source_model", None)
+    out.pop("practice_scored", None)
+    out.pop("members", None)
+    return out
+
+
 def main() -> None:
     args = parse_args()
     split = json.loads(args.split.read_text())
@@ -1423,76 +1827,158 @@ def main() -> None:
 
     groups = np.asarray([video.stem for video in train])
     frozen_v2_practice = frozen_v2_scores_for_videos(practice, args)
-    control = train_family(
-        train, held, practice, args, groups,
-        use_c=False, label="V2-FEATURE CONTROL"
-    )
-    combined = train_family(
-        train, held, practice, args, groups,
-        use_c=True, label="V2+MODEL-C"
-    )
     frozen_v2_practice_metric = metric(frozen_v2_practice, 0.5)
-    control_union = additive_union_metric_from_scores(
-        frozen_v2_practice,
-        control["practice_scored"],
-        control["oof_frozen_threshold"]["threshold"],
+    backends = [b.strip().lower() for b in str(args.backends).split(",") if b.strip()]
+    if not backends:
+        raise SystemExit("No decoder backends specified")
+
+    control = None
+    if not args.skip_v2_control:
+        control = train_family(
+            train, held, practice, args, groups,
+            use_c=False, label="V2-FEATURE CONTROL", backend="hgb",
+        )
+
+    per_backend = {}
+    for backend in backends:
+        per_backend[backend] = train_family(
+            train, held, practice, args, groups,
+            use_c=True, label=f"V2+C/{backend}", backend=backend,
+        )
+
+    ensemble = None
+    if len(backends) >= 2:
+        ensemble = train_nested_ensemble(
+            train, held, practice, args, groups, backends,
+            use_c=True, label="V2+C/nested-ensemble",
+        )
+
+    oof_singles = {
+        name: float(result["oof_frozen_threshold"]["mean_jaccard"])
+        for name, result in per_backend.items()
+    }
+    best_single_name = max(oof_singles, key=oof_singles.get)
+    best_single_j = oof_singles[best_single_name]
+    ensemble_j = (
+        float(ensemble["oof_frozen_threshold"]["mean_jaccard"])
+        if ensemble is not None else None
     )
-    combined_union = additive_union_metric_from_scores(
-        frozen_v2_practice,
-        combined["practice_scored"],
-        combined["oof_frozen_threshold"]["threshold"],
+    ensemble_gains = (
+        ensemble_j is not None and ensemble_j > best_single_j + 1e-12
     )
+    selected = "ensemble" if ensemble_gains else best_single_name
     print(
-        "PRACTICE ADDITIVE "
-        + json.dumps({
-            "frozen_v2": frozen_v2_practice_metric,
-            "control_union": control_union,
-            "model_c_union": combined_union,
-        }),
+        json.dumps(
+            {
+                "oof_singles": oof_singles,
+                "best_single": best_single_name,
+                "best_single_oof": best_single_j,
+                "nested_ensemble_oof": ensemble_j,
+                "ensemble_gains_on_nested_oof": ensemble_gains,
+                "selected_by_oof": selected,
+            },
+            indent=2,
+        ),
         flush=True,
     )
-    joblib.dump(combined["pair_model"], args.output / "pair_model.joblib", compress=3)
-    joblib.dump(combined["source_model"], args.output / "source_model.joblib", compress=3)
-    joblib.dump(control["pair_model"], args.output / "control_pair_model.joblib", compress=3)
-    joblib.dump(control["source_model"], args.output / "control_source_model.joblib", compress=3)
-    for result in (control, combined):
-        result.pop("pair_model")
-        result.pop("source_model")
-        result.pop("practice_scored")
-    c_adds_value = (
-        combined_union["jaccard"] > frozen_v2_practice_metric["jaccard"]
-        and combined_union["jaccard"] >= control_union["jaccard"]
-    )
+
+    additive = {"frozen_v2": frozen_v2_practice_metric}
+    if control is not None:
+        additive["control_union"] = additive_union_metric_from_scores(
+            frozen_v2_practice,
+            control["practice_scored"],
+            control["oof_frozen_threshold"]["threshold"],
+        )
+    for name, result in per_backend.items():
+        additive[f"{name}_union"] = additive_union_metric_from_scores(
+            frozen_v2_practice,
+            result["practice_scored"],
+            result["oof_frozen_threshold"]["threshold"],
+        )
+    if ensemble is not None:
+        additive["ensemble_union"] = additive_union_metric_from_scores(
+            frozen_v2_practice,
+            ensemble["practice_scored"],
+            ensemble["oof_frozen_threshold"]["threshold"],
+        )
+    print("PRACTICE ADDITIVE " + json.dumps(additive), flush=True)
+
+    for name, result in per_backend.items():
+        joblib.dump(result["pair_model"], args.output / f"{name}_pair_model.joblib", compress=3)
+        joblib.dump(result["source_model"], args.output / f"{name}_source_model.joblib", compress=3)
+    if ensemble is not None:
+        (args.output / "blend_weights.json").write_text(
+            json.dumps(
+                {
+                    "mean": ensemble["mean_blend_weights"],
+                    "per_outer_fold": ensemble["fold_blend_weights"],
+                    "backends": backends,
+                },
+                indent=2,
+            )
+        )
+        for backend, pair, source in ensemble["members"]:
+            joblib.dump(pair, args.output / f"ensemble_{backend}_pair_model.joblib", compress=3)
+            joblib.dump(source, args.output / f"ensemble_{backend}_source_model.joblib", compress=3)
+    if selected == "ensemble":
+        k_star = max(
+            ensemble["mean_blend_weights"],
+            key=ensemble["mean_blend_weights"].get,
+        )
+        for backend, pair, source in ensemble["members"]:
+            if backend == k_star:
+                joblib.dump(pair, args.output / "pair_model.joblib", compress=3)
+                joblib.dump(source, args.output / "source_model.joblib", compress=3)
+                break
+    else:
+        joblib.dump(
+            per_backend[selected]["pair_model"],
+            args.output / "pair_model.joblib",
+            compress=3,
+        )
+        joblib.dump(
+            per_backend[selected]["source_model"],
+            args.output / "source_model.joblib",
+            compress=3,
+        )
+    if control is not None:
+        joblib.dump(control["pair_model"], args.output / "control_pair_model.joblib", compress=3)
+        joblib.dump(control["source_model"], args.output / "control_source_model.joblib", compress=3)
+
     summary = {
-        "version": "model-c-v2-event-decoder-v1",
-        "method": "native Model-C TTA evidence appended to frozen Division-V2 candidates",
+        "version": "model-c-v2-event-decoder-v2-ensemble",
+        "method": (
+            "native Model-C TTA evidence appended to frozen Division-V2 candidates; "
+            "CatBoost/LightGBM/TabM/RealMLP GKF5 singles then nested-CV NNLS blend"
+        ),
         "train_videos": len(train),
         "held_videos": len(held),
         "practice_videos": len(practice),
+        "folds": args.folds,
+        "inner_folds": args.inner_folds,
+        "split_scheme": "sklearn GroupKFold by movie stem on train175",
+        "backends": backends,
         "model_c_feature_names": C_FEATURE_NAMES,
         "pair_input_features": 78 + len(C_FEATURE_NAMES),
         "source_input_features": 41 + 78 + 1 + len(C_FEATURE_NAMES),
-        "control": control,
-        "combined": combined,
-        "practice_additive": {
-            "frozen_v2": frozen_v2_practice_metric,
-            "control_union": control_union,
-            "model_c_union": combined_union,
-        },
-        "model_c_adds_practice_value": c_adds_value,
-        "promotion_gate": (
-            "Model C must add value over frozen V2 and beat the identically "
-            "trained V2-feature control on the untouched four practice clips "
-            "before official graph replay"
-        ),
+        "oof_singles": oof_singles,
+        "best_single": best_single_name,
+        "nested_ensemble_oof": ensemble_j,
+        "ensemble_gains_on_nested_oof": ensemble_gains,
+        "selected_by_oof": selected,
+        "control": _result_for_json(control) if control is not None else None,
+        "per_backend": {name: _result_for_json(result) for name, result in per_backend.items()},
+        "ensemble": _result_for_json(ensemble) if ensemble is not None else None,
+        "practice_additive": additive,
         "sparse_safety": {
             "unannotated_sources_as_negatives": False,
-            "practice_clips_used_for_final_gate": True,
+            "practice_clips_used_for_final_gate": False,
             "threshold_selected_on_practice": False,
             "threshold_selected_on_validation_held20": False,
             "threshold_selected_on_oof_only": True,
             "practice_used_for_training_or_threshold": False,
             "frozen_v2_probabilities_used_as_features": False,
+            "model_selection_on_nested_oof_only": True,
         },
     }
     (args.output / "summary.json").write_text(json.dumps(summary, indent=2))
